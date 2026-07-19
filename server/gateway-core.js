@@ -1,0 +1,307 @@
+import EventEmitter from 'eventemitter3';
+import { createLogger } from './utils/logger.js';
+import { MessageQueue } from './message-queue.js';
+import { InboundMessage, OutboundMessage, ConnectionState } from './adapters/base-adapter.js';
+import configManager from './utils/config.js';
+
+const logger = createLogger('gateway-core');
+
+/**
+ * 网关核心 - 消息总线 + 路由引擎
+ * 负责管理所有平台适配器、消息路由、会话管理
+ */
+export class GatewayCore extends EventEmitter {
+    constructor() {
+        super();
+        this.adapters = new Map();        // name -> PlatformAdapter
+        this.messageQueue = new MessageQueue({
+            maxRetries: configManager.get('messageQueue.maxRetries'),
+            retryDelay: configManager.get('messageQueue.retryDelay'),
+            maxLength: configManager.get('messageQueue.maxLength'),
+        });
+        this.messageHandlers = [];        // 消息处理函数列表
+        this.messageLog = [];             // 最近消息日志
+        this.maxLogSize = 200;
+        this.running = false;
+
+        // 设置消息队列的发送处理器
+        this.messageQueue.setSendHandler(async (msg) => {
+            return await this.dispatchOutbound(msg);
+        });
+    }
+
+    /**
+     * 注册平台适配器
+     * @param {string} name - 平台名称
+     * @param {PlatformAdapter} adapter - 适配器实例
+     */
+    registerAdapter(name, adapter) {
+        if (this.adapters.has(name)) {
+            logger.warn(`适配器 ${name} 已存在，将被替换`);
+            this.unregisterAdapter(name);
+        }
+
+        this.adapters.set(name, adapter);
+
+        // 绑定适配器事件
+        adapter.on('message', (msg) => this.handleInbound(name, msg));
+        adapter.on('connected', () => {
+            logger.info(`[${name}] 已连接`);
+            this.emit('adapterConnected', name);
+        });
+        adapter.on('disconnected', (reason) => {
+            logger.warn(`[${name}] 已断开: ${reason}`);
+            this.emit('adapterDisconnected', name, reason);
+        });
+        adapter.on('error', (error) => {
+            logger.error(`[${name}] 错误: ${error.message}`);
+            this.emit('adapterError', name, error);
+        });
+        adapter.on('statusChange', (oldState, newState) => {
+            this.emit('adapterStatusChange', name, oldState, newState);
+        });
+
+        logger.info(`适配器已注册: ${name}`);
+    }
+
+    /**
+     * 注销平台适配器
+     * @param {string} name
+     */
+    unregisterAdapter(name) {
+        const adapter = this.adapters.get(name);
+        if (adapter) {
+            adapter.removeAllListeners();
+            adapter.stop();
+            this.adapters.delete(name);
+            logger.info(`适配器已注销: ${name}`);
+        }
+    }
+
+    /**
+     * 启动网关（启动所有已启用的适配器）
+     */
+    async start() {
+        if (this.running) {
+            logger.warn('网关已在运行中');
+            return;
+        }
+
+        this.running = true;
+        this.messageQueue.start();
+        logger.info('网关核心已启动');
+
+        // 启动所有已启用的适配器
+        const adapterConfigs = configManager.get('adapters') || {};
+        for (const [name, adapter] of this.adapters) {
+            const config = adapterConfigs[name];
+            if (config && config.enabled) {
+                logger.info(`启动适配器: ${name}`);
+                await adapter.start();
+            } else {
+                logger.info(`适配器 ${name} 未启用，跳过`);
+            }
+        }
+
+        this.emit('started');
+    }
+
+    /**
+     * 停止网关
+     */
+    async stop() {
+        if (!this.running) return;
+
+        this.running = false;
+        this.messageQueue.stop();
+
+        for (const [name, adapter] of this.adapters) {
+            logger.info(`停止适配器: ${name}`);
+            await adapter.stop();
+        }
+
+        logger.info('网关核心已停止');
+        this.emit('stopped');
+    }
+
+    /**
+     * 处理入站消息
+     * @param {string} platform - 来源平台
+     * @param {InboundMessage} message - 入站消息
+     */
+    handleInbound(platform, message) {
+        message.platform = platform;
+
+        // 记录消息日志
+        this.addMessageLog('inbound', message);
+
+        logger.info(`[${platform}] 收到消息: ${message.senderName}: ${message.content.substring(0, 50)}...`);
+
+        // 触发消息事件
+        this.emit('message', message);
+
+        // 调用所有消息处理器
+        for (const handler of this.messageHandlers) {
+            try {
+                handler(message);
+            } catch (error) {
+                logger.error(`消息处理器执行失败: ${error.message}`);
+            }
+        }
+    }
+
+    /**
+     * 发送消息到指定平台（通过队列）
+     * @param {OutboundMessage} message
+     * @param {object} options - 队列选项
+     */
+    sendMessage(message, options = {}) {
+        this.addMessageLog('outbound', message);
+        this.messageQueue.enqueue(message, options);
+    }
+
+    /**
+     * 直接发送消息（不经过队列）
+     * @param {OutboundMessage} message
+     * @returns {Promise<boolean>}
+     */
+    async sendDirect(message) {
+        this.addMessageLog('outbound', message);
+        return await this.dispatchOutbound(message);
+    }
+
+    /**
+     * 分发出站消息到对应适配器
+     * @param {OutboundMessage} message
+     * @returns {Promise<boolean>}
+     */
+    async dispatchOutbound(message) {
+        const adapter = this.adapters.get(message.platform);
+        if (!adapter) {
+            logger.error(`未找到平台适配器: ${message.platform}`);
+            return false;
+        }
+
+        if (!adapter.isConnected()) {
+            logger.warn(`[${message.platform}] 适配器未连接，无法发送`);
+            return false;
+        }
+
+        try {
+            // 长文本分段发送
+            const segments = adapter.splitMessage(message.content, this.getMaxLength(message.platform));
+
+            for (const segment of segments) {
+                const segMsg = new OutboundMessage({
+                    ...message,
+                    content: segment,
+                });
+                await adapter.send(segMsg);
+
+                // 分段间添加小延迟避免频率限制
+                if (segments.length > 1) {
+                    await this.delay(500);
+                }
+            }
+
+            logger.info(`[${message.platform}] 消息已发送到 ${message.chatId}`);
+            return true;
+        } catch (error) {
+            logger.error(`[${message.platform}] 发送失败: ${error.message}`);
+            throw error;
+        }
+    }
+
+    /**
+     * 广播消息到所有已连接平台
+     * @param {string} content - 消息内容
+     * @param {object} options - 选项
+     */
+    broadcast(content, options = {}) {
+        for (const [name, adapter] of this.adapters) {
+            if (adapter.isConnected()) {
+                // 广播需要指定目标，这里只是示例
+                logger.info(`广播到 ${name}: ${content.substring(0, 30)}...`);
+            }
+        }
+    }
+
+    /**
+     * 注册消息处理器
+     * @param {Function} handler - (InboundMessage) => void
+     * @returns {Function} 取消注册的函数
+     */
+    onMessage(handler) {
+        this.messageHandlers.push(handler);
+        return () => {
+            const index = this.messageHandlers.indexOf(handler);
+            if (index > -1) {
+                this.messageHandlers.splice(index, 1);
+            }
+        };
+    }
+
+    /**
+     * 获取所有适配器状态
+     */
+    getStatus() {
+        const status = {};
+        for (const [name, adapter] of this.adapters) {
+            status[name] = adapter.getStatus();
+        }
+        return {
+            running: this.running,
+            adapters: status,
+            queue: this.messageQueue.getStatus(),
+            recentMessages: this.messageLog.slice(-20),
+        };
+    }
+
+    /**
+     * 获取指定适配器
+     * @param {string} name
+     */
+    getAdapter(name) {
+        return this.adapters.get(name);
+    }
+
+    /**
+     * 获取平台消息最大长度
+     */
+    getMaxLength(platform) {
+        const limits = {
+            qq: 4500,
+            telegram: 4096,
+            discord: 2000,
+        };
+        return limits[platform] || 4000;
+    }
+
+    /**
+     * 添加消息日志
+     */
+    addMessageLog(direction, message) {
+        this.messageLog.push({
+            direction,
+            platform: message.platform,
+            chatId: message.chatId,
+            content: message.content?.substring(0, 100),
+            timestamp: Date.now(),
+        });
+
+        if (this.messageLog.length > this.maxLogSize) {
+            this.messageLog.shift();
+        }
+    }
+
+    /**
+     * 延迟工具函数
+     */
+    delay(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+}
+
+// 单例导出
+export const gatewayCore = new GatewayCore();
+export default gatewayCore;

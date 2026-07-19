@@ -1,0 +1,13 @@
+{
+    "display_name": "Multi-Platform Gateway",
+    "loading_order": 100,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "SillyTavern Gateway",
+    "version": "1.0.0",
+    "minimum_client_version": "1.10.0",
+    "homePage": "",
+    "auto_update": false
+}

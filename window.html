@@ -1,0 +1,74 @@
+<div id="gateway_window" class="gateway-window">
+    <div class="gateway-window-header">
+        <h3>多平台网关控制台</h3>
+        <div class="gateway-window-actions">
+            <button id="gateway_refresh_btn" class="menu_button" title="刷新状态">
+                <i class="fa-solid fa-rotate"></i>
+            </button>
+        </div>
+    </div>
+
+    <div class="gateway-window-content">
+        <!-- 连接状态概览 -->
+        <div class="gateway-overview">
+            <div class="gateway-status-card" data-platform="qq">
+                <div class="gateway-status-icon">
+                    <i class="fa-brands fa-qq"></i>
+                </div>
+                <div class="gateway-status-info">
+                    <span class="gateway-platform-name">QQ</span>
+                    <span id="gateway_qq_state" class="gateway-state disconnected">离线</span>
+                </div>
+            </div>
+            <div class="gateway-status-card" data-platform="telegram">
+                <div class="gateway-status-icon">
+                    <i class="fa-brands fa-telegram"></i>
+                </div>
+                <div class="gateway-status-info">
+                    <span class="gateway-platform-name">Telegram</span>
+                    <span id="gateway_telegram_state" class="gateway-state disconnected">离线</span>
+                </div>
+            </div>
+            <div class="gateway-status-card" data-platform="discord">
+                <div class="gateway-status-icon">
+                    <i class="fa-brands fa-discord"></i>
+                </div>
+                <div class="gateway-status-info">
+                    <span class="gateway-platform-name">Discord</span>
+                    <span id="gateway_discord_state" class="gateway-state disconnected">离线</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 消息流 -->
+        <div class="gateway-messages-section">
+            <h4>最近消息</h4>
+            <div id="gateway_message_log" class="gateway-message-log">
+                <div class="gateway-empty-message">暂无消息</div>
+            </div>
+        </div>
+
+        <!-- 快捷发送 -->
+        <div class="gateway-send-section">
+            <h4>发送消息</h4>
+            <div class="gateway-send-form">
+                <select id="gateway_send_platform">
+                    <option value="qq">QQ</option>
+                    <option value="telegram">Telegram</option>
+                    <option value="discord">Discord</option>
+                </select>
+                <input type="text" id="gateway_send_chatid" placeholder="目标 ID (群号/用户ID/频道ID)">
+                <textarea id="gateway_send_content" placeholder="消息内容" rows="3"></textarea>
+                <button id="gateway_send_btn" class="menu_button">发送</button>
+            </div>
+        </div>
+
+        <!-- 会话列表 -->
+        <div class="gateway-sessions-section">
+            <h4>活跃会话</h4>
+            <div id="gateway_session_list" class="gateway-session-list">
+                <div class="gateway-empty-message">暂无会话</div>
+            </div>
+        </div>
+    </div>
+</div>

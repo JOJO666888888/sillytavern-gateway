@@ -1,0 +1,101 @@
+<div id="gateway_settings" class="gateway-settings">
+    <div class="gateway-section">
+        <h4>网关服务</h4>
+        <div class="gateway-row">
+            <label for="gateway_server_url">服务地址</label>
+            <input type="text" id="gateway_server_url" placeholder="http://127.0.0.1:3210" value="http://127.0.0.1:3210">
+        </div>
+        <div class="gateway-row">
+            <button id="gateway_connect_btn" class="menu_button">连接网关</button>
+            <button id="gateway_disconnect_btn" class="menu_button">断开连接</button>
+            <span id="gateway_connection_status" class="gateway-status disconnected">未连接</span>
+        </div>
+    </div>
+
+    <div class="gateway-section">
+        <h4>QQ (OneBot v11)</h4>
+        <div class="gateway-row">
+            <label>
+                <input type="checkbox" id="gateway_qq_enabled"> 启用
+            </label>
+        </div>
+        <div class="gateway-row">
+            <label for="gateway_qq_mode">连接模式</label>
+            <select id="gateway_qq_mode">
+                <option value="websocket">正向 WebSocket</option>
+                <option value="reverse">反向 WebSocket</option>
+            </select>
+        </div>
+        <div class="gateway-row">
+            <label for="gateway_qq_ws_url">WebSocket 地址</label>
+            <input type="text" id="gateway_qq_ws_url" placeholder="ws://127.0.0.1:8080">
+        </div>
+        <div class="gateway-row">
+            <label for="gateway_qq_token">Access Token</label>
+            <input type="password" id="gateway_qq_token" placeholder="可选">
+        </div>
+        <div class="gateway-row">
+            <span id="gateway_qq_status" class="gateway-status disconnected">未连接</span>
+        </div>
+    </div>
+
+    <div class="gateway-section">
+        <h4>Telegram</h4>
+        <div class="gateway-row">
+            <label>
+                <input type="checkbox" id="gateway_telegram_enabled"> 启用
+            </label>
+        </div>
+        <div class="gateway-row">
+            <label for="gateway_telegram_token">Bot Token</label>
+            <input type="password" id="gateway_telegram_token" placeholder="从 @BotFather 获取">
+        </div>
+        <div class="gateway-row">
+            <label>
+                <input type="checkbox" id="gateway_telegram_require_mention" checked> 群组需要 @
+            </label>
+        </div>
+        <div class="gateway-row">
+            <span id="gateway_telegram_status" class="gateway-status disconnected">未连接</span>
+        </div>
+    </div>
+
+    <div class="gateway-section">
+        <h4>Discord</h4>
+        <div class="gateway-row">
+            <label>
+                <input type="checkbox" id="gateway_discord_enabled"> 启用
+            </label>
+        </div>
+        <div class="gateway-row">
+            <label for="gateway_discord_token">Bot Token</label>
+            <input type="password" id="gateway_discord_token" placeholder="从 Developer Portal 获取">
+        </div>
+        <div class="gateway-row">
+            <label>
+                <input type="checkbox" id="gateway_discord_require_mention" checked> 频道需要 @
+            </label>
+        </div>
+        <div class="gateway-row">
+            <span id="gateway_discord_status" class="gateway-status disconnected">未连接</span>
+        </div>
+    </div>
+
+    <div class="gateway-section">
+        <h4>自动回复</h4>
+        <div class="gateway-row">
+            <label>
+                <input type="checkbox" id="gateway_auto_reply_enabled" checked> 启用自动回复
+            </label>
+        </div>
+        <div class="gateway-row">
+            <label for="gateway_response_delay">回复延迟 (ms)</label>
+            <input type="number" id="gateway_response_delay" value="500" min="0" max="5000">
+        </div>
+    </div>
+
+    <div class="gateway-section">
+        <button id="gateway_save_settings" class="menu_button">保存设置</button>
+        <button id="gateway_reload_config" class="menu_button">重新加载配置</button>
+    </div>
+</div>

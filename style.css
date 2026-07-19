@@ -1,0 +1,356 @@
+/* SillyTavern Gateway Extension Styles */
+
+/* 设置面板 */
+.gateway-settings {
+    padding: 10px;
+}
+
+.gateway-section {
+    margin-bottom: 15px;
+    padding: 10px;
+    border: 1px solid var(--SmartThemeBorderColor, #333);
+    border-radius: 8px;
+    background: var(--SmartThemeBlurTintColor, rgba(0, 0, 0, 0.1));
+}
+
+.gateway-section h4 {
+    margin: 0 0 10px 0;
+    color: var(--SmartThemeBodyColor, #fff);
+    font-size: 14px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor, #333);
+    padding-bottom: 5px;
+}
+
+.gateway-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+}
+
+.gateway-row label {
+    min-width: 100px;
+    font-size: 13px;
+}
+
+.gateway-row input[type="text"],
+.gateway-row input[type="password"],
+.gateway-row input[type="number"],
+.gateway-row select {
+    flex: 1;
+    min-width: 150px;
+    padding: 6px 10px;
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    border-radius: 4px;
+    background: var(--SmartThemeBlurTintColor, rgba(0, 0, 0, 0.2));
+    color: var(--SmartThemeBodyColor, #fff);
+}
+
+.gateway-row input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+}
+
+/* 状态指示器 */
+.gateway-status {
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: bold;
+}
+
+.gateway-status.connected {
+    background: rgba(76, 175, 80, 0.2);
+    color: #4caf50;
+}
+
+.gateway-status.disconnected {
+    background: rgba(244, 67, 54, 0.2);
+    color: #f44336;
+}
+
+/* 主窗口 */
+.gateway-window {
+    min-width: 600px;
+    max-width: 900px;
+}
+
+.gateway-window-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 15px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor, #333);
+}
+
+.gateway-window-header h3 {
+    margin: 0;
+    font-size: 18px;
+}
+
+.gateway-window-content {
+    padding: 15px;
+    max-height: 70vh;
+    overflow-y: auto;
+}
+
+/* 状态概览卡片 */
+.gateway-overview {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 15px;
+    margin-bottom: 20px;
+}
+
+.gateway-status-card {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 15px;
+    border: 1px solid var(--SmartThemeBorderColor, #333);
+    border-radius: 10px;
+    background: var(--SmartThemeBlurTintColor, rgba(0, 0, 0, 0.1));
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.gateway-status-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+.gateway-status-icon {
+    font-size: 28px;
+    width: 50px;
+    height: 50px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.gateway-status-card[data-platform="qq"] .gateway-status-icon {
+    color: #12b7f5;
+}
+
+.gateway-status-card[data-platform="telegram"] .gateway-status-icon {
+    color: #0088cc;
+}
+
+.gateway-status-card[data-platform="discord"] .gateway-status-icon {
+    color: #5865f2;
+}
+
+.gateway-status-info {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.gateway-platform-name {
+    font-weight: bold;
+    font-size: 14px;
+}
+
+.gateway-state {
+    font-size: 12px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    display: inline-block;
+    width: fit-content;
+}
+
+.gateway-state.connected {
+    background: rgba(76, 175, 80, 0.2);
+    color: #4caf50;
+}
+
+.gateway-state.disconnected {
+    background: rgba(158, 158, 158, 0.2);
+    color: #9e9e9e;
+}
+
+.gateway-state.connecting,
+.gateway-state.reconnecting {
+    background: rgba(255, 193, 7, 0.2);
+    color: #ffc107;
+}
+
+.gateway-state.error {
+    background: rgba(244, 67, 54, 0.2);
+    color: #f44336;
+}
+
+/* 消息日志 */
+.gateway-messages-section,
+.gateway-send-section,
+.gateway-sessions-section {
+    margin-bottom: 20px;
+}
+
+.gateway-messages-section h4,
+.gateway-send-section h4,
+.gateway-sessions-section h4 {
+    margin: 0 0 10px 0;
+    font-size: 14px;
+    color: var(--SmartThemeBodyColor, #fff);
+}
+
+.gateway-message-log {
+    max-height: 200px;
+    overflow-y: auto;
+    border: 1px solid var(--SmartThemeBorderColor, #333);
+    border-radius: 8px;
+    padding: 10px;
+    background: var(--SmartThemeBlurTintColor, rgba(0, 0, 0, 0.1));
+}
+
+.gateway-message-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 4px;
+    font-size: 13px;
+    margin-bottom: 4px;
+}
+
+.gateway-message-item:hover {
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.gateway-message-item.inbound {
+    border-left: 3px solid #4caf50;
+}
+
+.gateway-message-item.outbound {
+    border-left: 3px solid #2196f3;
+}
+
+.gateway-msg-time {
+    color: #888;
+    font-size: 11px;
+    min-width: 60px;
+}
+
+.gateway-msg-platform {
+    font-size: 14px;
+}
+
+.gateway-msg-direction {
+    font-weight: bold;
+    color: #888;
+}
+
+.gateway-msg-content {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.gateway-empty-message {
+    text-align: center;
+    color: #888;
+    padding: 20px;
+    font-style: italic;
+}
+
+/* 发送表单 */
+.gateway-send-form {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.gateway-send-form select,
+.gateway-send-form input,
+.gateway-send-form textarea {
+    padding: 8px 12px;
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    border-radius: 6px;
+    background: var(--SmartThemeBlurTintColor, rgba(0, 0, 0, 0.2));
+    color: var(--SmartThemeBodyColor, #fff);
+    font-size: 13px;
+}
+
+.gateway-send-form textarea {
+    resize: vertical;
+    min-height: 60px;
+}
+
+.gateway-send-form button {
+    align-self: flex-end;
+}
+
+/* 会话列表 */
+.gateway-session-list {
+    max-height: 150px;
+    overflow-y: auto;
+    border: 1px solid var(--SmartThemeBorderColor, #333);
+    border-radius: 8px;
+}
+
+.gateway-session-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor, #222);
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.gateway-session-item:hover {
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.gateway-session-item:last-child {
+    border-bottom: none;
+}
+
+.gateway-session-icon {
+    font-size: 18px;
+}
+
+.gateway-session-id {
+    flex: 1;
+    font-weight: 500;
+}
+
+.gateway-session-count {
+    color: #888;
+    font-size: 12px;
+}
+
+.gateway-session-time {
+    color: #666;
+    font-size: 11px;
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+    .gateway-overview {
+        grid-template-columns: 1fr;
+    }
+
+    .gateway-window {
+        min-width: auto;
+        width: 100%;
+    }
+
+    .gateway-row {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .gateway-row label {
+        min-width: auto;
+    }
+
+    .gateway-row input,
+    .gateway-row select {
+        width: 100%;
+    }
+}
