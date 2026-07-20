@@ -87,8 +87,9 @@ async function handleAutoReply(message) {
         return;
     }
 
-    // 默认：不自动回复，等待 SillyTavern 处理
-    // 如果需要独立运行时的简单回复，可以取消下面的注释
+    // 默认：不自动回复，等待 SillyTavern 扩展处理
+    // 扩展会轮询消息、注入聊天、触发 AI 生成、将回复发回网关
+    // 服务器端只处理 / 开头的命令
     /*
     const delay = configManager.get('autoReply.responseDelay') || 500;
     await new Promise(resolve => setTimeout(resolve, delay));
@@ -97,7 +98,7 @@ async function handleAutoReply(message) {
         platform: message.platform,
         chatId: message.chatId,
         chatType: message.chatType,
-        content: `[回声] ${message.content}`,
+        content: `你说了: ${message.content}`,
         replyToId: message.messageId,
     });
 

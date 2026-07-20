@@ -82,15 +82,19 @@
     </div>
 
     <div class="gateway-section">
-        <h4>自动回复</h4>
+        <h4>AI 自动回复</h4>
         <div class="gateway-row">
             <label>
-                <input type="checkbox" id="gateway_auto_reply_enabled" checked> 启用自动回复
+                <input type="checkbox" id="gateway_auto_reply_enabled_ext" checked> 启用 AI 自动回复
             </label>
+            <span style="font-size:0.85em;color:#888;margin-left:8px;">将平台消息注入 ST 聊天并让 AI 自动回复</span>
         </div>
         <div class="gateway-row">
             <label for="gateway_response_delay">回复延迟 (ms)</label>
             <input type="number" id="gateway_response_delay" value="500" min="0" max="5000">
+        </div>
+        <div class="gateway-row" style="font-size:0.9em;color:#aaa;">
+            <span>💡 使用前请确保已在 SillyTavern 中选中一个角色</span>
         </div>
     </div>
 

@@ -1,6 +1,9 @@
 /**
  * SillyTavern Multi-Platform Gateway Extension
- * 前端扩展入口 - 与后端网关服务通信
+ * 前端扩展入口 - 完整 AI 自动回复管线
+ * 
+ * 工作流程:
+ *   平台消息 → 网关 → 扩展轮询 → 注入 ST 聊天 → 触发 AI 生成 → 回复转发回平台
  */
 
 import { getContext, extension_settings } from '../../extensions.js';
@@ -8,18 +11,27 @@ import { SlashCommand } from '../../slash-commands/SlashCommand.js';
 import { SlashCommandParser } from '../../slash-commands/SlashCommandParser.js';
 import { renderExtensionTemplateAsync } from '../../extensions.js';
 import { POPUP_TYPE, callGenericPopup } from '../../popup.js';
+import { eventSource, event_types } from '../../../script.js';
+import { sendMessageAsUser } from '../../../script.js';
 
 // 扩展设置默认值
 const DEFAULT_SETTINGS = {
     serverUrl: 'http://127.0.0.1:3210',
-    autoConnect: false,
-    pollInterval: 5000,
+    autoConnect: true,
+    pollInterval: 3000,
+    autoReplyEnabled: true,
 };
 
 // 扩展状态
 let gatewayConnected = false;
 let pollTimer = null;
 let lastMessages = [];
+/** 已处理过的消息 ID 集合 (platform+chatId+timestamp) */
+const processedMessageIds = new Set();
+/** 等待 AI 回复的目标 { platform, chatId } */
+let pendingReplyTarget = null;
+/** 是否正在处理消息（防止重复触发） */
+let isProcessing = false;
 
 /**
  * 获取扩展设置
@@ -67,6 +79,12 @@ async function fetchGatewayStatus() {
         updateStatusUI(status);
         gatewayConnected = true;
         updateConnectionStatus(true);
+
+        // 处理新消息（自动回复管线）
+        if (status.recentMessages && getSettings().autoReplyEnabled) {
+            await processIncomingMessages(status.recentMessages);
+        }
+
         return status;
     } catch (error) {
         gatewayConnected = false;
@@ -74,6 +92,116 @@ async function fetchGatewayStatus() {
         return null;
     }
 }
+
+// ==================== AI 自动回复管线 ====================
+
+/**
+ * 处理入站消息：注入 ST 聊天 → 触发 AI 生成 → 回复转发
+ */
+async function processIncomingMessages(messages) {
+    // 只处理入站、未处理过的消息
+    const newMessages = messages.filter(msg => {
+        if (msg.direction !== 'inbound') return false;
+        const msgId = `${msg.platform}|${msg.chatId}|${msg.timestamp}|${msg.content}`;
+        if (processedMessageIds.has(msgId)) return false;
+        return true;
+    });
+
+    if (newMessages.length === 0) return;
+
+    const context = getContext();
+
+    // 如果没有选中角色，无法自动回复
+    if (context.characterId === undefined && context.groupId === undefined) {
+        console.warn('[Gateway] 未选中角色，跳过自动回复');
+        return;
+    }
+
+    // 如果正在处理中，跳过
+    if (isProcessing) {
+        console.warn('[Gateway] 正在处理上一条消息，跳过');
+        return;
+    }
+
+    for (const msg of newMessages) {
+        const msgId = `${msg.platform}|${msg.chatId}|${msg.timestamp}|${msg.content}`;
+        processedMessageIds.add(msgId);
+
+        try {
+            isProcessing = true;
+
+            // 记录回复目标
+            pendingReplyTarget = {
+                platform: msg.platform,
+                chatId: msg.chatId,
+            };
+
+            // 1. 注入用户消息到 ST 聊天
+            const platformIcon = getPlatformIcon(msg.platform);
+            const displayName = `[${platformIcon} ${msg.platform}] ${msg.content}`;
+            await sendMessageAsUser(displayName, '');
+
+            console.log(`[Gateway] 已注入消息: ${msg.platform}/${msg.chatId} -> ${msg.content}`);
+
+            // 2. 标记下次回复需要转发到网关
+            // 监听 GENERATION_ENDED 事件来捕获 AI 回复
+
+            // 3. 触发 AI 生成
+            await context.generate();
+
+        } catch (error) {
+            console.error(`[Gateway] 处理消息失败: ${error.message}`);
+            isProcessing = false;
+            pendingReplyTarget = null;
+        }
+    }
+}
+
+/**
+ * 监听 AI 生成结束，将回复转发回网关
+ */
+function setupGenerationListener() {
+    eventSource.on(event_types.GENERATION_ENDED, async (chatId) => {
+        // 没有待回复的目标则跳过
+        if (!pendingReplyTarget) return;
+
+        const target = { ...pendingReplyTarget };
+        const context = getContext();
+
+        try {
+            // 获取 AI 的最后一条消息
+            const lastMessage = context.chat[context.chat.length - 1];
+            if (!lastMessage || lastMessage.is_user) {
+                console.warn('[Gateway] 未找到 AI 回复消息');
+                return;
+            }
+
+            const replyContent = lastMessage.mes;
+
+            // 发送回复到网关
+            await apiRequest('/api/gateway/send', {
+                method: 'POST',
+                body: JSON.stringify({
+                    platform: target.platform,
+                    chatId: target.chatId,
+                    content: replyContent,
+                }),
+            });
+
+            console.log(`[Gateway] AI 回复已转发到 ${target.platform}/${target.chatId}`);
+            toastr.success(`AI 回复已发送到 ${target.platform}`);
+        } catch (error) {
+            console.error(`[Gateway] 转发回复失败: ${error.message}`);
+            toastr.error(`转发回复失败: ${error.message}`);
+        } finally {
+            // 重置状态
+            pendingReplyTarget = null;
+            isProcessing = false;
+        }
+    });
+}
+
+// ==================== UI 更新 ====================
 
 /**
  * 更新连接状态 UI
@@ -335,6 +463,7 @@ function bindSettingsEvents() {
     $('#gateway_save_settings').on('click', async () => {
         const settings = getSettings();
         settings.serverUrl = $('#gateway_server_url').val().trim();
+        settings.autoReplyEnabled = $('#gateway_auto_reply_enabled_ext').is(':checked');
 
         // 同步到后端配置
         try {
@@ -360,7 +489,7 @@ function bindSettingsEvents() {
                         },
                     },
                     autoReply: {
-                        enabled: $('#gateway_auto_reply_enabled').is(':checked'),
+                        enabled: settings.autoReplyEnabled,
                         responseDelay: parseInt($('#gateway_response_delay').val()) || 500,
                     },
                 }),
@@ -415,7 +544,7 @@ function loadConfigToUI(config) {
 
     // 自动回复
     if (config.autoReply) {
-        $('#gateway_auto_reply_enabled').prop('checked', config.autoReply.enabled);
+        $('#gateway_auto_reply_enabled_ext').prop('checked', getSettings().autoReplyEnabled);
         $('#gateway_response_delay').val(config.autoReply.responseDelay);
     }
 }
@@ -515,12 +644,14 @@ jQuery(async () => {
     // 注册斜杠命令
     registerSlashCommands();
 
-    // 自动连接（如果启用）
-    const settings = getSettings();
-    if (settings.autoConnect) {
+    // 设置 AI 生成监听器（捕获 AI 回复并转发）
+    setupGenerationListener();
+
+    // 自动连接（默认启用）
+    if (getSettings().autoConnect) {
         await fetchGatewayStatus();
         startPolling();
     }
 
-    console.log('[Gateway] 扩展加载完成');
+    console.log('[Gateway] 扩展加载完成，AI 自动回复管线已就绪');
 });
