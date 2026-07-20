@@ -701,3 +701,147 @@
     opacity: 1;
     color: var(--SmartThemeQuoteColor, #7c9);
 }
+
+/* ==================== 正则过滤器设置 ==================== */
+
+.gateway-regex-options {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 12px;
+    padding: 8px;
+    background: rgba(255, 255, 255, 0.02);
+    border-radius: 6px;
+}
+
+.gateway-regex-group {
+    margin-bottom: 12px;
+}
+
+.gateway-regex-group-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+    font-size: 13px;
+    font-weight: bold;
+}
+
+.gateway-regex-group-header .gateway-hint {
+    font-weight: normal;
+    font-size: 11px;
+}
+
+.gateway-regex-list {
+    margin-bottom: 8px;
+}
+
+.gateway-regex-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 8px;
+    border: 1px solid var(--SmartThemeBorderColor, #333);
+    border-radius: 5px;
+    margin-bottom: 4px;
+    background: rgba(255, 255, 255, 0.02);
+    font-size: 12px;
+}
+
+.gateway-regex-item-main {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.gateway-regex-item-name {
+    font-weight: bold;
+    color: var(--SmartThemeBodyColor, #fff);
+    white-space: nowrap;
+}
+
+.gateway-regex-item-pattern {
+    font-size: 11px;
+    color: var(--SmartThemeQuoteColor, #7c9);
+    background: rgba(255, 255, 255, 0.05);
+    padding: 1px 5px;
+    border-radius: 3px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 200px;
+}
+
+.gateway-regex-item-group {
+    font-size: 10px;
+    color: #888;
+    white-space: nowrap;
+}
+
+.gateway-regex-item-actions {
+    display: flex;
+    gap: 3px;
+    flex-shrink: 0;
+}
+
+.gateway-regex-item-actions .menu_button {
+    padding: 2px 5px;
+    font-size: 11px;
+    min-width: auto;
+}
+
+.gateway-regex-add-form {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 8px;
+    border: 1px dashed var(--SmartThemeBorderColor, #444);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.01);
+}
+
+.gateway-regex-add-form input {
+    font-size: 12px;
+}
+
+/* 正则测试 */
+.gateway-regex-test {
+    margin-bottom: 12px;
+}
+
+.gateway-regex-test textarea {
+    width: 100%;
+    resize: vertical;
+    font-size: 12px;
+    font-family: monospace;
+    margin-bottom: 6px;
+}
+
+.gateway-regex-test-result {
+    margin-top: 8px;
+    padding: 8px;
+    border-radius: 6px;
+    font-size: 12px;
+    max-height: 150px;
+    overflow-y: auto;
+}
+
+.regex-match-success {
+    color: #4caf50;
+}
+
+.regex-match-success .regex-match-group {
+    margin-top: 4px;
+    padding: 3px 6px;
+    background: rgba(76, 175, 80, 0.1);
+    border-radius: 3px;
+    color: var(--SmartThemeBodyColor, #ccc);
+    word-break: break-all;
+}
+
+.regex-match-fail {
+    color: #f44336;
+}

@@ -164,5 +164,82 @@
                 <div class="gateway-empty-hint">暂无消息</div>
             </div>
         </div>
+
+        <!-- 正则过滤器设置 -->
+        <div class="gateway-section" id="gateway_regex_section">
+            <div class="gateway-section-title">
+                <i class="fa-solid fa-filter"></i> 正则过滤器
+                <button id="gateway_regex_refresh" class="menu_button gateway-refresh-btn" title="刷新">
+                    <i class="fa-solid fa-rotate"></i>
+                </button>
+            </div>
+
+            <!-- 全局选项 -->
+            <div class="gateway-regex-options">
+                <label class="checkbox-label">
+                    <input type="checkbox" id="gateway_regex_fallback" checked> 未匹配时发送原文 (Fallback)
+                </label>
+                <label class="checkbox-label">
+                    <input type="checkbox" id="gateway_regex_trim" checked> 去除首尾空白
+                </label>
+            </div>
+
+            <!-- 提取规则 -->
+            <div class="gateway-regex-group">
+                <div class="gateway-regex-group-header">
+                    <span>📌 提取规则</span>
+                    <span class="gateway-hint">按顺序匹配，命中第一个即停止</span>
+                </div>
+                <div id="gateway_regex_extract_list" class="gateway-regex-list"></div>
+                <div class="gateway-regex-add-form">
+                    <input type="text" id="gateway_regex_extract_name" class="text_pole" placeholder="名称 (如: maintext)">
+                    <input type="text" id="gateway_regex_extract_pattern" class="text_pole" placeholder="正则 (如: <maintext>([\s\S]*?)</maintext>)">
+                    <div class="gateway-field-row">
+                        <input type="number" id="gateway_regex_extract_group" class="text_pole" value="1" min="0" max="20" title="提取组号" style="width:60px;">
+                        <input type="text" id="gateway_regex_extract_desc" class="text_pole" placeholder="描述 (可选)">
+                        <button id="gateway_regex_extract_add" class="menu_button" title="添加提取规则">
+                            <i class="fa-solid fa-plus"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 移除规则 -->
+            <div class="gateway-regex-group">
+                <div class="gateway-regex-group-header">
+                    <span>🗑️ 移除规则</span>
+                    <span class="gateway-hint">提取后执行，移除匹配内容</span>
+                </div>
+                <div id="gateway_regex_remove_list" class="gateway-regex-list"></div>
+                <div class="gateway-regex-add-form">
+                    <input type="text" id="gateway_regex_remove_name" class="text_pole" placeholder="名称 (如: think)">
+                    <input type="text" id="gateway_regex_remove_pattern" class="text_pole" placeholder="正则 (如: <think>[\s\S]*?</think>)">
+                    <div class="gateway-field-row">
+                        <input type="text" id="gateway_regex_remove_replacement" class="text_pole" placeholder="替换为 (默认空)" style="width:120px;">
+                        <input type="text" id="gateway_regex_remove_desc" class="text_pole" placeholder="描述 (可选)">
+                        <button id="gateway_regex_remove_add" class="menu_button" title="添加移除规则">
+                            <i class="fa-solid fa-plus"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 正则测试 -->
+            <div class="gateway-regex-test">
+                <div class="gateway-regex-group-header">
+                    <span>🧪 正则测试</span>
+                </div>
+                <textarea id="gateway_regex_test_input" class="text_pole" rows="3" placeholder="粘贴测试文本..."></textarea>
+                <div class="gateway-field-row">
+                    <input type="text" id="gateway_regex_test_pattern" class="text_pole" placeholder="输入正则表达式...">
+                    <button id="gateway_regex_test_btn" class="menu_button">测试</button>
+                </div>
+                <div id="gateway_regex_test_result" class="gateway-regex-test-result" style="display:none;"></div>
+            </div>
+
+            <button id="gateway_regex_save" class="menu_button gateway-save-btn">
+                <i class="fa-solid fa-floppy-disk"></i> 保存正则配置
+            </button>
+        </div>
     </div>
 </div>

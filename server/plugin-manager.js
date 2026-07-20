@@ -329,6 +329,27 @@ export class PluginManager {
             res.status(result.success ? 200 : 500).json(result);
         });
 
+        // 获取插件配置
+        app.get('/api/plugins/:name/config', (req, res) => {
+            const config = this.loadPluginConfig(req.params.name);
+            res.json({ success: true, config });
+        });
+
+        // 更新插件配置
+        app.post('/api/plugins/:name/config', (req, res) => {
+            const name = req.params.name;
+            const loaded = this.loader.getAllPlugins().get(name);
+            if (!loaded) {
+                return res.status(404).json({ success: false, error: '插件不存在' });
+            }
+            this.savePluginConfig(name, req.body);
+            // 同步到插件实例
+            if (loaded.instance) {
+                loaded.instance._pluginConfig = req.body;
+            }
+            res.json({ success: true, message: `插件 ${name} 配置已更新` });
+        });
+
         // 卸载插件
         app.delete('/api/plugins/:name', async (req, res) => {
             const result = await this.uninstallPlugin(req.params.name);

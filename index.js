@@ -708,6 +708,7 @@ async function initGatewayPanel() {
 
     // 4. 绑定面板事件
     bindPanelEvents();
+    bindRegexEvents();
 }
 
 /**
@@ -756,6 +757,7 @@ async function refreshPanelData() {
     await fetchGatewayStatus();
     await loadPluginList();
     await loadPanelConfig();
+    await loadRegexConfig();
 }
 
 /**
@@ -981,4 +983,198 @@ async function searchPlugins() {
     } catch (error) {
         resultsEl.html(`<div class="gateway-empty-hint">搜索失败: ${error.message}</div>`);
     }
+}
+
+// ==================== 正则过滤器设置 ====================
+
+let regexConfig = { extractPatterns: [], removePatterns: [], fallbackToOriginal: true, trimWhitespace: true };
+
+/**
+ * 加载正则过滤器配置
+ */
+async function loadRegexConfig() {
+    try {
+        const data = await apiRequest('/api/plugins/regex-filter/config');
+        regexConfig = data.config || {};
+        if (!regexConfig.extractPatterns) regexConfig.extractPatterns = [];
+        if (!regexConfig.removePatterns) regexConfig.removePatterns = [];
+        renderRegexConfig();
+    } catch (_) {
+        // 插件未安装时隐藏区块
+        $('#gateway_regex_section').hide();
+    }
+}
+
+/**
+ * 渲染正则配置到 UI
+ */
+function renderRegexConfig() {
+    // 全局选项
+    $('#gateway_regex_fallback').prop('checked', regexConfig.fallbackToOriginal !== false);
+    $('#gateway_regex_trim').prop('checked', regexConfig.trimWhitespace !== false);
+
+    // 提取规则列表
+    const extractHtml = regexConfig.extractPatterns.map((r, i) => `
+        <div class="gateway-regex-item" data-idx="${i}" data-type="extract">
+            <div class="gateway-regex-item-main">
+                <span class="gateway-regex-item-status ${r.enabled ? 'on' : 'off'}">${r.enabled ? '✅' : '⏸️'}</span>
+                <span class="gateway-regex-item-name">${escapeHtml(r.name)}</span>
+                <code class="gateway-regex-item-pattern">${escapeHtml(r.pattern)}</code>
+                <span class="gateway-regex-item-group">组:${r.group ?? 1}</span>
+            </div>
+            <div class="gateway-regex-item-actions">
+                <button class="menu_button regex-rule-toggle" data-type="extract" data-idx="${i}" title="启用/禁用">${r.enabled ? '⏸️' : '▶️'}</button>
+                <button class="menu_button regex-rule-delete" data-type="extract" data-idx="${i}" title="删除"><i class="fa-solid fa-trash"></i></button>
+            </div>
+        </div>
+    `).join('') || '<div class="gateway-empty-hint">无提取规则</div>';
+    $('#gateway_regex_extract_list').html(extractHtml);
+
+    // 移除规则列表
+    const removeHtml = regexConfig.removePatterns.map((r, i) => `
+        <div class="gateway-regex-item" data-idx="${i}" data-type="remove">
+            <div class="gateway-regex-item-main">
+                <span class="gateway-regex-item-status ${r.enabled ? 'on' : 'off'}">${r.enabled ? '✅' : '⏸️'}</span>
+                <span class="gateway-regex-item-name">${escapeHtml(r.name)}</span>
+                <code class="gateway-regex-item-pattern">${escapeHtml(r.pattern)}</code>
+                <span class="gateway-regex-item-group">→"${r.replacement ?? ''}"</span>
+            </div>
+            <div class="gateway-regex-item-actions">
+                <button class="menu_button regex-rule-toggle" data-type="remove" data-idx="${i}" title="启用/禁用">${r.enabled ? '⏸️' : '▶️'}</button>
+                <button class="menu_button regex-rule-delete" data-type="remove" data-idx="${i}" title="删除"><i class="fa-solid fa-trash"></i></button>
+            </div>
+        </div>
+    `).join('') || '<div class="gateway-empty-hint">无移除规则</div>';
+    $('#gateway_regex_remove_list').html(removeHtml);
+
+    // 绑定规则操作按钮
+    bindRegexRuleButtons();
+}
+
+/**
+ * 绑定规则操作按钮
+ */
+function bindRegexRuleButtons() {
+    // 启用/禁用
+    $('.regex-rule-toggle').off('click').on('click', function () {
+        const type = $(this).data('type');
+        const idx = $(this).data('idx');
+        const key = type === 'extract' ? 'extractPatterns' : 'removePatterns';
+        if (regexConfig[key][idx]) {
+            regexConfig[key][idx].enabled = !regexConfig[key][idx].enabled;
+            renderRegexConfig();
+        }
+    });
+
+    // 删除
+    $('.regex-rule-delete').off('click').on('click', function () {
+        const type = $(this).data('type');
+        const idx = $(this).data('idx');
+        const key = type === 'extract' ? 'extractPatterns' : 'removePatterns';
+        regexConfig[key].splice(idx, 1);
+        renderRegexConfig();
+    });
+}
+
+/**
+ * 绑定正则设置面板事件
+ */
+function bindRegexEvents() {
+    // 添加提取规则
+    $('#gateway_regex_extract_add').on('click', () => {
+        const name = $('#gateway_regex_extract_name').val().trim();
+        const pattern = $('#gateway_regex_extract_pattern').val().trim();
+        const group = parseInt($('#gateway_regex_extract_group').val()) || 1;
+        const desc = $('#gateway_regex_extract_desc').val().trim();
+
+        if (!name || !pattern) {
+            toastr.warning('请填写名称和正则表达式');
+            return;
+        }
+        try { new RegExp(pattern); } catch (e) {
+            toastr.error(`无效正则: ${e.message}`);
+            return;
+        }
+
+        regexConfig.extractPatterns.push({ name, enabled: true, pattern, group, description: desc });
+        $('#gateway_regex_extract_name').val('');
+        $('#gateway_regex_extract_pattern').val('');
+        $('#gateway_regex_extract_desc').val('');
+        renderRegexConfig();
+    });
+
+    // 添加移除规则
+    $('#gateway_regex_remove_add').on('click', () => {
+        const name = $('#gateway_regex_remove_name').val().trim();
+        const pattern = $('#gateway_regex_remove_pattern').val().trim();
+        const replacement = $('#gateway_regex_remove_replacement').val();
+        const desc = $('#gateway_regex_remove_desc').val().trim();
+
+        if (!name || !pattern) {
+            toastr.warning('请填写名称和正则表达式');
+            return;
+        }
+        try { new RegExp(pattern); } catch (e) {
+            toastr.error(`无效正则: ${e.message}`);
+            return;
+        }
+
+        regexConfig.removePatterns.push({ name, enabled: true, pattern, replacement, description: desc });
+        $('#gateway_regex_remove_name').val('');
+        $('#gateway_regex_remove_pattern').val('');
+        $('#gateway_regex_remove_replacement').val('');
+        $('#gateway_regex_remove_desc').val('');
+        renderRegexConfig();
+    });
+
+    // 保存配置
+    $('#gateway_regex_save').on('click', async () => {
+        regexConfig.fallbackToOriginal = $('#gateway_regex_fallback').is(':checked');
+        regexConfig.trimWhitespace = $('#gateway_regex_trim').is(':checked');
+
+        try {
+            await apiRequest('/api/plugins/regex-filter/config', {
+                method: 'POST',
+                body: JSON.stringify(regexConfig),
+            });
+            toastr.success('正则过滤配置已保存');
+        } catch (error) {
+            toastr.error(`保存失败: ${error.message}`);
+        }
+    });
+
+    // 刷新
+    $('#gateway_regex_refresh').on('click', loadRegexConfig);
+
+    // 正则测试
+    $('#gateway_regex_test_btn').on('click', () => {
+        const text = $('#gateway_regex_test_input').val();
+        const pattern = $('#gateway_regex_test_pattern').val().trim();
+        const resultEl = $('#gateway_regex_test_result');
+
+        if (!text || !pattern) {
+            toastr.warning('请输入测试文本和正则表达式');
+            return;
+        }
+
+        try {
+            const regex = new RegExp(pattern, 's');
+            const match = text.match(regex);
+            resultEl.show();
+
+            if (match) {
+                const groups = match.slice(1).map((g, i) => `<div class="regex-match-group"><b>组 ${i + 1}:</b> ${escapeHtml((g || '').substring(0, 200))}</div>`).join('');
+                resultEl.html(`
+                    <div class="regex-match-success">
+                        <div>✅ 匹配成功！完整匹配: ${escapeHtml(match[0].substring(0, 200))}${match[0].length > 200 ? '...' : ''}</div>
+                        ${groups}
+                    </div>
+                `);
+            } else {
+                resultEl.html('<div class="regex-match-fail">❌ 未匹配</div>');
+            }
+        } catch (error) {
+            resultEl.show().html(`<div class="regex-match-fail">❌ 正则错误: ${escapeHtml(error.message)}</div>`);
+        }
+    });
 }
