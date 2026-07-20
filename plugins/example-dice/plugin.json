@@ -1,0 +1,15 @@
+{
+    "name": "example-dice",
+    "displayName": "掷骰子",
+    "version": "1.0.0",
+    "author": "gateway-team",
+    "description": "TRPG 掷骰子插件，支持多种骰面和检定",
+    "main": "index.js",
+    "priority": 100,
+    "enabled": true,
+    "dependencies": [],
+    "permissions": [],
+    "config": {
+        "defaultDice": { "type": "string", "default": "100", "description": "默认骰面数" }
+    }
+}

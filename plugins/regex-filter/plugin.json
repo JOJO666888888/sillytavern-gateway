@@ -1,0 +1,47 @@
+{
+    "name": "regex-filter",
+    "displayName": "正则过滤器",
+    "version": "1.0.0",
+    "author": "gateway-team",
+    "description": "使用正则表达式过滤出站消息内容，提取正文、移除无关标签和元数据",
+    "main": "index.js",
+    "priority": 10,
+    "enabled": true,
+    "dependencies": [],
+    "permissions": ["config"],
+    "config": {
+        "extractPatterns": {
+            "type": "array",
+            "default": [
+                {
+                    "name": "maintext",
+                    "enabled": true,
+                    "pattern": "<maintext>([\\s\\S]*?)</maintext>",
+                    "group": 1,
+                    "description": "提取 maintext 标签内的正文"
+                }
+            ],
+            "description": "提取规则列表（按顺序匹配，命中第一个即停止）"
+        },
+        "removePatterns": {
+            "type": "array",
+            "default": [],
+            "description": "移除规则列表（在提取之后执行，移除匹配的内容）"
+        },
+        "trimWhitespace": {
+            "type": "boolean",
+            "default": true,
+            "description": "是否去除首尾空白"
+        },
+        "fallbackToOriginal": {
+            "type": "boolean",
+            "default": true,
+            "description": "所有提取规则都未命中时，是否使用原始消息"
+        },
+        "applyToPlatforms": {
+            "type": "array",
+            "default": [],
+            "description": "仅对指定平台生效（空数组=所有平台）"
+        }
+    }
+}

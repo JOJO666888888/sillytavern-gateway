@@ -20,6 +20,7 @@ export class GatewayCore extends EventEmitter {
             maxLength: configManager.get('messageQueue.maxLength'),
         });
         this.messageHandlers = [];        // 消息处理函数列表
+        this.outboundFilters = [];        // 出站消息过滤器列表
         this.messageLog = [];             // 最近消息日志
         this.maxLogSize = 200;
         this.running = false;
@@ -171,11 +172,69 @@ export class GatewayCore extends EventEmitter {
     }
 
     /**
+     * 注册出站消息过滤器
+     * @param {Function} filter - (message: OutboundMessage) => OutboundMessage|null
+     *   返回修改后的消息，返回 null 表示丢弃该消息
+     * @param {object} options - { name?: string, priority?: number }
+     * @returns {Function} 取消注册的函数
+     */
+    addOutboundFilter(filter, options = {}) {
+        const entry = {
+            filter,
+            name: options.name || 'anonymous',
+            priority: options.priority ?? 100,
+        };
+        this.outboundFilters.push(entry);
+        this.outboundFilters.sort((a, b) => a.priority - b.priority);
+        logger.info(`出站过滤器已注册: ${entry.name} (priority: ${entry.priority})`);
+        return () => {
+            const idx = this.outboundFilters.indexOf(entry);
+            if (idx > -1) this.outboundFilters.splice(idx, 1);
+        };
+    }
+
+    /**
+     * 移除指定名称的出站过滤器
+     * @param {string} name
+     */
+    removeOutboundFilter(name) {
+        this.outboundFilters = this.outboundFilters.filter(f => f.name !== name);
+    }
+
+    /**
+     * 应用出站过滤器链
+     * @param {OutboundMessage} message
+     * @returns {OutboundMessage|null}
+     */
+    applyOutboundFilters(message) {
+        let msg = message;
+        for (const entry of this.outboundFilters) {
+            try {
+                msg = entry.filter(msg);
+                if (msg === null) {
+                    logger.debug(`消息被过滤器 ${entry.name} 丢弃`);
+                    return null;
+                }
+            } catch (error) {
+                logger.error(`出站过滤器 ${entry.name} 执行失败: ${error.message}`);
+            }
+        }
+        return msg;
+    }
+
+    /**
      * 分发出站消息到对应适配器
      * @param {OutboundMessage} message
      * @returns {Promise<boolean>}
      */
     async dispatchOutbound(message) {
+        // 应用出站过滤器
+        const filtered = this.applyOutboundFilters(message);
+        if (!filtered) return false;
+        if (filtered.content !== message.content) {
+            message = filtered;
+        }
+
         const adapter = this.adapters.get(message.platform);
         if (!adapter) {
             logger.error(`未找到平台适配器: ${message.platform}`);

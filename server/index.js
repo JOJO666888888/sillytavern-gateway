@@ -10,12 +10,16 @@ import { OneBotAdapter } from './adapters/onebot-adapter.js';
 import { TelegramAdapter } from './adapters/telegram-adapter.js';
 import { DiscordAdapter } from './adapters/discord-adapter.js';
 import { OutboundMessage } from './adapters/base-adapter.js';
+import { PluginManager } from './plugin-manager.js';
 
 const logger = createLogger('server');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
 app.use(express.json());
+
+// 插件管理器
+let pluginManager = null;
 
 // CORS 支持（允许 SillyTavern 前端访问）
 app.use((req, res, next) => {
@@ -52,7 +56,7 @@ function initAdapters() {
 }
 
 /**
- * 设置消息处理（自动回复逻辑）
+ * 设置消息处理（通过插件系统分发）
  */
 function setupMessageHandling() {
     gatewayCore.onMessage(async (message) => {
@@ -65,95 +69,20 @@ function setupMessageHandling() {
             name: message.senderName,
         });
 
-        // 自动回复逻辑（如果启用）
-        if (configManager.get('autoReply.enabled')) {
-            await handleAutoReply(message);
+        // 优先交给插件系统处理（命令路由 + 事件管线）
+        if (pluginManager) {
+            const handled = await pluginManager.handleMessage(message);
+            if (handled) {
+                return; // 插件已处理，不再走默认逻辑
+            }
         }
 
-        // 触发外部处理（SillyTavern 扩展可以通过轮询或 WebSocket 获取）
+        // 插件未处理的消息 → 触发外部处理（SillyTavern 扩展轮询）
         gatewayCore.emit('externalMessage', message);
     });
 }
 
-/**
- * 自动回复处理
- * 这里提供一个简单的回声回复作为示例
- * 实际使用时，SillyTavern 扩展会接管这个逻辑
- */
-async function handleAutoReply(message) {
-    // 检查是否是命令
-    if (message.content.startsWith('/')) {
-        await handleCommand(message);
-        return;
-    }
-
-    // 默认：不自动回复，等待 SillyTavern 扩展处理
-    // 扩展会轮询消息、注入聊天、触发 AI 生成、将回复发回网关
-    // 服务器端只处理 / 开头的命令
-    /*
-    const delay = configManager.get('autoReply.responseDelay') || 500;
-    await new Promise(resolve => setTimeout(resolve, delay));
-
-    const reply = new OutboundMessage({
-        platform: message.platform,
-        chatId: message.chatId,
-        chatType: message.chatType,
-        content: `你说了: ${message.content}`,
-        replyToId: message.messageId,
-    });
-
-    gatewayCore.sendMessage(reply);
-    */
-}
-
-/**
- * 处理命令
- */
-async function handleCommand(message) {
-    const parts = message.content.split(' ');
-    const command = parts[0].toLowerCase();
-
-    let response = '';
-
-    switch (command) {
-        case '/status':
-        case '/状态':
-            const status = gatewayCore.getStatus();
-            response = Object.entries(status.adapters)
-                .map(([name, s]) => `${name}: ${s.state}`)
-                .join('\n');
-            break;
-
-        case '/help':
-        case '/帮助':
-            response = [
-                '可用命令:',
-                '/status - 查看网关状态',
-                '/clear - 清空当前会话历史',
-                '/help - 显示帮助',
-            ].join('\n');
-            break;
-
-        case '/clear':
-        case '/清空':
-            sessionManager.clearHistory(message.platform, message.chatId);
-            response = '会话历史已清空';
-            break;
-
-        default:
-            response = `未知命令: ${command}，使用 /help 查看可用命令`;
-    }
-
-    if (response) {
-        const reply = new OutboundMessage({
-            platform: message.platform,
-            chatId: message.chatId,
-            chatType: message.chatType,
-            content: response,
-        });
-        gatewayCore.sendMessage(reply);
-    }
-}
+// 命令处理已由插件系统的 CommandRouter 接管（内置 /help, /status, /clear）
 
 // ==================== API 路由 ====================
 
@@ -288,6 +217,15 @@ async function startServer() {
     // 初始化适配器
     initAdapters();
 
+    // 初始化插件系统
+    pluginManager = new PluginManager({
+        gateway: gatewayCore,
+        sessionManager,
+        configManager,
+    });
+    await pluginManager.init();
+    pluginManager.registerRoutes(app);
+
     // 设置消息处理
     setupMessageHandling();
 
@@ -298,12 +236,14 @@ async function startServer() {
     server.listen(PORT, HOST, () => {
         logger.info(`HTTP API 服务已启动: http://${HOST}:${PORT}`);
         logger.info(`API 文档: http://${HOST}:${PORT}/api/gateway/health`);
+        logger.info(`插件管理: http://${HOST}:${PORT}/api/plugins`);
     });
 }
 
 // 优雅关闭
 process.on('SIGINT', async () => {
     logger.info('正在关闭...');
+    if (pluginManager) await pluginManager.shutdown();
     await gatewayCore.stop();
     sessionManager.stop();
     server.close();
@@ -312,6 +252,7 @@ process.on('SIGINT', async () => {
 
 process.on('SIGTERM', async () => {
     logger.info('收到终止信号，正在关闭...');
+    if (pluginManager) await pluginManager.shutdown();
     await gatewayCore.stop();
     sessionManager.stop();
     server.close();

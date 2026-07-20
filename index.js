@@ -620,7 +620,10 @@ function registerSlashCommands() {
 jQuery(async () => {
     console.log('[Gateway] 扩展加载中...');
 
-    // 添加扩展按钮到菜单
+    // === 注入顶级设置面板（与预设、API、世界书同等级） ===
+    await initGatewayPanel();
+
+    // 添加扩展按钮到菜单（保留原有入口）
     const buttonHtml = `
         <div id="gateway_extension" class="list-group-item flex-container flexGap5">
             <div class="fa-solid fa-tower-broadcast extensionsMenuExtensionButton" /></div>
@@ -634,7 +637,7 @@ jQuery(async () => {
         await showGatewayWindow();
     });
 
-    // 加载设置面板
+    // 加载设置面板（扩展页内的简版设置）
     const settingsHtml = await renderExtensionTemplateAsync('gateway', 'settings');
     $('#extensions_settings2').append(settingsHtml);
 
@@ -655,3 +658,327 @@ jQuery(async () => {
 
     console.log('[Gateway] 扩展加载完成，AI 自动回复管线已就绪');
 });
+
+// ==================== 顶级面板 ====================
+
+/**
+ * 初始化网关顶级设置面板
+ * 注入到 ST 右侧导航栏，与预设/API/世界书同等级
+ */
+async function initGatewayPanel() {
+    // 1. 注入导航按钮到右侧 drawer 栏
+    const drawerButton = `
+        <div id="gateway_drawer_button" class="drawer">
+            <div class="drawer-toggle drawer-header">
+                <div class="drawer-icon fa-solid fa-tower-broadcast closedIcon" title="多平台网关"></div>
+            </div>
+        </div>
+    `;
+    // 插入到右侧导航（在 extensions drawer 之前或之后）
+    const target = $('#extensions_drawer').parent();
+    if (target.length) {
+        $('#extensions_drawer').after(drawerButton);
+    } else {
+        // fallback: 追加到 right-nav-panel
+        $('#right-nav-panel').append(drawerButton);
+    }
+
+    // 2. 加载面板 HTML
+    const panelHtml = await renderExtensionTemplateAsync('gateway', 'panel');
+    // 将面板追加到主内容区域
+    $('#sheld').append(panelHtml);
+
+    // 3. 绑定 drawer 开关逻辑
+    $('#gateway_drawer_button .drawer-icon').on('click', function () {
+        const panel = $('#gateway_panel');
+        const isVisible = panel.is(':visible');
+
+        // 关闭其他 drawer
+        $('.drawer-content').not('#gateway_panel').slideUp(200);
+        $('#gateway_drawer_button .drawer-icon').toggleClass('openIcon closedIcon', !isVisible);
+
+        if (isVisible) {
+            panel.slideUp(200);
+        } else {
+            panel.slideDown(200);
+            // 打开时刷新数据
+            refreshPanelData();
+        }
+    });
+
+    // 4. 绑定面板事件
+    bindPanelEvents();
+}
+
+/**
+ * 绑定顶级面板事件
+ */
+function bindPanelEvents() {
+    // 连接按钮
+    $('#gateway_panel_connect').on('click', async () => {
+        const url = $('#gateway_panel_url').val().trim();
+        if (url) getSettings().serverUrl = url;
+        await fetchGatewayStatus();
+        startPolling();
+        refreshPanelData();
+    });
+
+    // 适配器配置折叠
+    $('.gateway-adapter-header').on('click', function (e) {
+        if ($(e.target).is('input')) return; // 点击 checkbox 不折叠
+        const targetId = $(this).data('toggle');
+        $(`#${targetId}`).slideToggle(150);
+    });
+
+    // 保存配置
+    $('#gateway_panel_save_config').on('click', savePanelConfig);
+
+    // 从 GitHub 安装插件
+    $('#gateway_plugin_install_btn').on('click', installPluginFromGitHub);
+
+    // 搜索插件
+    $('#gateway_plugin_search_btn').on('click', searchPlugins);
+    $('#gateway_plugin_search_input').on('keypress', function (e) {
+        if (e.key === 'Enter') searchPlugins();
+    });
+
+    // 刷新插件列表
+    $('#gateway_plugin_refresh').on('click', loadPluginList);
+
+    // 刷新消息日志
+    $('#gateway_panel_refresh_log').on('click', () => fetchGatewayStatus());
+}
+
+/**
+ * 刷新面板数据
+ */
+async function refreshPanelData() {
+    await fetchGatewayStatus();
+    await loadPluginList();
+    await loadPanelConfig();
+}
+
+/**
+ * 保存面板配置到后端
+ */
+async function savePanelConfig() {
+    try {
+        await apiRequest('/api/gateway/config', {
+            method: 'POST',
+            body: JSON.stringify({
+                adapters: {
+                    qq: {
+                        enabled: $('#gateway_panel_qq_enabled').is(':checked'),
+                        mode: $('#gateway_panel_qq_mode').val(),
+                        wsUrl: $('#gateway_panel_qq_ws').val().trim(),
+                        accessToken: $('#gateway_panel_qq_token').val(),
+                    },
+                    telegram: {
+                        enabled: $('#gateway_panel_tg_enabled').is(':checked'),
+                        botToken: $('#gateway_panel_tg_token').val(),
+                        requireMention: $('#gateway_panel_tg_mention').is(':checked'),
+                    },
+                    discord: {
+                        enabled: $('#gateway_panel_dc_enabled').is(':checked'),
+                        botToken: $('#gateway_panel_dc_token').val(),
+                        requireMention: $('#gateway_panel_dc_mention').is(':checked'),
+                    },
+                },
+            }),
+        });
+        toastr.success('网关配置已保存');
+    } catch (error) {
+        toastr.error(`保存失败: ${error.message}`);
+    }
+}
+
+/**
+ * 加载后端配置到面板
+ */
+async function loadPanelConfig() {
+    try {
+        const config = await apiRequest('/api/gateway/config');
+        const adapters = config.adapters || {};
+
+        if (adapters.qq) {
+            $('#gateway_panel_qq_enabled').prop('checked', adapters.qq.enabled);
+            $('#gateway_panel_qq_mode').val(adapters.qq.mode);
+            $('#gateway_panel_qq_ws').val(adapters.qq.wsUrl);
+            $('#gateway_panel_qq_token').val(adapters.qq.accessToken);
+        }
+        if (adapters.telegram) {
+            $('#gateway_panel_tg_enabled').prop('checked', adapters.telegram.enabled);
+            $('#gateway_panel_tg_token').val(adapters.telegram.botToken);
+            $('#gateway_panel_tg_mention').prop('checked', adapters.telegram.requireMention);
+        }
+        if (adapters.discord) {
+            $('#gateway_panel_dc_enabled').prop('checked', adapters.discord.enabled);
+            $('#gateway_panel_dc_token').val(adapters.discord.botToken);
+            $('#gateway_panel_dc_mention').prop('checked', adapters.discord.requireMention);
+        }
+    } catch (_) { /* 网关未连接时忽略 */ }
+}
+
+// ==================== 插件管理 UI ====================
+
+/**
+ * 加载已安装插件列表
+ */
+async function loadPluginList() {
+    const listEl = $('#gateway_plugin_list');
+    try {
+        const data = await apiRequest('/api/plugins');
+        const plugins = data.plugins || [];
+
+        if (plugins.length === 0) {
+            listEl.html('<div class="gateway-empty-hint">暂无已安装插件</div>');
+            return;
+        }
+
+        const html = plugins.map(p => `
+            <div class="gateway-plugin-item" data-name="${p.name}">
+                <div class="gateway-plugin-info">
+                    <span class="gateway-plugin-name">${escapeHtml(p.displayName)}</span>
+                    <span class="gateway-plugin-version">v${p.version}</span>
+                    <span class="gateway-plugin-desc">${escapeHtml(p.description || '')}</span>
+                </div>
+                <div class="gateway-plugin-actions">
+                    <span class="gateway-plugin-commands" title="命令: ${p.commands.join(', ')}">${p.commands.length} 命令</span>
+                    <button class="menu_button gateway-plugin-toggle ${p.enabled ? 'active' : ''}" data-name="${p.name}" data-enabled="${p.enabled}">
+                        ${p.enabled ? '✅' : '⏸️'}
+                    </button>
+                    <button class="menu_button gateway-plugin-reload" data-name="${p.name}" title="重载">
+                        <i class="fa-solid fa-rotate-right"></i>
+                    </button>
+                    <button class="menu_button gateway-plugin-uninstall" data-name="${p.name}" title="卸载">
+                        <i class="fa-solid fa-trash"></i>
+                    </button>
+                </div>
+            </div>
+        `).join('');
+
+        listEl.html(html);
+
+        // 绑定插件操作按钮
+        listEl.find('.gateway-plugin-toggle').off('click').on('click', async function () {
+            const name = $(this).data('name');
+            const enabled = $(this).data('enabled');
+            const action = enabled ? 'disable' : 'enable';
+            try {
+                await apiRequest(`/api/plugins/${name}/${action}`, { method: 'POST' });
+                toastr.success(`插件 ${name} 已${enabled ? '禁用' : '启用'}`);
+                loadPluginList();
+            } catch (e) {
+                toastr.error(e.message);
+            }
+        });
+
+        listEl.find('.gateway-plugin-reload').off('click').on('click', async function () {
+            const name = $(this).data('name');
+            try {
+                await apiRequest(`/api/plugins/${name}/reload`, { method: 'POST' });
+                toastr.success(`插件 ${name} 已重载`);
+                loadPluginList();
+            } catch (e) {
+                toastr.error(e.message);
+            }
+        });
+
+        listEl.find('.gateway-plugin-uninstall').off('click').on('click', async function () {
+            const name = $(this).data('name');
+            if (!confirm(`确定要卸载插件 ${name} 吗？`)) return;
+            try {
+                await apiRequest(`/api/plugins/${name}`, { method: 'DELETE' });
+                toastr.success(`插件 ${name} 已卸载`);
+                loadPluginList();
+            } catch (e) {
+                toastr.error(e.message);
+            }
+        });
+
+    } catch (error) {
+        listEl.html('<div class="gateway-empty-hint">无法连接网关</div>');
+    }
+}
+
+/**
+ * 从 GitHub 安装插件
+ */
+async function installPluginFromGitHub() {
+    const url = $('#gateway_plugin_github_url').val().trim();
+    if (!url) {
+        toastr.warning('请输入 GitHub 仓库地址');
+        return;
+    }
+
+    const btn = $('#gateway_plugin_install_btn');
+    btn.prop('disabled', true).html('<i class="fa-solid fa-spinner fa-spin"></i>');
+
+    try {
+        const result = await apiRequest('/api/plugins/install/github', {
+            method: 'POST',
+            body: JSON.stringify({ url }),
+        });
+
+        if (result.success) {
+            toastr.success(result.message);
+            $('#gateway_plugin_github_url').val('');
+            loadPluginList();
+        } else {
+            toastr.error(result.error || '安装失败');
+        }
+    } catch (error) {
+        toastr.error(`安装失败: ${error.message}`);
+    } finally {
+        btn.prop('disabled', false).html('<i class="fa-solid fa-download"></i>');
+    }
+}
+
+/**
+ * 搜索社区插件
+ */
+async function searchPlugins() {
+    const query = $('#gateway_plugin_search_input').val().trim();
+    if (!query) {
+        toastr.warning('请输入搜索关键词');
+        return;
+    }
+
+    const resultsEl = $('#gateway_plugin_search_results');
+    resultsEl.show().html('<div class="gateway-empty-hint">搜索中...</div>');
+
+    try {
+        const data = await apiRequest(`/api/plugins/marketplace/search?q=${encodeURIComponent(query)}`);
+        const plugins = data.plugins || [];
+
+        if (plugins.length === 0) {
+            resultsEl.html('<div class="gateway-empty-hint">未找到相关插件</div>');
+            return;
+        }
+
+        const html = plugins.map(p => `
+            <div class="gateway-search-item">
+                <div class="gateway-search-info">
+                    <span class="gateway-search-name">${escapeHtml(p.name)}</span>
+                    <span class="gateway-search-stars">⭐ ${p.stars}</span>
+                    <span class="gateway-search-desc">${escapeHtml(p.description || '')}</span>
+                </div>
+                <button class="menu_button gateway-search-install" data-url="${p.url}" title="安装">
+                    <i class="fa-solid fa-download"></i> 安装
+                </button>
+            </div>
+        `).join('');
+
+        resultsEl.html(html);
+
+        // 绑定安装按钮
+        resultsEl.find('.gateway-search-install').off('click').on('click', async function () {
+            const repoUrl = $(this).data('url');
+            $('#gateway_plugin_github_url').val(repoUrl);
+            await installPluginFromGitHub();
+        });
+
+    } catch (error) {
+        resultsEl.html(`<div class="gateway-empty-hint">搜索失败: ${error.message}</div>`);
+    }
+}

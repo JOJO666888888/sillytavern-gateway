@@ -1,0 +1,168 @@
+<!-- 网关顶级设置面板 - 注入到 ST 右侧导航 -->
+<div id="gateway_panel" class="drawer-content" style="display:none;">
+    <div class="gateway-panel-inner">
+        <!-- 面板头部 -->
+        <div class="gateway-panel-header">
+            <h3><i class="fa-solid fa-tower-broadcast"></i> 多平台网关</h3>
+            <span id="gateway_panel_status" class="gateway-status-badge disconnected">未连接</span>
+        </div>
+
+        <!-- 连接设置 -->
+        <div class="gateway-section">
+            <div class="gateway-section-title">
+                <i class="fa-solid fa-link"></i> 连接
+            </div>
+            <div class="gateway-field">
+                <label>网关地址</label>
+                <div class="gateway-field-row">
+                    <input type="text" id="gateway_panel_url" class="text_pole" value="http://127.0.0.1:3210" placeholder="http://127.0.0.1:3210">
+                    <button id="gateway_panel_connect" class="menu_button" title="连接"><i class="fa-solid fa-plug"></i></button>
+                </div>
+            </div>
+            <div class="gateway-adapters-status" id="gateway_panel_adapters">
+                <!-- 动态填充适配器状态 -->
+            </div>
+        </div>
+
+        <!-- 平台配置 -->
+        <div class="gateway-section">
+            <div class="gateway-section-title">
+                <i class="fa-solid fa-sliders"></i> 平台配置
+            </div>
+
+            <!-- QQ -->
+            <div class="gateway-adapter-config">
+                <div class="gateway-adapter-header" data-toggle="gateway_qq_config">
+                    <span>🐧 QQ (OneBot)</span>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="gateway_panel_qq_enabled">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+                <div id="gateway_qq_config" class="gateway-adapter-body" style="display:none;">
+                    <div class="gateway-field">
+                        <label>连接模式</label>
+                        <select id="gateway_panel_qq_mode" class="text_pole">
+                            <option value="forward">正向 WebSocket</option>
+                            <option value="reverse">反向 WebSocket</option>
+                        </select>
+                    </div>
+                    <div class="gateway-field">
+                        <label>WebSocket 地址</label>
+                        <input type="text" id="gateway_panel_qq_ws" class="text_pole" placeholder="ws://127.0.0.1:3001">
+                    </div>
+                    <div class="gateway-field">
+                        <label>Access Token</label>
+                        <input type="password" id="gateway_panel_qq_token" class="text_pole" placeholder="可选">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Telegram -->
+            <div class="gateway-adapter-config">
+                <div class="gateway-adapter-header" data-toggle="gateway_tg_config">
+                    <span>✈️ Telegram</span>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="gateway_panel_tg_enabled">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+                <div id="gateway_tg_config" class="gateway-adapter-body" style="display:none;">
+                    <div class="gateway-field">
+                        <label>Bot Token</label>
+                        <input type="password" id="gateway_panel_tg_token" class="text_pole" placeholder="123456:ABC-DEF...">
+                    </div>
+                    <div class="gateway-field">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="gateway_panel_tg_mention"> 群组需要 @机器人
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Discord -->
+            <div class="gateway-adapter-config">
+                <div class="gateway-adapter-header" data-toggle="gateway_dc_config">
+                    <span>🎮 Discord</span>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="gateway_panel_dc_enabled">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+                <div id="gateway_dc_config" class="gateway-adapter-body" style="display:none;">
+                    <div class="gateway-field">
+                        <label>Bot Token</label>
+                        <input type="password" id="gateway_panel_dc_token" class="text_pole" placeholder="Bot token...">
+                    </div>
+                    <div class="gateway-field">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="gateway_panel_dc_mention"> 群组需要 @机器人
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            <button id="gateway_panel_save_config" class="menu_button gateway-save-btn">
+                <i class="fa-solid fa-floppy-disk"></i> 保存配置
+            </button>
+        </div>
+
+        <!-- 插件管理 -->
+        <div class="gateway-section">
+            <div class="gateway-section-title">
+                <i class="fa-solid fa-puzzle-piece"></i> 插件管理
+            </div>
+
+            <!-- 从 GitHub 安装 -->
+            <div class="gateway-field">
+                <label>从 GitHub 安装插件</label>
+                <div class="gateway-field-row">
+                    <input type="text" id="gateway_plugin_github_url" class="text_pole" placeholder="https://github.com/user/repo 或 user/repo">
+                    <button id="gateway_plugin_install_btn" class="menu_button" title="安装">
+                        <i class="fa-solid fa-download"></i>
+                    </button>
+                </div>
+                <div class="gateway-hint">支持: 仓库地址、user/repo 简写、仓库子目录 URL</div>
+            </div>
+
+            <!-- 搜索插件 -->
+            <div class="gateway-field">
+                <label>搜索社区插件</label>
+                <div class="gateway-field-row">
+                    <input type="text" id="gateway_plugin_search_input" class="text_pole" placeholder="搜索关键词...">
+                    <button id="gateway_plugin_search_btn" class="menu_button" title="搜索">
+                        <i class="fa-solid fa-magnifying-glass"></i>
+                    </button>
+                </div>
+            </div>
+
+            <!-- 搜索结果 -->
+            <div id="gateway_plugin_search_results" class="gateway-plugin-search-results" style="display:none;">
+            </div>
+
+            <!-- 已安装插件列表 -->
+            <div class="gateway-field">
+                <label>已安装插件</label>
+                <button id="gateway_plugin_refresh" class="menu_button gateway-refresh-btn" title="刷新">
+                    <i class="fa-solid fa-rotate"></i>
+                </button>
+            </div>
+            <div id="gateway_plugin_list" class="gateway-plugin-list">
+                <div class="gateway-empty-hint">加载中...</div>
+            </div>
+        </div>
+
+        <!-- 消息日志 -->
+        <div class="gateway-section">
+            <div class="gateway-section-title">
+                <i class="fa-solid fa-clock-rotate-left"></i> 最近消息
+                <button id="gateway_panel_refresh_log" class="menu_button gateway-refresh-btn" title="刷新">
+                    <i class="fa-solid fa-rotate"></i>
+                </button>
+            </div>
+            <div id="gateway_panel_message_log" class="gateway-message-log">
+                <div class="gateway-empty-hint">暂无消息</div>
+            </div>
+        </div>
+    </div>
+</div>
