@@ -620,8 +620,12 @@ function registerSlashCommands() {
 jQuery(async () => {
     console.log('[Gateway] 扩展加载中...');
 
-    // === 注入顶级设置面板（与预设、API、世界书同等级） ===
-    await initGatewayPanel();
+    // === 注入顶级设置面板（捕获错误不影响基础功能） ===
+    try {
+        await initGatewayPanel();
+    } catch (error) {
+        console.error('[Gateway] 顶级面板初始化失败:', error);
+    }
 
     // 添加扩展按钮到菜单（保留原有入口）
     const buttonHtml = `
@@ -638,22 +642,40 @@ jQuery(async () => {
     });
 
     // 加载设置面板（扩展页内的简版设置）
-    const settingsHtml = await renderExtensionTemplateAsync('gateway', 'settings');
-    $('#extensions_settings2').append(settingsHtml);
+    try {
+        const settingsHtml = await renderExtensionTemplateAsync('gateway', 'settings');
+        $('#extensions_settings2').append(settingsHtml);
+    } catch (error) {
+        console.error('[Gateway] 设置面板加载失败:', error);
+    }
 
     // 绑定设置事件
-    bindSettingsEvents();
+    if ($('#gateway_connect_btn').length) {
+        bindSettingsEvents();
+    }
 
     // 注册斜杠命令
-    registerSlashCommands();
+    try {
+        registerSlashCommands();
+    } catch (error) {
+        console.error('[Gateway] 斜杠命令注册失败:', error);
+    }
 
     // 设置 AI 生成监听器（捕获 AI 回复并转发）
-    setupGenerationListener();
+    try {
+        setupGenerationListener();
+    } catch (error) {
+        console.error('[Gateway] 生成监听器设置失败:', error);
+    }
 
     // 自动连接（默认启用）
     if (getSettings().autoConnect) {
-        await fetchGatewayStatus();
-        startPolling();
+        try {
+            await fetchGatewayStatus();
+            startPolling();
+        } catch (error) {
+            console.error('[Gateway] 自动连接失败:', error);
+        }
     }
 
     console.log('[Gateway] 扩展加载完成，AI 自动回复管线已就绪');
@@ -666,88 +688,96 @@ jQuery(async () => {
  * 注入到 ST 右侧导航栏，与预设/API/世界书同等级
  */
 async function initGatewayPanel() {
-    // 1. 注入导航按钮到右侧 drawer 栏
-    const drawerButton = `
-        <div id="gateway_drawer_button" class="drawer">
-            <div class="drawer-toggle drawer-header">
-                <div class="drawer-icon fa-solid fa-tower-broadcast closedIcon" title="多平台网关"></div>
+    try {
+        // 1. 注入导航按钮到右侧 drawer 栏
+        const drawerButton = `
+            <div id="gateway_drawer_button" class="drawer">
+                <div class="drawer-toggle drawer-header">
+                    <div class="drawer-icon fa-solid fa-tower-broadcast closedIcon" title="多平台网关"></div>
+                </div>
             </div>
-        </div>
-    `;
-    // 插入到右侧导航（在 extensions drawer 之前或之后）
-    const target = $('#extensions_drawer').parent();
-    if (target.length) {
-        $('#extensions_drawer').after(drawerButton);
-    } else {
-        // fallback: 追加到 right-nav-panel
-        $('#right-nav-panel').append(drawerButton);
-    }
-
-    // 2. 加载面板 HTML
-    const panelHtml = await renderExtensionTemplateAsync('gateway', 'panel');
-    // 将面板追加到主内容区域
-    $('#sheld').append(panelHtml);
-
-    // 3. 绑定 drawer 开关逻辑
-    $('#gateway_drawer_button .drawer-icon').on('click', function () {
-        const panel = $('#gateway_panel');
-        const isVisible = panel.is(':visible');
-
-        // 关闭其他 drawer
-        $('.drawer-content').not('#gateway_panel').slideUp(200);
-        $('#gateway_drawer_button .drawer-icon').toggleClass('openIcon closedIcon', !isVisible);
-
-        if (isVisible) {
-            panel.slideUp(200);
+        `;
+        // 插入到右侧导航（在 extensions drawer 之前或之后）
+        const target = $('#extensions_drawer').parent();
+        if (target.length) {
+            $('#extensions_drawer').after(drawerButton);
         } else {
-            panel.slideDown(200);
-            // 打开时刷新数据
-            refreshPanelData();
+            // fallback: 追加到 right-nav-panel
+            $('#right-nav-panel').append(drawerButton);
         }
-    });
 
-    // 4. 绑定面板事件
-    bindPanelEvents();
-    bindRegexEvents();
+        // 2. 加载面板 HTML
+        const panelHtml = await renderExtensionTemplateAsync('gateway', 'panel');
+        // 将面板追加到主内容区域
+        $('#sheld').append(panelHtml);
+
+        // 3. 绑定 drawer 开关逻辑
+        $('#gateway_drawer_button .drawer-icon').on('click', function () {
+            const panel = $('#gateway_panel');
+            const isVisible = panel.is(':visible');
+
+            // 关闭其他 drawer
+            $('.drawer-content').not('#gateway_panel').slideUp(200);
+            $('#gateway_drawer_button .drawer-icon').toggleClass('openIcon closedIcon', !isVisible);
+
+            if (isVisible) {
+                panel.slideUp(200);
+            } else {
+                panel.slideDown(200);
+                // 打开时刷新数据
+                refreshPanelData();
+            }
+        });
+
+        // 4. 绑定面板事件
+        bindPanelEvents();
+        bindRegexEvents();
+    } catch (error) {
+        console.error('[Gateway] initGatewayPanel 错误:', error);
+    }
 }
 
 /**
  * 绑定顶级面板事件
  */
 function bindPanelEvents() {
-    // 连接按钮
-    $('#gateway_panel_connect').on('click', async () => {
-        const url = $('#gateway_panel_url').val().trim();
-        if (url) getSettings().serverUrl = url;
-        await fetchGatewayStatus();
-        startPolling();
-        refreshPanelData();
-    });
+    try {
+        // 连接按钮
+        $('#gateway_panel_connect').on('click', async () => {
+            const url = $('#gateway_panel_url').val().trim();
+            if (url) getSettings().serverUrl = url;
+            await fetchGatewayStatus();
+            startPolling();
+            refreshPanelData();
+        });
 
-    // 适配器配置折叠
-    $('.gateway-adapter-header').on('click', function (e) {
-        if ($(e.target).is('input')) return; // 点击 checkbox 不折叠
-        const targetId = $(this).data('toggle');
-        $(`#${targetId}`).slideToggle(150);
-    });
+        // 适配器配置折叠
+        $('.gateway-adapter-header').on('click', function (e) {
+            if ($(e.target).is('input')) return; // 点击 checkbox 不折叠
+            const targetId = $(this).data('toggle');
+            $(`#${targetId}`).slideToggle(150);
+        });
 
-    // 保存配置
-    $('#gateway_panel_save_config').on('click', savePanelConfig);
+        // 保存配置
+        $('#gateway_panel_save_config').on('click', savePanelConfig);
 
-    // 从 GitHub 安装插件
-    $('#gateway_plugin_install_btn').on('click', installPluginFromGitHub);
+        // 从 GitHub 安装插件
+        $('#gateway_plugin_install_btn').on('click', installPluginFromGitHub);
 
-    // 搜索插件
-    $('#gateway_plugin_search_btn').on('click', searchPlugins);
-    $('#gateway_plugin_search_input').on('keypress', function (e) {
-        if (e.key === 'Enter') searchPlugins();
-    });
+        // 搜索插件
+        $('#gateway_plugin_search_btn').on('click', searchPlugins);
+        $('#gateway_plugin_search_input').on('keypress', function (e) {
+            if (e.key === 'Enter') searchPlugins();
+        });
 
-    // 刷新插件列表
-    $('#gateway_plugin_refresh').on('click', loadPluginList);
+        // 刷新插件列表
+        $('#gateway_plugin_refresh').on('click', loadPluginList);
 
-    // 刷新消息日志
-    $('#gateway_panel_refresh_log').on('click', () => fetchGatewayStatus());
+        // 刷新消息日志
+        $('#gateway_panel_refresh_log').on('click', () => fetchGatewayStatus());
+    } catch (error) {
+        console.error('[Gateway] bindPanelEvents 错误:', error);
+    }
 }
 
 /**
@@ -1080,101 +1110,109 @@ function bindRegexRuleButtons() {
  * 绑定正则设置面板事件
  */
 function bindRegexEvents() {
-    // 添加提取规则
-    $('#gateway_regex_extract_add').on('click', () => {
-        const name = $('#gateway_regex_extract_name').val().trim();
-        const pattern = $('#gateway_regex_extract_pattern').val().trim();
-        const group = parseInt($('#gateway_regex_extract_group').val()) || 1;
-        const desc = $('#gateway_regex_extract_desc').val().trim();
+    try {
+        // 添加提取规则
+        $('#gateway_regex_extract_add').on('click', () => {
+            try {
+                const name = $('#gateway_regex_extract_name').val().trim();
+                const pattern = $('#gateway_regex_extract_pattern').val().trim();
+                const group = parseInt($('#gateway_regex_extract_group').val()) || 1;
+                const desc = $('#gateway_regex_extract_desc').val().trim();
 
-        if (!name || !pattern) {
-            toastr.warning('请填写名称和正则表达式');
-            return;
-        }
-        try { new RegExp(pattern); } catch (e) {
-            toastr.error(`无效正则: ${e.message}`);
-            return;
-        }
+                if (!name || !pattern) {
+                    toastr.warning('请填写名称和正则表达式');
+                    return;
+                }
+                try { new RegExp(pattern); } catch (e) {
+                    toastr.error(`无效正则: ${e.message}`);
+                    return;
+                }
 
-        regexConfig.extractPatterns.push({ name, enabled: true, pattern, group, description: desc });
-        $('#gateway_regex_extract_name').val('');
-        $('#gateway_regex_extract_pattern').val('');
-        $('#gateway_regex_extract_desc').val('');
-        renderRegexConfig();
-    });
+                regexConfig.extractPatterns.push({ name, enabled: true, pattern, group, description: desc });
+                $('#gateway_regex_extract_name').val('');
+                $('#gateway_regex_extract_pattern').val('');
+                $('#gateway_regex_extract_desc').val('');
+                renderRegexConfig();
+            } catch (e) { console.error('[Gateway] regex extract add error:', e); }
+        });
 
-    // 添加移除规则
-    $('#gateway_regex_remove_add').on('click', () => {
-        const name = $('#gateway_regex_remove_name').val().trim();
-        const pattern = $('#gateway_regex_remove_pattern').val().trim();
-        const replacement = $('#gateway_regex_remove_replacement').val();
-        const desc = $('#gateway_regex_remove_desc').val().trim();
+        // 添加移除规则
+        $('#gateway_regex_remove_add').on('click', () => {
+            try {
+                const name = $('#gateway_regex_remove_name').val().trim();
+                const pattern = $('#gateway_regex_remove_pattern').val().trim();
+                const replacement = $('#gateway_regex_remove_replacement').val();
+                const desc = $('#gateway_regex_remove_desc').val().trim();
 
-        if (!name || !pattern) {
-            toastr.warning('请填写名称和正则表达式');
-            return;
-        }
-        try { new RegExp(pattern); } catch (e) {
-            toastr.error(`无效正则: ${e.message}`);
-            return;
-        }
+                if (!name || !pattern) {
+                    toastr.warning('请填写名称和正则表达式');
+                    return;
+                }
+                try { new RegExp(pattern); } catch (e) {
+                    toastr.error(`无效正则: ${e.message}`);
+                    return;
+                }
 
-        regexConfig.removePatterns.push({ name, enabled: true, pattern, replacement, description: desc });
-        $('#gateway_regex_remove_name').val('');
-        $('#gateway_regex_remove_pattern').val('');
-        $('#gateway_regex_remove_replacement').val('');
-        $('#gateway_regex_remove_desc').val('');
-        renderRegexConfig();
-    });
+                regexConfig.removePatterns.push({ name, enabled: true, pattern, replacement, description: desc });
+                $('#gateway_regex_remove_name').val('');
+                $('#gateway_regex_remove_pattern').val('');
+                $('#gateway_regex_remove_replacement').val('');
+                $('#gateway_regex_remove_desc').val('');
+                renderRegexConfig();
+            } catch (e) { console.error('[Gateway] regex remove add error:', e); }
+        });
 
-    // 保存配置
-    $('#gateway_regex_save').on('click', async () => {
-        regexConfig.fallbackToOriginal = $('#gateway_regex_fallback').is(':checked');
-        regexConfig.trimWhitespace = $('#gateway_regex_trim').is(':checked');
+        // 保存配置
+        $('#gateway_regex_save').on('click', async () => {
+            try {
+                regexConfig.fallbackToOriginal = $('#gateway_regex_fallback').is(':checked');
+                regexConfig.trimWhitespace = $('#gateway_regex_trim').is(':checked');
 
-        try {
-            await apiRequest('/api/plugins/regex-filter/config', {
-                method: 'POST',
-                body: JSON.stringify(regexConfig),
-            });
-            toastr.success('正则过滤配置已保存');
-        } catch (error) {
-            toastr.error(`保存失败: ${error.message}`);
-        }
-    });
-
-    // 刷新
-    $('#gateway_regex_refresh').on('click', loadRegexConfig);
-
-    // 正则测试
-    $('#gateway_regex_test_btn').on('click', () => {
-        const text = $('#gateway_regex_test_input').val();
-        const pattern = $('#gateway_regex_test_pattern').val().trim();
-        const resultEl = $('#gateway_regex_test_result');
-
-        if (!text || !pattern) {
-            toastr.warning('请输入测试文本和正则表达式');
-            return;
-        }
-
-        try {
-            const regex = new RegExp(pattern, 's');
-            const match = text.match(regex);
-            resultEl.show();
-
-            if (match) {
-                const groups = match.slice(1).map((g, i) => `<div class="regex-match-group"><b>组 ${i + 1}:</b> ${escapeHtml((g || '').substring(0, 200))}</div>`).join('');
-                resultEl.html(`
-                    <div class="regex-match-success">
-                        <div>✅ 匹配成功！完整匹配: ${escapeHtml(match[0].substring(0, 200))}${match[0].length > 200 ? '...' : ''}</div>
-                        ${groups}
-                    </div>
-                `);
-            } else {
-                resultEl.html('<div class="regex-match-fail">❌ 未匹配</div>');
+                await apiRequest('/api/plugins/regex-filter/config', {
+                    method: 'POST',
+                    body: JSON.stringify(regexConfig),
+                });
+                toastr.success('正则过滤配置已保存');
+            } catch (error) {
+                toastr.error(`保存失败: ${error.message}`);
             }
-        } catch (error) {
-            resultEl.show().html(`<div class="regex-match-fail">❌ 正则错误: ${escapeHtml(error.message)}</div>`);
-        }
-    });
+        });
+
+        // 刷新
+        $('#gateway_regex_refresh').on('click', loadRegexConfig);
+
+        // 正则测试
+        $('#gateway_regex_test_btn').on('click', () => {
+            try {
+                const text = $('#gateway_regex_test_input').val();
+                const pattern = $('#gateway_regex_test_pattern').val().trim();
+                const resultEl = $('#gateway_regex_test_result');
+
+                if (!text || !pattern) {
+                    toastr.warning('请输入测试文本和正则表达式');
+                    return;
+                }
+
+                const regex = new RegExp(pattern, 's');
+                const match = text.match(regex);
+                resultEl.show();
+
+                if (match) {
+                    const groups = match.slice(1).map((g, i) => `<div class="regex-match-group"><b>组 ${i + 1}:</b> ${escapeHtml((g || '').substring(0, 200))}</div>`).join('');
+                    resultEl.html(`
+                        <div class="match-success">
+                            <div>✅ 匹配成功！完整匹配: ${escapeHtml(match[0].substring(0, 200))}${match[0].length > 200 ? '...' : ''}</div>
+                            ${groups}
+                        </div>
+                    `);
+                } else {
+                    resultEl.html('<div class="match-fail">❌ 未匹配</div>');
+                }
+            } catch (e) {
+                console.error('[Gateway] regex test error:', e);
+            }
+        });
+    } catch (error) {
+        console.error('[Gateway] bindRegexEvents 错误:', error);
+    }
 }
