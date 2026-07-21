@@ -1,18 +1,103 @@
 /**
  * SillyTavern Multi-Platform Gateway Extension
  * 前端扩展入口 - 完整 AI 自动回复管线
- * 
+ *
  * 工作流程:
  *   平台消息 → 网关 → 扩展轮询 → 注入 ST 聊天 → 触发 AI 生成 → 回复转发回平台
+ *
+ * 重要说明:
+ *   本扩展不使用相对路径静态导入 ST 内部模块(如 ../../extensions.js)。
+ *   因为扩展的安装位置(第三方/用户目录)和 ST 版本内部结构会变化，
+ *   相对导入极易解析失败导致整个扩展无法加载(表现为前端毫无反应)。
+ *   因此统一改用:
+ *     1. SillyTavern 全局上下文 (SillyTavern.getContext()) —— 官方稳定 API
+ *     2. 根路径动态导入 (import '/script.js') —— 获取未暴露到上下文的函数
+ *     3. import.meta.url 自动检测扩展文件夹名 —— 用于模板渲染
  */
 
-import { getContext, extension_settings } from '../../extensions.js';
-import { SlashCommand } from '../../slash-commands/SlashCommand.js';
-import { SlashCommandParser } from '../../slash-commands/SlashCommandParser.js';
-import { renderExtensionTemplateAsync } from '../../extensions.js';
-import { POPUP_TYPE, callGenericPopup } from '../../popup.js';
-import { eventSource, event_types } from '../../../script.js';
-import { sendMessageAsUser } from '../../../script.js';
+// ==================== 健壮引导 ====================
+
+/** 获取 SillyTavern 全局对象 */
+function getST() {
+    return globalThis.SillyTavern;
+}
+
+/** 获取 ST 上下文(每次调用返回最新引用) */
+function getContext() {
+    return getST().getContext();
+}
+
+/**
+ * 从 import.meta.url 自动检测扩展文件夹路径。
+ * 例: http://host/scripts/extensions/third-party/sillytavern-gateway/index.js
+ *     -> "third-party/sillytavern-gateway"
+ * renderExtensionTemplateAsync 需要这个路径来定位模板文件。
+ */
+function detectExtensionName() {
+    try {
+        const url = import.meta.url.split('?')[0];
+        const marker = '/scripts/extensions/';
+        const idx = url.indexOf(marker);
+        if (idx !== -1) {
+            const rest = url.substring(idx + marker.length);
+            const dir = rest.substring(0, rest.lastIndexOf('/'));
+            if (dir) return dir;
+        }
+    } catch (e) { /* 忽略, 使用兜底值 */ }
+    return 'third-party/sillytavern-gateway';
+}
+
+/** 扩展文件夹路径(模板渲染用) */
+const EXTENSION_NAME = detectExtensionName();
+
+/**
+ * 推导 ST 部署根地址(兼容非根路径部署)。
+ * 例: http://host/scripts/extensions/... -> http://host
+ */
+function detectServerRoot() {
+    try {
+        const url = import.meta.url.split('?')[0];
+        const idx = url.indexOf('/scripts/extensions/');
+        if (idx !== -1) return url.substring(0, idx);
+    } catch (e) { /* 忽略 */ }
+    return '';
+}
+const SERVER_ROOT = detectServerRoot();
+
+/**
+ * 健壮的模板渲染:
+ *   1. 优先使用 ST 官方 renderExtensionTemplateAsync(带 DOMPurify 净化 + i18n)
+ *   2. 失败时兜底: 直接从本模块所在目录 fetch 静态 HTML
+ */
+async function renderTemplate(templateName) {
+    try {
+        return await getContext().renderExtensionTemplateAsync(EXTENSION_NAME, templateName);
+    } catch (e) {
+        console.warn(`[Gateway] 官方模板接口失败(${e.message}), 回退直接读取`);
+    }
+    const moduleUrl = import.meta.url.split('?')[0];
+    const base = moduleUrl.substring(0, moduleUrl.lastIndexOf('/'));
+    const resp = await fetch(`${base}/${templateName}.html`);
+    if (!resp.ok) throw new Error(`模板 ${templateName}.html 加载失败: HTTP ${resp.status}`);
+    return await resp.text();
+}
+
+// ==================== 获取 ST API ====================
+// 全部来自官方 getContext(), 不再依赖脆弱的相对路径导入
+const {
+    eventSource,
+    event_types,
+    extensionSettings: extension_settings,
+    SlashCommand,
+    SlashCommandParser,
+    callGenericPopup,
+    POPUP_TYPE,
+    saveSettingsDebounced,
+} = getContext();
+
+// sendMessageAsUser / doNavbarIconClick 未暴露到 getContext(),
+// 通过根路径动态导入 script.js 获取(该模块已被 ST 加载, 此处仅取缓存引用)
+const { sendMessageAsUser, doNavbarIconClick } = await import(`${SERVER_ROOT}/script.js`);
 
 // 扩展设置默认值
 const DEFAULT_SETTINGS = {
@@ -386,7 +471,7 @@ function stopPolling() {
  * 显示网关窗口
  */
 async function showGatewayWindow() {
-    const html = await renderExtensionTemplateAsync('gateway', 'window');
+    const html = await renderTemplate('window');
     const dialog = $(html);
 
     callGenericPopup(dialog, POPUP_TYPE.TEXT, '', {
@@ -447,6 +532,7 @@ function bindSettingsEvents() {
         const serverUrl = $('#gateway_server_url').val().trim();
         if (serverUrl) {
             getSettings().serverUrl = serverUrl;
+            saveSettingsDebounced();
         }
         await fetchGatewayStatus();
         startPolling();
@@ -464,6 +550,7 @@ function bindSettingsEvents() {
         const settings = getSettings();
         settings.serverUrl = $('#gateway_server_url').val().trim();
         settings.autoReplyEnabled = $('#gateway_auto_reply_enabled_ext').is(':checked');
+        saveSettingsDebounced();
 
         // 同步到后端配置
         try {
@@ -617,14 +704,18 @@ function registerSlashCommands() {
 
 // ==================== 扩展初始化 ====================
 
-jQuery(async () => {
+/**
+ * 扩展主初始化逻辑
+ */
+async function initExtension() {
     console.log('[Gateway] 扩展加载中...');
 
-    // === 注入顶级设置面板（捕获错误不影响基础功能） ===
+    // === 注入顶级设置面板（与预设、API、世界书同等级）===
+    // 单独 try/catch: 面板注入失败不应影响其他功能(斜杠命令/自动回复等)
     try {
         await initGatewayPanel();
     } catch (error) {
-        console.error('[Gateway] 顶级面板初始化失败:', error);
+        console.error('[Gateway] 顶级面板注入失败(不影响其他功能):', error);
     }
 
     // 添加扩展按钮到菜单（保留原有入口）
@@ -643,141 +734,156 @@ jQuery(async () => {
 
     // 加载设置面板（扩展页内的简版设置）
     try {
-        const settingsHtml = await renderExtensionTemplateAsync('gateway', 'settings');
+        const settingsHtml = await renderTemplate('settings');
         $('#extensions_settings2').append(settingsHtml);
-    } catch (error) {
-        console.error('[Gateway] 设置面板加载失败:', error);
-    }
-
-    // 绑定设置事件
-    if ($('#gateway_connect_btn').length) {
         bindSettingsEvents();
+    } catch (error) {
+        console.error('[Gateway] 扩展页设置面板加载失败:', error);
     }
 
     // 注册斜杠命令
-    try {
-        registerSlashCommands();
-    } catch (error) {
-        console.error('[Gateway] 斜杠命令注册失败:', error);
-    }
+    registerSlashCommands();
 
     // 设置 AI 生成监听器（捕获 AI 回复并转发）
-    try {
-        setupGenerationListener();
-    } catch (error) {
-        console.error('[Gateway] 生成监听器设置失败:', error);
-    }
+    setupGenerationListener();
 
     // 自动连接（默认启用）
     if (getSettings().autoConnect) {
-        try {
-            await fetchGatewayStatus();
-            startPolling();
-        } catch (error) {
-            console.error('[Gateway] 自动连接失败:', error);
-        }
+        await fetchGatewayStatus();
+        startPolling();
     }
 
     console.log('[Gateway] 扩展加载完成，AI 自动回复管线已就绪');
-});
+}
+
+/**
+ * 启动入口:
+ *   优先使用 ST 官方 APP_READY 事件(应用完全就绪后触发, 若已就绪则附加后立即自动触发),
+ *   老版本不支持时回退到 jQuery DOM-ready。
+ */
+(function bootstrap() {
+    const readyEventType = event_types?.APP_READY;
+    if (eventSource && readyEventType) {
+        eventSource.on(readyEventType, async () => {
+            try {
+                await initExtension();
+            } catch (error) {
+                console.error('[Gateway] 扩展初始化失败:', error);
+            }
+        });
+    } else {
+        jQuery(async () => {
+            try {
+                await initExtension();
+            } catch (error) {
+                console.error('[Gateway] 扩展初始化失败:', error);
+            }
+        });
+    }
+})();
 
 // ==================== 顶级面板 ====================
 
 /**
  * 初始化网关顶级设置面板
- * 注入到 ST 右侧导航栏，与预设/API/世界书同等级
+ * 注入到 ST 顶部设置栏(#top-settings-holder)，与预设/API/世界书/扩展同等级。
+ *
+ * 关键点:
+ *   - 使用与 ST 原生 drawer 完全一致的 DOM 结构(.drawer > .drawer-toggle > .drawer-icon + .drawer-content)
+ *   - 绑定 ST 官方导出的 doNavbarIconClick 处理开关(自动互斥关闭其他 drawer、点击外部自动收起)
+ *   - 面板作为 .drawer-content 初始带 closedDrawer 类(由 ST CSS 控制隐藏)
  */
 async function initGatewayPanel() {
-    try {
-        // 1. 注入导航按钮到右侧 drawer 栏
-        const drawerButton = `
-            <div id="gateway_drawer_button" class="drawer">
-                <div class="drawer-toggle drawer-header">
-                    <div class="drawer-icon fa-solid fa-tower-broadcast closedIcon" title="多平台网关"></div>
-                </div>
+    // 防止重复注入
+    if ($('#gateway_drawer_button').length) {
+        return;
+    }
+
+    // 1. 加载面板 HTML (作为 drawer-content)
+    const panelHtml = await renderTemplate('panel');
+
+    // 2. 构建与 ST 原生一致的完整 drawer 结构(按钮 + 内容)
+    const drawerHtml = `
+        <div id="gateway_drawer_button" class="drawer">
+            <div class="drawer-toggle drawer-header">
+                <div id="gatewayDrawerIcon" class="drawer-icon fa-solid fa-tower-broadcast fa-fw closedIcon" title="多平台网关" data-i18n="[title]多平台网关"></div>
             </div>
-        `;
-        // 插入到右侧导航（在 extensions drawer 之前或之后）
-        const target = $('#extensions_drawer').parent();
-        if (target.length) {
-            $('#extensions_drawer').after(drawerButton);
-        } else {
-            // fallback: 追加到 right-nav-panel
-            $('#right-nav-panel').append(drawerButton);
-        }
+            ${panelHtml}
+        </div>
+    `;
 
-        // 2. 加载面板 HTML
-        const panelHtml = await renderExtensionTemplateAsync('gateway', 'panel');
-        // 将面板追加到主内容区域
-        $('#sheld').append(panelHtml);
+    // 3. 插入到顶部设置栏, 紧跟在"扩展"图标之后(与预设/API/世界书同级)
+    const anchor = $('#extensions-settings-button');
+    if (anchor.length) {
+        anchor.after(drawerHtml);
+    } else {
+        // 兜底: 直接追加到顶部设置容器
+        $('#top-settings-holder').append(drawerHtml);
+    }
 
-        // 3. 绑定 drawer 开关逻辑
-        $('#gateway_drawer_button .drawer-icon').on('click', function () {
-            const panel = $('#gateway_panel');
-            const isVisible = panel.is(':visible');
+    // 4. 绑定 ST 官方 drawer 开关逻辑。
+    //    注意: ST 的 $('.drawer-toggle').on('click', doNavbarIconClick) 是在页面加载时
+    //    直接绑定到已存在元素的, 动态注入的 drawer 不会自动获得, 需手动绑定。
+    $('#gateway_drawer_button .drawer-toggle').on('click', doNavbarIconClick);
 
-            // 关闭其他 drawer
-            $('.drawer-content').not('#gateway_panel').slideUp(200);
-            $('#gateway_drawer_button .drawer-icon').toggleClass('openIcon closedIcon', !isVisible);
-
-            if (isVisible) {
-                panel.slideUp(200);
-            } else {
-                panel.slideDown(200);
-                // 打开时刷新数据
+    // 5. 监听面板开合状态, 打开时自动刷新数据
+    const panelEl = document.getElementById('gateway_panel');
+    if (panelEl) {
+        const observer = new MutationObserver(() => {
+            if (panelEl.classList.contains('openDrawer')) {
                 refreshPanelData();
             }
         });
-
-        // 4. 绑定面板事件
-        bindPanelEvents();
-        bindRegexEvents();
-    } catch (error) {
-        console.error('[Gateway] initGatewayPanel 错误:', error);
+        observer.observe(panelEl, { attributes: true, attributeFilter: ['class'] });
     }
+
+    // 6. 绑定面板内部事件
+    bindPanelEvents();
+    bindRegexEvents();
+
+    console.log('[Gateway] 顶级设置面板已注入 (与预设/API/世界书同等级)');
 }
 
 /**
  * 绑定顶级面板事件
  */
 function bindPanelEvents() {
-    try {
-        // 连接按钮
-        $('#gateway_panel_connect').on('click', async () => {
-            const url = $('#gateway_panel_url').val().trim();
-            if (url) getSettings().serverUrl = url;
-            await fetchGatewayStatus();
-            startPolling();
-            refreshPanelData();
-        });
+    // 连接按钮
+    $('#gateway_panel_connect').on('click', async () => {
+        const url = $('#gateway_panel_url').val().trim();
+        if (url) {
+            getSettings().serverUrl = url;
+            saveSettingsDebounced();
+        }
+        await fetchGatewayStatus();
+        startPolling();
+        refreshPanelData();
+    });
 
-        // 适配器配置折叠
-        $('.gateway-adapter-header').on('click', function (e) {
-            if ($(e.target).is('input')) return; // 点击 checkbox 不折叠
-            const targetId = $(this).data('toggle');
-            $(`#${targetId}`).slideToggle(150);
-        });
+    // 适配器配置折叠
+    $('.gateway-adapter-header').on('click', function (e) {
+        if ($(e.target).is('input')) return; // 点击 checkbox 不折叠
+        const targetId = $(this).data('toggle');
+        $(`#${targetId}`).slideToggle(150);
+    });
 
-        // 保存配置
-        $('#gateway_panel_save_config').on('click', savePanelConfig);
+    // 保存配置
+    $('#gateway_panel_save_config').on('click', savePanelConfig);
 
-        // 从 GitHub 安装插件
-        $('#gateway_plugin_install_btn').on('click', installPluginFromGitHub);
+    // 从 GitHub 安装插件
+    $('#gateway_plugin_install_btn').on('click', installPluginFromGitHub);
 
-        // 搜索插件
-        $('#gateway_plugin_search_btn').on('click', searchPlugins);
-        $('#gateway_plugin_search_input').on('keypress', function (e) {
-            if (e.key === 'Enter') searchPlugins();
-        });
+    // 搜索插件
+    $('#gateway_plugin_search_btn').on('click', searchPlugins);
+    $('#gateway_plugin_search_input').on('keypress', function (e) {
+        if (e.key === 'Enter') searchPlugins();
+    });
 
-        // 刷新插件列表
-        $('#gateway_plugin_refresh').on('click', loadPluginList);
+    // 刷新插件列表
+    $('#gateway_plugin_refresh').on('click', loadPluginList);
 
-        // 刷新消息日志
-        $('#gateway_panel_refresh_log').on('click', () => fetchGatewayStatus());
-    } catch (error) {
-        console.error('[Gateway] bindPanelEvents 错误:', error);
-    }
+    // 刷新消息日志
+    $('#gateway_panel_refresh_log').on('click', () => fetchGatewayStatus());
 }
 
 /**
@@ -1110,109 +1216,101 @@ function bindRegexRuleButtons() {
  * 绑定正则设置面板事件
  */
 function bindRegexEvents() {
-    try {
-        // 添加提取规则
-        $('#gateway_regex_extract_add').on('click', () => {
-            try {
-                const name = $('#gateway_regex_extract_name').val().trim();
-                const pattern = $('#gateway_regex_extract_pattern').val().trim();
-                const group = parseInt($('#gateway_regex_extract_group').val()) || 1;
-                const desc = $('#gateway_regex_extract_desc').val().trim();
+    // 添加提取规则
+    $('#gateway_regex_extract_add').on('click', () => {
+        const name = $('#gateway_regex_extract_name').val().trim();
+        const pattern = $('#gateway_regex_extract_pattern').val().trim();
+        const group = parseInt($('#gateway_regex_extract_group').val()) || 1;
+        const desc = $('#gateway_regex_extract_desc').val().trim();
 
-                if (!name || !pattern) {
-                    toastr.warning('请填写名称和正则表达式');
-                    return;
-                }
-                try { new RegExp(pattern); } catch (e) {
-                    toastr.error(`无效正则: ${e.message}`);
-                    return;
-                }
+        if (!name || !pattern) {
+            toastr.warning('请填写名称和正则表达式');
+            return;
+        }
+        try { new RegExp(pattern); } catch (e) {
+            toastr.error(`无效正则: ${e.message}`);
+            return;
+        }
 
-                regexConfig.extractPatterns.push({ name, enabled: true, pattern, group, description: desc });
-                $('#gateway_regex_extract_name').val('');
-                $('#gateway_regex_extract_pattern').val('');
-                $('#gateway_regex_extract_desc').val('');
-                renderRegexConfig();
-            } catch (e) { console.error('[Gateway] regex extract add error:', e); }
-        });
+        regexConfig.extractPatterns.push({ name, enabled: true, pattern, group, description: desc });
+        $('#gateway_regex_extract_name').val('');
+        $('#gateway_regex_extract_pattern').val('');
+        $('#gateway_regex_extract_desc').val('');
+        renderRegexConfig();
+    });
 
-        // 添加移除规则
-        $('#gateway_regex_remove_add').on('click', () => {
-            try {
-                const name = $('#gateway_regex_remove_name').val().trim();
-                const pattern = $('#gateway_regex_remove_pattern').val().trim();
-                const replacement = $('#gateway_regex_remove_replacement').val();
-                const desc = $('#gateway_regex_remove_desc').val().trim();
+    // 添加移除规则
+    $('#gateway_regex_remove_add').on('click', () => {
+        const name = $('#gateway_regex_remove_name').val().trim();
+        const pattern = $('#gateway_regex_remove_pattern').val().trim();
+        const replacement = $('#gateway_regex_remove_replacement').val();
+        const desc = $('#gateway_regex_remove_desc').val().trim();
 
-                if (!name || !pattern) {
-                    toastr.warning('请填写名称和正则表达式');
-                    return;
-                }
-                try { new RegExp(pattern); } catch (e) {
-                    toastr.error(`无效正则: ${e.message}`);
-                    return;
-                }
+        if (!name || !pattern) {
+            toastr.warning('请填写名称和正则表达式');
+            return;
+        }
+        try { new RegExp(pattern); } catch (e) {
+            toastr.error(`无效正则: ${e.message}`);
+            return;
+        }
 
-                regexConfig.removePatterns.push({ name, enabled: true, pattern, replacement, description: desc });
-                $('#gateway_regex_remove_name').val('');
-                $('#gateway_regex_remove_pattern').val('');
-                $('#gateway_regex_remove_replacement').val('');
-                $('#gateway_regex_remove_desc').val('');
-                renderRegexConfig();
-            } catch (e) { console.error('[Gateway] regex remove add error:', e); }
-        });
+        regexConfig.removePatterns.push({ name, enabled: true, pattern, replacement, description: desc });
+        $('#gateway_regex_remove_name').val('');
+        $('#gateway_regex_remove_pattern').val('');
+        $('#gateway_regex_remove_replacement').val('');
+        $('#gateway_regex_remove_desc').val('');
+        renderRegexConfig();
+    });
 
-        // 保存配置
-        $('#gateway_regex_save').on('click', async () => {
-            try {
-                regexConfig.fallbackToOriginal = $('#gateway_regex_fallback').is(':checked');
-                regexConfig.trimWhitespace = $('#gateway_regex_trim').is(':checked');
+    // 保存配置
+    $('#gateway_regex_save').on('click', async () => {
+        regexConfig.fallbackToOriginal = $('#gateway_regex_fallback').is(':checked');
+        regexConfig.trimWhitespace = $('#gateway_regex_trim').is(':checked');
 
-                await apiRequest('/api/plugins/regex-filter/config', {
-                    method: 'POST',
-                    body: JSON.stringify(regexConfig),
-                });
-                toastr.success('正则过滤配置已保存');
-            } catch (error) {
-                toastr.error(`保存失败: ${error.message}`);
+        try {
+            await apiRequest('/api/plugins/regex-filter/config', {
+                method: 'POST',
+                body: JSON.stringify(regexConfig),
+            });
+            toastr.success('正则过滤配置已保存');
+        } catch (error) {
+            toastr.error(`保存失败: ${error.message}`);
+        }
+    });
+
+    // 刷新
+    $('#gateway_regex_refresh').on('click', loadRegexConfig);
+
+    // 正则测试
+    $('#gateway_regex_test_btn').on('click', () => {
+        const text = $('#gateway_regex_test_input').val();
+        const pattern = $('#gateway_regex_test_pattern').val().trim();
+        const resultEl = $('#gateway_regex_test_result');
+
+        if (!text || !pattern) {
+            toastr.warning('请输入测试文本和正则表达式');
+            return;
+        }
+
+        try {
+            const regex = new RegExp(pattern, 's');
+            const match = text.match(regex);
+            resultEl.show();
+
+            if (match) {
+                const groups = match.slice(1).map((g, i) => `<div class="regex-match-group"><b>组 ${i + 1}:</b> ${escapeHtml((g || '').substring(0, 200))}</div>`).join('');
+                resultEl.html(`
+                    <div class="regex-match-success">
+                        <div>✅ 匹配成功！完整匹配: ${escapeHtml(match[0].substring(0, 200))}${match[0].length > 200 ? '...' : ''}</div>
+                        ${groups}
+                    </div>
+                `);
+            } else {
+                resultEl.html('<div class="regex-match-fail">❌ 未匹配</div>');
             }
-        });
-
-        // 刷新
-        $('#gateway_regex_refresh').on('click', loadRegexConfig);
-
-        // 正则测试
-        $('#gateway_regex_test_btn').on('click', () => {
-            try {
-                const text = $('#gateway_regex_test_input').val();
-                const pattern = $('#gateway_regex_test_pattern').val().trim();
-                const resultEl = $('#gateway_regex_test_result');
-
-                if (!text || !pattern) {
-                    toastr.warning('请输入测试文本和正则表达式');
-                    return;
-                }
-
-                const regex = new RegExp(pattern, 's');
-                const match = text.match(regex);
-                resultEl.show();
-
-                if (match) {
-                    const groups = match.slice(1).map((g, i) => `<div class="regex-match-group"><b>组 ${i + 1}:</b> ${escapeHtml((g || '').substring(0, 200))}</div>`).join('');
-                    resultEl.html(`
-                        <div class="match-success">
-                            <div>✅ 匹配成功！完整匹配: ${escapeHtml(match[0].substring(0, 200))}${match[0].length > 200 ? '...' : ''}</div>
-                            ${groups}
-                        </div>
-                    `);
-                } else {
-                    resultEl.html('<div class="match-fail">❌ 未匹配</div>');
-                }
-            } catch (e) {
-                console.error('[Gateway] regex test error:', e);
-            }
-        });
-    } catch (error) {
-        console.error('[Gateway] bindRegexEvents 错误:', error);
-    }
+        } catch (error) {
+            resultEl.show().html(`<div class="regex-match-fail">❌ 正则错误: ${escapeHtml(error.message)}</div>`);
+        }
+    });
 }

@@ -357,22 +357,15 @@
 
 /* ==================== 顶级面板样式 ==================== */
 
-#gateway_panel {
-    position: absolute;
-    top: 0;
-    right: 0;
-    width: 100%;
-    height: 100%;
-    overflow-y: auto;
-    z-index: 100;
-    background: var(--SmartThemeBlurTintColor, rgba(20, 20, 30, 0.95));
-    backdrop-filter: blur(10px);
-}
+/*
+ * 面板容器 #gateway_panel 使用 ST 原生 .drawer-content 结构与样式:
+ *   - 定位/宽高/背景/边框/毛玻璃/显示隐藏 均由 ST 的 .drawer-content / .openDrawer 控制
+ *   - 以前这里写死的 position/top/width/height 会覆盖 ST 原生定位导致面板错位遮挡顶栏, 已移除
+ * 以下只保留面板内部内容的排版样式。
+ */
 
 .gateway-panel-inner {
-    padding: 15px;
-    max-width: 600px;
-    margin: 0 auto;
+    padding: 10px;
 }
 
 .gateway-panel-header {
@@ -684,23 +677,11 @@
     cursor: pointer;
 }
 
-/* Drawer 按钮 */
-#gateway_drawer_button .drawer-icon {
-    cursor: pointer;
-    font-size: 18px;
-    padding: 8px;
-    opacity: 0.7;
-    transition: opacity 0.2s;
-}
-
-#gateway_drawer_button .drawer-icon:hover {
-    opacity: 1;
-}
-
-#gateway_drawer_button .drawer-icon.openIcon {
-    opacity: 1;
-    color: var(--SmartThemeQuoteColor, #7c9);
-}
+/*
+ * Drawer 图标样式完全使用 ST 原生 .drawer-icon / .closedIcon / .openIcon,
+ * 以保证与顶栏其他图标(预设/API/世界书/扩展)大小、明暗状态一致。
+ * 以前自定义的 font-size/padding/opacity 会破坏一致性, 已移除。
+ */
 
 /* ==================== 正则过滤器设置 ==================== */
 
