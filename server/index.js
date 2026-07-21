@@ -166,6 +166,41 @@ app.delete('/api/gateway/sessions/:platform/:chatId/history', (req, res) => {
 });
 
 /**
+ * 验证指定适配器连接（凭据校验/连通性测试）
+ * 注意: 必须注册在 /api/gateway/adapters/:name/:action 之前, 否则会被 :action 拦截
+ */
+app.post('/api/gateway/adapters/:name/verify', async (req, res) => {
+    const { name } = req.params;
+    const adapter = gatewayCore.getAdapter(name);
+
+    if (!adapter) {
+        return res.status(404).json({ success: false, ok: false, error: `适配器 ${name} 不存在` });
+    }
+
+    try {
+        const result = await adapter.verify();
+        res.json({ success: result.ok, name, ...result });
+    } catch (error) {
+        res.json({ success: false, ok: false, name, state: adapter.state, message: error.message });
+    }
+});
+
+/**
+ * 验证所有适配器连接
+ */
+app.post('/api/gateway/verify', async (req, res) => {
+    const results = {};
+    for (const [name, adapter] of gatewayCore.adapters) {
+        try {
+            results[name] = await adapter.verify();
+        } catch (error) {
+            results[name] = { ok: false, state: adapter.state, message: error.message };
+        }
+    }
+    res.json({ success: true, results });
+});
+
+/**
  * 启动/停止指定适配器
  */
 app.post('/api/gateway/adapters/:name/:action', async (req, res) => {

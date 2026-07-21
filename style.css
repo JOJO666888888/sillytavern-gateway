@@ -489,6 +489,127 @@
     border-top: 1px solid var(--SmartThemeBorderColor, #333);
 }
 
+/* 适配器标题与控件 */
+.gateway-adapter-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 500;
+}
+
+.gateway-adapter-controls {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.gateway-adapter-controls .menu_button {
+    padding: 2px 7px;
+    font-size: 12px;
+    min-width: auto;
+    margin: 0;
+}
+
+/* 适配器状态徽标 */
+.gateway-adapter-state {
+    font-size: 11px;
+    padding: 1px 7px;
+    border-radius: 9px;
+    background: rgba(158, 158, 158, 0.2);
+    color: #9e9e9e;
+    white-space: nowrap;
+}
+
+.gateway-adapter-state.connected {
+    background: rgba(76, 175, 80, 0.2);
+    color: #4caf50;
+}
+
+.gateway-adapter-state.connecting,
+.gateway-adapter-state.reconnecting {
+    background: rgba(255, 193, 7, 0.2);
+    color: #ffc107;
+}
+
+.gateway-adapter-state.error {
+    background: rgba(244, 67, 54, 0.2);
+    color: #f44336;
+}
+
+/* 验证结果汇总 */
+.gateway-adapters-status {
+    margin-top: 8px;
+}
+
+.gateway-verify-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border: 1px solid var(--SmartThemeBorderColor, #333);
+    border-radius: 5px;
+    margin-bottom: 4px;
+    font-size: 12px;
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.gateway-verify-item.ok {
+    border-left: 3px solid #4caf50;
+}
+
+.gateway-verify-item.fail {
+    border-left: 3px solid #f44336;
+}
+
+.gateway-verify-icon {
+    font-size: 14px;
+}
+
+.gateway-verify-name {
+    font-weight: bold;
+    min-width: 70px;
+    text-transform: capitalize;
+}
+
+.gateway-verify-msg {
+    flex: 1;
+    opacity: 0.8;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.gateway-verify-badge {
+    font-weight: bold;
+    padding: 1px 7px;
+    border-radius: 9px;
+    flex-shrink: 0;
+}
+
+.gateway-verify-badge.connected {
+    background: rgba(76, 175, 80, 0.2);
+    color: #4caf50;
+}
+
+.gateway-verify-badge.error {
+    background: rgba(244, 67, 54, 0.2);
+    color: #f44336;
+}
+
+/* 离线提示 */
+.gateway-offline-hint {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 10px;
+    margin-bottom: 10px;
+    border: 1px solid rgba(255, 193, 7, 0.4);
+    border-radius: 6px;
+    background: rgba(255, 193, 7, 0.1);
+    color: #ffc107;
+    font-size: 12px;
+}
+
 /* Toggle Switch */
 .toggle-switch {
     position: relative;

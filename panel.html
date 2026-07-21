@@ -12,6 +12,9 @@
         <div class="gateway-section">
             <div class="gateway-section-title">
                 <i class="fa-solid fa-link"></i> 连接
+                <button id="gateway_panel_verify_all" class="menu_button gateway-refresh-btn" title="验证所有平台连接">
+                    <i class="fa-solid fa-plug-circle-check"></i> 验证全部
+                </button>
             </div>
             <div class="gateway-field">
                 <label>网关地址</label>
@@ -21,7 +24,7 @@
                 </div>
             </div>
             <div class="gateway-adapters-status" id="gateway_panel_adapters">
-                <!-- 动态填充适配器状态 -->
+                <!-- 动态填充验证结果汇总 -->
             </div>
         </div>
 
@@ -34,11 +37,14 @@
             <!-- QQ -->
             <div class="gateway-adapter-config">
                 <div class="gateway-adapter-header" data-toggle="gateway_qq_config">
-                    <span>🐧 QQ (OneBot)</span>
-                    <label class="toggle-switch">
-                        <input type="checkbox" id="gateway_panel_qq_enabled">
-                        <span class="toggle-slider"></span>
-                    </label>
+                    <span class="gateway-adapter-title">🐧 QQ (OneBot) <span id="gateway_panel_qq_state" class="gateway-adapter-state">-</span></span>
+                    <span class="gateway-adapter-controls">
+                        <button class="menu_button gateway-adapter-verify" data-platform="qq" title="验证连接"><i class="fa-solid fa-plug-circle-check"></i></button>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="gateway_panel_qq_enabled">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </span>
                 </div>
                 <div id="gateway_qq_config" class="gateway-adapter-body" style="display:none;">
                     <div class="gateway-field">
@@ -62,11 +68,14 @@
             <!-- Telegram -->
             <div class="gateway-adapter-config">
                 <div class="gateway-adapter-header" data-toggle="gateway_tg_config">
-                    <span>✈️ Telegram</span>
-                    <label class="toggle-switch">
-                        <input type="checkbox" id="gateway_panel_tg_enabled">
-                        <span class="toggle-slider"></span>
-                    </label>
+                    <span class="gateway-adapter-title">✈️ Telegram <span id="gateway_panel_tg_state" class="gateway-adapter-state">-</span></span>
+                    <span class="gateway-adapter-controls">
+                        <button class="menu_button gateway-adapter-verify" data-platform="telegram" title="验证连接"><i class="fa-solid fa-plug-circle-check"></i></button>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="gateway_panel_tg_enabled">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </span>
                 </div>
                 <div id="gateway_tg_config" class="gateway-adapter-body" style="display:none;">
                     <div class="gateway-field">
@@ -84,11 +93,14 @@
             <!-- Discord -->
             <div class="gateway-adapter-config">
                 <div class="gateway-adapter-header" data-toggle="gateway_dc_config">
-                    <span>🎮 Discord</span>
-                    <label class="toggle-switch">
-                        <input type="checkbox" id="gateway_panel_dc_enabled">
-                        <span class="toggle-slider"></span>
-                    </label>
+                    <span class="gateway-adapter-title">🎮 Discord <span id="gateway_panel_dc_state" class="gateway-adapter-state">-</span></span>
+                    <span class="gateway-adapter-controls">
+                        <button class="menu_button gateway-adapter-verify" data-platform="discord" title="验证连接"><i class="fa-solid fa-plug-circle-check"></i></button>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="gateway_panel_dc_enabled">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </span>
                 </div>
                 <div id="gateway_dc_config" class="gateway-adapter-body" style="display:none;">
                     <div class="gateway-field">
@@ -173,6 +185,12 @@
                 <button id="gateway_regex_refresh" class="menu_button gateway-refresh-btn" title="刷新">
                     <i class="fa-solid fa-rotate"></i>
                 </button>
+            </div>
+
+            <!-- 网关未连接提示（内置插件，配置界面始终可用，仅加载/保存需连接网关） -->
+            <div id="gateway_regex_offline_hint" class="gateway-offline-hint" style="display:none;">
+                <i class="fa-solid fa-triangle-exclamation"></i>
+                网关未连接，无法加载/保存正则配置。下方仍可编辑与测试规则，连接网关后点击保存生效。
             </div>
 
             <!-- 全局选项 -->

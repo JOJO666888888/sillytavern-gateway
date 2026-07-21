@@ -268,6 +268,47 @@ export class TelegramAdapter extends PlatformAdapter {
     }
 
     /**
+     * 验证连接：
+     *   - 已连接：直接返回 bot 信息
+     *   - 未连接：用临时 bot 实例调用 getMe() 校验 Token 有效性（不启动轮询）
+     */
+    async verify() {
+        if (this.isConnected() && this.botInfo) {
+            return {
+                ok: true,
+                state: this.state,
+                message: `已连接: @${this.botInfo.username} (${this.botInfo.first_name})`,
+                detail: { username: this.botInfo.username, name: this.botInfo.first_name },
+            };
+        }
+
+        if (!this.config.botToken) {
+            return { ok: false, state: this.state, message: 'Bot Token 未配置' };
+        }
+
+        let tempBot = null;
+        try {
+            tempBot = new TelegramBot(this.config.botToken, { polling: false });
+            const me = await tempBot.getMe();
+            return {
+                ok: true,
+                state: this.state,
+                message: `Token 有效: @${me.username} (${me.first_name})`,
+                detail: { username: me.username, name: me.first_name },
+            };
+        } catch (error) {
+            return { ok: false, state: this.state, message: `验证失败: ${error.message}` };
+        } finally {
+            try {
+                if (tempBot) {
+                    tempBot.stopPolling();
+                    tempBot.removeAllListeners();
+                }
+            } catch (_) { /* 忽略清理错误 */ }
+        }
+    }
+
+    /**
      * 提取消息中的媒体URL
      */
     extractMedia(msg) {

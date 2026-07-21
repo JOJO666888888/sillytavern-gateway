@@ -296,6 +296,47 @@ export class DiscordAdapter extends PlatformAdapter {
     }
 
     /**
+     * 验证连接：
+     *   - 已连接：直接返回 bot 信息
+     *   - 未连接：调用 Discord REST API /users/@me 校验 Token（无需完整登录 Gateway）
+     */
+    async verify() {
+        if (this.isConnected() && this.client?.user) {
+            return {
+                ok: true,
+                state: this.state,
+                message: `已连接: ${this.client.user.tag}`,
+                detail: { tag: this.client.user.tag },
+            };
+        }
+
+        if (!this.config.botToken) {
+            return { ok: false, state: this.state, message: 'Bot Token 未配置' };
+        }
+
+        try {
+            const resp = await fetch('https://discord.com/api/v10/users/@me', {
+                headers: { Authorization: `Bot ${this.config.botToken}` },
+            });
+            if (!resp.ok) {
+                return { ok: false, state: this.state, message: `Token 无效 (HTTP ${resp.status})` };
+            }
+            const user = await resp.json();
+            const tag = user.discriminator && user.discriminator !== '0'
+                ? `${user.username}#${user.discriminator}`
+                : `@${user.username}`;
+            return {
+                ok: true,
+                state: this.state,
+                message: `Token 有效: ${tag}`,
+                detail: { username: user.username, id: user.id },
+            };
+        } catch (error) {
+            return { ok: false, state: this.state, message: `验证失败: ${error.message}` };
+        }
+    }
+
+    /**
      * 延迟工具
      */
     delay(ms) {

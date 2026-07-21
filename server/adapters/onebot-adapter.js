@@ -185,6 +185,77 @@ export class OneBotAdapter extends PlatformAdapter {
     }
 
     /**
+     * 验证连接：
+     *   - 已连接：返回登录信息
+     *   - 未连接且正向模式：尝试快速 WebSocket 连通性测试（无副作用，连上即关）
+     *   - 未连接且反向模式：提示需等待 OneBot 实现主动连入
+     */
+    async verify() {
+        if (this.isConnected()) {
+            return {
+                ok: true,
+                state: this.state,
+                message: `已连接${this.selfId ? ` (Bot ID: ${this.selfId})` : ''}`,
+                detail: { selfId: this.selfId },
+            };
+        }
+
+        if (this.config.mode === 'reverse') {
+            return {
+                ok: false,
+                state: this.state,
+                message: `未连接 (反向模式需等待 OneBot 实现主动连入，端口 ${this.config.reversePort || 8081})`,
+            };
+        }
+
+        const wsUrl = this.config.wsUrl || 'ws://127.0.0.1:8080';
+        return await this._testWsConnection(wsUrl);
+    }
+
+    /**
+     * 轻量 WebSocket 连通性测试（不影响主连接状态）
+     * @param {string} wsUrl
+     */
+    _testWsConnection(wsUrl) {
+        return new Promise((resolve) => {
+            const headers = {};
+            if (this.config.accessToken) {
+                headers['Authorization'] = `Bearer ${this.config.accessToken}`;
+            }
+
+            let settled = false;
+            const done = (result) => {
+                if (!settled) {
+                    settled = true;
+                    resolve(result);
+                }
+            };
+
+            try {
+                const testWs = new WebSocket(wsUrl, { headers });
+
+                const timer = setTimeout(() => {
+                    try { testWs.close(); } catch (_) { /* ignore */ }
+                    done({ ok: false, state: this.state, message: `连接超时: 无法连接到 ${wsUrl}` });
+                }, 5000);
+
+                testWs.on('open', () => {
+                    clearTimeout(timer);
+                    try { testWs.close(); } catch (_) { /* ignore */ }
+                    done({ ok: true, state: this.state, message: `可连接到 OneBot 服务: ${wsUrl}` });
+                });
+
+                testWs.on('error', (error) => {
+                    clearTimeout(timer);
+                    done({ ok: false, state: this.state, message: `连接失败: ${error.message}` });
+                });
+            } catch (error) {
+                done({ ok: false, state: this.state, message: `连接失败: ${error.message}` });
+            }
+        });
+    }
+
+    /**
      * 发送消息
      * @param {OutboundMessage} message
      * @returns {Promise<boolean>}

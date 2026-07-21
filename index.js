@@ -297,6 +297,13 @@ function updateConnectionStatus(connected) {
         statusEl.textContent = connected ? '已连接' : '未连接';
         statusEl.className = `gateway-status ${connected ? 'connected' : 'disconnected'}`;
     }
+
+    // 同步顶级面板连接状态徽标
+    const panelBadge = document.getElementById('gateway_panel_status');
+    if (panelBadge) {
+        panelBadge.textContent = connected ? '已连接' : '未连接';
+        panelBadge.className = `gateway-status-badge ${connected ? 'connected' : 'disconnected'}`;
+    }
 }
 
 /**
@@ -322,6 +329,15 @@ function updateStatusUI(status) {
             const stateText = stateTexts[adapterStatus.state] || adapterStatus.state;
             stateEl.textContent = stateText;
             stateEl.className = `gateway-state ${adapterStatus.state}`;
+        }
+
+        // 同步顶级面板适配器状态徽标
+        const prefix = PLATFORM_PREFIX[platform];
+        const panelStateEl = document.getElementById(`gateway_panel_${prefix}_state`);
+        if (panelStateEl && adapterStatus) {
+            const stateText = stateTexts[adapterStatus.state] || adapterStatus.state;
+            panelStateEl.textContent = stateText;
+            panelStateEl.className = `gateway-adapter-state ${adapterStatus.state}`;
         }
     }
 
@@ -371,6 +387,13 @@ function getPlatformIcon(platform) {
     };
     return icons[platform] || '💬';
 }
+
+/** 平台名 -> 面板元素 ID 前缀映射 (telegram->tg, discord->dc) */
+const PLATFORM_PREFIX = {
+    qq: 'qq',
+    telegram: 'tg',
+    discord: 'dc',
+};
 
 /**
  * HTML 转义
@@ -860,12 +883,36 @@ function bindPanelEvents() {
         refreshPanelData();
     });
 
-    // 适配器配置折叠
+    // 适配器配置折叠：点击标题栏切换。
+    // 排除开关(.toggle-switch)和验证按钮(.gateway-adapter-verify)，避免点击它们时误触发折叠。
     $('.gateway-adapter-header').on('click', function (e) {
-        if ($(e.target).is('input')) return; // 点击 checkbox 不折叠
+        if ($(e.target).closest('.toggle-switch').length) return;
+        if ($(e.target).closest('.gateway-adapter-verify').length) return;
         const targetId = $(this).data('toggle');
-        $(`#${targetId}`).slideToggle(150);
+        $(`#${targetId}`).stop(true, true).slideToggle(150);
     });
+
+    // 开关逻辑（修复反向问题）：
+    //   打开磁贴 -> 展开该 bot 配置栏；关闭磁贴 -> 收起配置栏。符合直觉。
+    $('.gateway-adapter-header .toggle-switch input').on('change', function () {
+        const header = $(this).closest('.gateway-adapter-header');
+        const targetId = header.data('toggle');
+        const body = $(`#${targetId}`);
+        if (this.checked) {
+            body.stop(true, true).slideDown(150);
+        } else {
+            body.stop(true, true).slideUp(150);
+        }
+    });
+
+    // 验证单个适配器连接
+    $('.gateway-adapter-verify').on('click', function () {
+        const platform = $(this).data('platform');
+        verifyAdapter(platform);
+    });
+
+    // 验证全部适配器连接
+    $('#gateway_panel_verify_all').on('click', verifyAllAdapters);
 
     // 保存配置
     $('#gateway_panel_save_config').on('click', savePanelConfig);
@@ -955,6 +1002,92 @@ async function loadPanelConfig() {
             $('#gateway_panel_dc_mention').prop('checked', adapters.discord.requireMention);
         }
     } catch (_) { /* 网关未连接时忽略 */ }
+}
+
+// ==================== 连接验证 ====================
+
+/**
+ * 验证单个适配器连接
+ * @param {string} platform - qq | telegram | discord
+ */
+async function verifyAdapter(platform) {
+    const btn = $(`.gateway-adapter-verify[data-platform="${platform}"]`);
+    const prefix = PLATFORM_PREFIX[platform];
+    const stateEl = $(`#gateway_panel_${prefix}_state`);
+    const icon = getPlatformIcon(platform);
+
+    btn.prop('disabled', true).html('<i class="fa-solid fa-spinner fa-spin"></i>');
+    if (stateEl.length) {
+        stateEl.text('验证中').attr('class', 'gateway-adapter-state connecting');
+    }
+
+    try {
+        const result = await apiRequest(`/api/gateway/adapters/${platform}/verify`, { method: 'POST' });
+        if (result.ok) {
+            toastr.success(`${icon} ${result.message}`);
+            if (stateEl.length) stateEl.text('✓ 正常').attr('class', 'gateway-adapter-state connected');
+        } else {
+            toastr.error(`${icon} ${result.message || '验证失败'}`);
+            if (stateEl.length) stateEl.text('✗ 异常').attr('class', 'gateway-adapter-state error');
+        }
+        return result;
+    } catch (error) {
+        toastr.error(`${icon} 验证失败: ${error.message}`);
+        if (stateEl.length) stateEl.text('✗ 异常').attr('class', 'gateway-adapter-state error');
+        return null;
+    } finally {
+        btn.prop('disabled', false).html('<i class="fa-solid fa-plug-circle-check"></i>');
+    }
+}
+
+/**
+ * 验证所有适配器连接，并在连接区块显示汇总
+ */
+async function verifyAllAdapters() {
+    const btn = $('#gateway_panel_verify_all');
+    const summaryEl = $('#gateway_panel_adapters');
+
+    btn.prop('disabled', true).html('<i class="fa-solid fa-spinner fa-spin"></i> 验证中');
+    summaryEl.show().html('<div class="gateway-empty-hint">正在验证所有平台...</div>');
+
+    try {
+        const data = await apiRequest('/api/gateway/verify', { method: 'POST' });
+        const results = data.results || {};
+        const entries = Object.entries(results);
+
+        if (entries.length === 0) {
+            summaryEl.html('<div class="gateway-empty-hint">无适配器</div>');
+            return;
+        }
+
+        const html = entries.map(([platform, r]) => `
+            <div class="gateway-verify-item ${r.ok ? 'ok' : 'fail'}">
+                <span class="gateway-verify-icon">${getPlatformIcon(platform)}</span>
+                <span class="gateway-verify-name">${platform}</span>
+                <span class="gateway-verify-msg">${escapeHtml(r.message || (r.ok ? '正常' : '异常'))}</span>
+                <span class="gateway-verify-badge ${r.ok ? 'connected' : 'error'}">${r.ok ? '✓' : '✗'}</span>
+            </div>
+        `).join('');
+        summaryEl.html(html);
+
+        // 同步更新各适配器头部状态徽标
+        for (const [platform, r] of entries) {
+            const prefix = PLATFORM_PREFIX[platform];
+            if (prefix) {
+                $(`#gateway_panel_${prefix}_state`)
+                    .text(r.ok ? '✓ 正常' : '✗ 异常')
+                    .attr('class', `gateway-adapter-state ${r.ok ? 'connected' : 'error'}`);
+            }
+        }
+
+        const okCount = entries.filter(([, r]) => r.ok).length;
+        toastr.info(`验证完成: ${okCount}/${entries.length} 个平台正常`);
+    } catch (error) {
+        summaryEl.html(`<div class="gateway-empty-hint">验证失败: ${escapeHtml(error.message)}</div>`);
+        toastr.error(`验证失败: ${error.message}`);
+    } finally {
+        btn.prop('disabled', false).html('<i class="fa-solid fa-plug-circle-check"></i> 验证全部');
+    }
 }
 
 // ==================== 插件管理 UI ====================
@@ -1129,15 +1262,20 @@ let regexConfig = { extractPatterns: [], removePatterns: [], fallbackToOriginal:
  * 加载正则过滤器配置
  */
 async function loadRegexConfig() {
+    // 正则过滤器为内置插件，配置界面应始终可见。
+    // 仅在网关未连接时显示离线提示，不再隐藏整个区块。
+    $('#gateway_regex_section').show();
     try {
         const data = await apiRequest('/api/plugins/regex-filter/config');
         regexConfig = data.config || {};
         if (!regexConfig.extractPatterns) regexConfig.extractPatterns = [];
         if (!regexConfig.removePatterns) regexConfig.removePatterns = [];
+        $('#gateway_regex_offline_hint').hide();
         renderRegexConfig();
     } catch (_) {
-        // 插件未安装时隐藏区块
-        $('#gateway_regex_section').hide();
+        // 网关未连接：仍显示配置界面(可编辑/测试)，仅提示无法加载/保存
+        $('#gateway_regex_offline_hint').show();
+        renderRegexConfig();
     }
 }
 

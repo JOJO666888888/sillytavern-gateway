@@ -143,6 +143,19 @@ export class PlatformAdapter extends EventEmitter {
     }
 
     /**
+     * 验证连接（子类可覆盖以实现凭据校验/连通性测试）
+     * 默认实现：仅报告当前连接状态。
+     * @returns {Promise<{ok: boolean, state: string, message: string, detail?: object}>}
+     */
+    async verify() {
+        return {
+            ok: this.isConnected(),
+            state: this.state,
+            message: this.isConnected() ? '已连接' : `未连接 (${this.state})`,
+        };
+    }
+
+    /**
      * 处理连接断开，触发自动重连
      * @param {string} reason - 断开原因
      */
