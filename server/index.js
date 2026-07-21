@@ -94,6 +94,19 @@ app.get('/api/gateway/status', (req, res) => {
 });
 
 /**
+ * 下载插件开发规范指南
+ * 供前端"编写参考"区块调用, 返回 docs/PLUGIN_DEVELOPMENT_GUIDE.md 文件
+ */
+app.get('/api/gateway/docs/plugin-guide', (req, res) => {
+    const guidePath = path.join(__dirname, '..', 'docs', 'PLUGIN_DEVELOPMENT_GUIDE.md');
+    res.download(guidePath, 'PLUGIN_DEVELOPMENT_GUIDE.md', (error) => {
+        if (error && !res.headersSent) {
+            res.status(404).json({ success: false, error: '指南文件不存在: ' + error.message });
+        }
+    });
+});
+
+/**
  * 获取配置
  */
 app.get('/api/gateway/config', (req, res) => {

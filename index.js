@@ -943,6 +943,9 @@ function bindPanelEvents() {
 
     // 刷新消息日志
     $('#gateway_panel_refresh_log').on('click', () => fetchGatewayStatus());
+
+    // 下载插件开发规范指南（编写参考）
+    $('#gateway_docs_download').on('click', downloadPluginGuide);
 }
 
 /**
@@ -953,6 +956,40 @@ async function refreshPanelData() {
     await loadPluginList();
     await loadPanelConfig();
     await loadRegexConfig();
+}
+
+/**
+ * 下载插件开发规范指南（编写参考）
+ * 从网关拉取 Markdown 文件, 通过 Blob + a.download 强制触发浏览器下载（跨域亦可用, 后端已开 CORS）。
+ */
+async function downloadPluginGuide() {
+    const btn = $('#gateway_docs_download');
+    const settings = getSettings();
+    const url = `${settings.serverUrl}/api/gateway/docs/plugin-guide`;
+    const defaultHtml = btn.html();
+
+    btn.prop('disabled', true).html('<i class="fa-solid fa-spinner fa-spin"></i> 下载中');
+    try {
+        const response = await fetch(url);
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        const blob = await response.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = objectUrl;
+        a.download = 'PLUGIN_DEVELOPMENT_GUIDE.md';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(objectUrl);
+        toastr.success('📘 插件开发规范指南已开始下载');
+    } catch (error) {
+        console.error('[Gateway] 下载指南失败:', error.message);
+        toastr.error(`下载失败: ${error.message}（请确认网关已连接）`);
+    } finally {
+        btn.prop('disabled', false).html(defaultHtml);
+    }
 }
 
 /**

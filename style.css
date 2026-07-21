@@ -486,6 +486,28 @@
     margin-top: 3px;
 }
 
+/* 编写参考区块（插件开发指南下载） */
+.gateway-docs-ref {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.gateway-docs-ref .gateway-hint {
+    margin-top: 0;
+    line-height: 1.5;
+}
+
+/* 让 <a> 按钮与原生 menu_button 观感一致（居中文本、不拉伸） */
+.gateway-docs-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    text-decoration: none;
+    flex-shrink: 0;
+}
+
 /* 适配器配置 */
 .gateway-adapter-config {
     border: 1px solid var(--SmartThemeBorderColor, #333);
