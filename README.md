@@ -78,28 +78,109 @@ sillytavern-gateway/
 ### 环境要求
 
 - Node.js >= 18
-- SillyTavern >= 1.10.0（如需使用 ST 扩展功能）
+- Git
+- SillyTavern >= 1.10.0（如需使用 ST 扩展面板功能）
 
-### 安装
+### ⚠️ 重要：先理解本项目的两个组件与安装位置
 
-```bash
-# 克隆项目
+本项目由两部分组成，**安装位置要求不同**，请务必先看清楚：
+
+| 组件 | 包含内容 | 作用 | 安装位置要求 |
+|------|----------|------|--------------|
+| **后端网关服务** | `server/` 目录 | 独立 Node.js 程序，负责连接各平台、消息路由 | **可放在任意目录** |
+| **前端 ST 扩展** | `manifest.json`、`index.js`、`panel.html`、`style.css` | 在 SillyTavern 中提供顶级设置面板 | **必须在 SillyTavern 扩展目录内** |
+
+> 🔑 **关键点**：SillyTavern **只会**从下面这个目录扫描并加载第三方扩展：
+>
+> ```
+> SillyTavern/public/scripts/extensions/third-party/
+> ```
+>
+> 如果扩展不在这个目录里（或没有链接指向它），SillyTavern 就加载不到，**顶级设置面板不会显示**。这是最常见的安装问题——很多人把项目 clone 到了别的目录，却没有放进 `third-party/`。
+>
+> 扩展的**目录名必须是 `sillytavern-gateway`**（SillyTavern 以目录名作为扩展标识）。
+
+### 方式一（推荐）：直接克隆到扩展目录，前后端一体
+
+最简单的做法：把整个仓库**直接 clone 进 SillyTavern 的 `third-party` 扩展目录**。这样前端扩展和后端服务在同一处——SillyTavern 能加载面板，你也能在同一目录启动后端服务。
+
+> 下面命令中的 SillyTavern 路径请替换为你的实际安装路径。
+
+**Windows（PowerShell）**：
+
+```powershell
+# 1. 进入 SillyTavern 第三方扩展目录
+cd "C:\SillyTavern\public\scripts\extensions\third-party"
+
+# 2. 克隆仓库（目录名自动为 sillytavern-gateway）
 git clone https://github.com/JOJO666888888/sillytavern-gateway.git
+
+# 3. 进入目录并安装依赖
 cd sillytavern-gateway
-
-# 安装依赖
 npm install
-```
 
-### 启动网关服务
-
-```bash
+# 4. 启动后端网关服务
 npm start
 ```
 
-服务默认运行在 `http://127.0.0.1:3210`。
+**Windows（CMD / Git Bash）**：
 
-首次启动会自动生成默认配置文件 `config/gateway.json`。
+```bash
+cd /d C:\SillyTavern\public\scripts\extensions\third-party
+git clone https://github.com/JOJO666888888/sillytavern-gateway.git
+cd sillytavern-gateway
+npm install
+npm start
+```
+
+**Linux / macOS**：
+
+```bash
+cd ~/SillyTavern/public/scripts/extensions/third-party
+git clone https://github.com/JOJO666888888/sillytavern-gateway.git
+cd sillytavern-gateway
+npm install
+npm start
+```
+
+服务默认运行在 `http://127.0.0.1:3210`，首次启动会自动生成默认配置文件 `config/gateway.json`。
+
+### 方式二：已克隆到其它目录 → 链接到扩展目录
+
+如果你已经把仓库 clone 到了别处（例如 `D:\myprojects\sillytavern-gateway`），**不必重新 clone**，把它**链接**或**复制**进 `third-party` 目录即可。推荐用链接：以后 `git pull` 更新代码会自动生效，无需重复复制。
+
+**Windows（PowerShell，目录联接 Junction，无需管理员权限）**：
+
+```powershell
+New-Item -ItemType Junction -Path "C:\SillyTavern\public\scripts\extensions\third-party\sillytavern-gateway" -Target "D:\myprojects\sillytavern-gateway"
+```
+
+**Windows（CMD，符号链接，需以管理员身份运行）**：
+
+```cmd
+mklink /D "C:\SillyTavern\public\scripts\extensions\third-party\sillytavern-gateway" "D:\myprojects\sillytavern-gateway"
+```
+
+**Linux / macOS（软链接）**：
+
+```bash
+ln -s /path/to/sillytavern-gateway ~/SillyTavern/public/scripts/extensions/third-party/sillytavern-gateway
+```
+
+> 链接建好后，仍需 `cd` 进入**真实项目目录**执行 `npm install` 和 `npm start` 来启动后端服务。
+
+### 启用扩展并验证
+
+1. **重启 SillyTavern**（或在浏览器按 `Ctrl + F5` 强制刷新页面）
+2. 打开 SillyTavern 的 **扩展** 面板（拼图图标 🧩），找到 **Multi-Platform Gateway**，勾选启用
+3. 启用后顶部设置栏会出现网关图标，点击打开面板
+4. 在面板中确认网关地址为 `http://127.0.0.1:3210`，点击 **连接**，可用 **验证全部** 检查各平台连接状态
+
+> **❓ 重启后顶级面板仍不显示？**
+> - 确认扩展目录名为 `sillytavern-gateway`，且位于 `public/scripts/extensions/third-party/` 之下
+> - 确认目录内存在 `manifest.json`、`index.js`、`style.css`
+> - 确认已在 SillyTavern 扩展列表中勾选启用本扩展
+> - 尝试 `Ctrl + F5` 强制刷新以清除浏览器缓存
 
 ## 平台配置
 
@@ -226,14 +307,19 @@ curl -X POST http://127.0.0.1:3210/api/gateway/send \
 
 ## SillyTavern 扩展安装
 
-1. 将整个 `sillytavern-gateway` 文件夹复制到 SillyTavern 的扩展目录：
+> 完整的分系统安装命令、链接方式与故障排查见上方 [快速开始](#快速开始)。此处仅为要点摘要。
+
+1. 将 `sillytavern-gateway` 文件夹放入（或链接到）SillyTavern 的**第三方扩展目录**：
+
    ```
-   SillyTavern/public/scripts/extensions/gateway/
+   SillyTavern/public/scripts/extensions/third-party/sillytavern-gateway/
    ```
 
-2. 重启 SillyTavern
+   > ⚠️ 注意是 `extensions/third-party/` 下的 `sillytavern-gateway` 目录，**不是** `extensions/gateway/`。放错位置会导致顶级面板不显示。
 
-3. 在扩展菜单中找到 **"多平台网关"**
+2. 重启 SillyTavern（或 `Ctrl + F5` 强制刷新）
+
+3. 在扩展菜单（拼图图标 🧩）中找到 **Multi-Platform Gateway** 并勾选启用
 
 4. 在设置面板中配置网关服务地址（默认 `http://127.0.0.1:3210`）
 
