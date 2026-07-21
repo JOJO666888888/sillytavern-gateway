@@ -178,15 +178,17 @@
             </div>
         </div>
 
-        <!-- 正则过滤器设置 -->
-        <div class="gateway-section" id="gateway_regex_section">
-            <div class="gateway-section-title">
+        <!-- 正则过滤器设置（抽屉式：点击标题展开/收起，插件配置区块标准格式） -->
+        <div class="gateway-section gateway-collapsible" id="gateway_regex_section">
+            <div class="gateway-section-title gateway-collapse-toggle" data-toggle="gateway_regex_body">
+                <i class="fa-solid fa-chevron-right gateway-collapse-arrow"></i>
                 <i class="fa-solid fa-filter"></i> 正则过滤器
                 <button id="gateway_regex_refresh" class="menu_button gateway-refresh-btn" title="刷新">
                     <i class="fa-solid fa-rotate"></i>
                 </button>
             </div>
 
+            <div id="gateway_regex_body" class="gateway-collapse-body" style="display:none;">
             <!-- 网关未连接提示（内置插件，配置界面始终可用，仅加载/保存需连接网关） -->
             <div id="gateway_regex_offline_hint" class="gateway-offline-hint" style="display:none;">
                 <i class="fa-solid fa-triangle-exclamation"></i>
@@ -259,6 +261,7 @@
             <button id="gateway_regex_save" class="menu_button gateway-save-btn">
                 <i class="fa-solid fa-floppy-disk"></i> 保存正则配置
             </button>
+            </div>
         </div>
     </div>
 </div>

@@ -905,6 +905,18 @@ function bindPanelEvents() {
         }
     });
 
+    // 抽屉式折叠区块：点击标题栏展开/收起内容（插件配置区块的标准格式）。
+    // 结构: .gateway-collapse-toggle[data-toggle="<bodyId>"] + .gateway-collapse-body + .gateway-collapse-arrow
+    // 排除标题栏内的按钮/输入框/开关等可交互元素，避免点击它们时误触发折叠。
+    $('.gateway-collapse-toggle').on('click', function (e) {
+        if ($(e.target).closest('button, input, select, textarea, label, a').length) return;
+        const targetId = $(this).data('toggle');
+        const body = $(`#${targetId}`);
+        const arrow = $(this).find('.gateway-collapse-arrow');
+        body.stop(true, true).slideToggle(150);
+        arrow.toggleClass('expanded');
+    });
+
     // 验证单个适配器连接
     $('.gateway-adapter-verify').on('click', function () {
         const platform = $(this).data('platform');

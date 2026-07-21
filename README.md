@@ -277,6 +277,14 @@ curl -X POST http://127.0.0.1:3210/api/gateway/send \
 
 ## 开发指南
 
+### 插件开发
+
+网关内置完整的插件系统，支持命令、事件监听、出站过滤、定时任务与前端配置界面。
+
+📖 **完整插件开发规范指南**：[docs/PLUGIN_DEVELOPMENT_GUIDE.md](docs/PLUGIN_DEVELOPMENT_GUIDE.md)
+
+该指南覆盖从 `plugin.json` / `index.js` 结构、`GatewayPlugin` SDK API、命令/监听器/出站过滤器，到配置持久化、**抽屉式前端配置界面标准格式**、GitHub 分发与插件市场的全流程，可直接据此（或借助 AI 辅助编程）开发插件。内置示例参见 `plugins/example-hello/`、`plugins/example-dice/`、`plugins/regex-filter/`。
+
 ### 添加新平台适配器
 
 1. 在 `server/adapters/` 下创建新文件，如 `wechat-adapter.js`

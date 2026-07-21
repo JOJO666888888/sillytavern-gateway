@@ -427,6 +427,30 @@
     margin-left: auto;
 }
 
+/* 抽屉式折叠区块（插件配置区块的标准格式）
+ * 结构: .gateway-collapse-toggle[data-toggle="<bodyId>"] 标题栏
+ *       + .gateway-collapse-arrow 箭头图标
+ *       + .gateway-collapse-body 可折叠内容区
+ * 点击标题栏切换 body 的展开/收起，箭头旋转指示状态。 */
+.gateway-collapse-toggle {
+    cursor: pointer;
+    user-select: none;
+}
+
+.gateway-collapse-toggle:hover {
+    opacity: 0.85;
+}
+
+.gateway-collapse-arrow {
+    display: inline-block;
+    font-size: 0.75em;
+    transition: transform 0.15s ease;
+}
+
+.gateway-collapse-arrow.expanded {
+    transform: rotate(90deg);
+}
+
 /* 字段 */
 .gateway-field {
     margin-bottom: 10px;
