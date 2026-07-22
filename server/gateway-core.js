@@ -365,6 +365,8 @@ export class GatewayCore extends EventEmitter {
             direction,
             platform: message.platform,
             chatId: message.chatId,
+            chatType: message.chatType || 'private',
+            senderName: message.senderName || '',
             content: message.content?.substring(0, 100),
             timestamp: Date.now(),
         });
