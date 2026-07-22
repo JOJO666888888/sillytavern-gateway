@@ -105,6 +105,7 @@ const DEFAULT_SETTINGS = {
     autoConnect: true,
     pollInterval: 3000,
     autoReplyEnabled: true,
+    forwardingEnabled: false, // 默认游玩模式(不转发消息); 网关模式需手动开启
 };
 
 // 扩展状态
@@ -113,6 +114,12 @@ let pollTimer = null;
 let lastMessages = [];
 /** 已处理过的消息 ID 集合 (platform+chatId+timestamp) */
 const processedMessageIds = new Set();
+/**
+ * 转发时间截断戳: 只转发 timestamp > 此值 的入站消息。
+ * 在页面加载时和切换到网关模式时重置, 确保刷新/重启后
+ * 绝不会把之前缓存的老消息转发过来。
+ */
+let forwardCutoffTs = Date.now();
 /** 等待 AI 回复的目标 { platform, chatId } */
 let pendingReplyTarget = null;
 /** 是否正在处理消息（防止重复触发） */
@@ -166,7 +173,8 @@ async function fetchGatewayStatus() {
         updateConnectionStatus(true);
 
         // 处理新消息（自动回复管线）
-        if (status.recentMessages && getSettings().autoReplyEnabled) {
+        // 双门控: 仅网关模式(forwardingEnabled)且开启自动回复时才转发
+        if (status.recentMessages && getSettings().forwardingEnabled && getSettings().autoReplyEnabled) {
             await processIncomingMessages(status.recentMessages);
         }
 
@@ -184,9 +192,12 @@ async function fetchGatewayStatus() {
  * 处理入站消息：注入 ST 聊天 → 触发 AI 生成 → 回复转发
  */
 async function processIncomingMessages(messages) {
-    // 只处理入站、未处理过的消息
+    // 只处理入站、未处理过、且晚于截断时间到达的消息
     const newMessages = messages.filter(msg => {
         if (msg.direction !== 'inbound') return false;
+        // 时间截断: 只处理进入页面/开启网关模式之后才到达的消息,
+        // 防止刷新/重启后把之前缓存的老消息批量转发进来
+        if (msg.timestamp <= forwardCutoffTs) return false;
         const msgId = `${msg.platform}|${msg.chatId}|${msg.timestamp}|${msg.content}`;
         if (processedMessageIds.has(msgId)) return false;
         return true;
@@ -247,6 +258,8 @@ async function processIncomingMessages(messages) {
  */
 function setupGenerationListener() {
     eventSource.on(event_types.GENERATION_ENDED, async (chatId) => {
+        // 游玩模式(未开启转发)时, 不把 AI 回复转发出去
+        if (!getSettings().forwardingEnabled) return;
         // 没有待回复的目标则跳过
         if (!pendingReplyTarget) return;
 
@@ -284,6 +297,25 @@ function setupGenerationListener() {
             isProcessing = false;
         }
     });
+}
+
+/**
+ * 更新模式开关 UI（游玩模式 / 网关模式）
+ * 同时将开关勾选状态与设置同步（面板注入后用于恢复状态）
+ */
+function updateModeUI() {
+    const enabled = getSettings().forwardingEnabled;
+    const textEl = $('#gateway_panel_mode_text');
+    const hintEl = $('#gateway_panel_mode_hint');
+    if (textEl.length) {
+        textEl.text(enabled ? '网关模式' : '游玩模式');
+    }
+    if (hintEl.length) {
+        hintEl.text(enabled ? '转发平台消息并自动回复' : '不转发消息，安心游玩');
+    }
+    // 区块配色: 网关模式绿色高亮, 游玩模式灰色
+    $('#gateway_mode_block').toggleClass('mode-active', enabled);
+    $('#gateway_panel_forwarding').prop('checked', enabled);
 }
 
 // ==================== UI 更新 ====================
@@ -733,6 +765,10 @@ function registerSlashCommands() {
 async function initExtension() {
     console.log('[Gateway] 扩展加载中...');
 
+    // 页面加载时间截断: 只转发进入本页面之后才到达的消息,
+    // 在此之前缓存的老消息一律不转发(无论是刷新还是重启)
+    forwardCutoffTs = Date.now();
+
     // === 注入顶级设置面板（与预设、API、世界书同等级）===
     // 单独 try/catch: 面板注入失败不应影响其他功能(斜杠命令/自动回复等)
     try {
@@ -864,6 +900,9 @@ async function initGatewayPanel() {
     bindPanelEvents();
     bindRegexEvents();
 
+    // 7. 恢复模式开关状态（游玩模式 / 网关模式）
+    updateModeUI();
+
     console.log('[Gateway] 顶级设置面板已注入 (与预设/API/世界书同等级)');
 }
 
@@ -871,6 +910,21 @@ async function initGatewayPanel() {
  * 绑定顶级面板事件
  */
 function bindPanelEvents() {
+    // === 模式开关（游玩模式 / 网关模式）===
+    // 游玩模式(默认, 未勾选): 不转发任何消息(双向)
+    // 网关模式(勾选): 转发平台消息并自动回复
+    $('#gateway_panel_forwarding').on('change', function () {
+        const settings = getSettings();
+        settings.forwardingEnabled = this.checked;
+        if (this.checked) {
+            // 切换到网关模式时重置时间截断:
+            // 只转发此刻之后才到达的消息, 之前积压的老消息一律不转发
+            forwardCutoffTs = Date.now();
+        }
+        saveSettingsDebounced();
+        updateModeUI();
+    });
+
     // 连接按钮
     $('#gateway_panel_connect').on('click', async () => {
         const url = $('#gateway_panel_url').val().trim();

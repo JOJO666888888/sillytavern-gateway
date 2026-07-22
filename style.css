@@ -383,6 +383,48 @@
     color: var(--SmartThemeBodyColor, #fff);
 }
 
+/* 运行模式开关区块（游玩模式 / 网关模式） */
+.gateway-mode-block {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    margin-bottom: 15px;
+    border: 1px solid var(--SmartThemeBorderColor, #333);
+    border-left: 3px solid #555;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.03);
+    transition: border-color 0.3s, background 0.3s;
+}
+
+/* 网关模式（开启）: 绿色高亮 */
+.gateway-mode-block.mode-active {
+    border-left-color: #4caf50;
+    background: rgba(76, 175, 80, 0.08);
+}
+
+.gateway-mode-switch {
+    flex-shrink: 0;
+}
+
+.gateway-mode-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.gateway-mode-text {
+    font-size: 14px;
+    font-weight: bold;
+    color: var(--SmartThemeBodyColor, #fff);
+}
+
+.gateway-mode-hint {
+    font-size: 11px;
+    color: var(--SmartThemeBodyColor, #999);
+    opacity: 0.7;
+}
+
 .gateway-status-badge {
     padding: 3px 10px;
     border-radius: 12px;

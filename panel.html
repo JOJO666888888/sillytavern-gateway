@@ -8,6 +8,18 @@
             <span id="gateway_panel_status" class="gateway-status-badge disconnected">未连接</span>
         </div>
 
+        <!-- 运行模式开关（游玩模式 / 网关模式）：默认游玩模式，不转发任何消息 -->
+        <div class="gateway-mode-block" id="gateway_mode_block">
+            <label class="toggle-switch gateway-mode-switch">
+                <input type="checkbox" id="gateway_panel_forwarding">
+                <span class="toggle-slider"></span>
+            </label>
+            <div class="gateway-mode-info">
+                <span class="gateway-mode-text" id="gateway_panel_mode_text">游玩模式</span>
+                <span class="gateway-mode-hint" id="gateway_panel_mode_hint">不转发消息，安心游玩</span>
+            </div>
+        </div>
+
         <!-- 连接设置 -->
         <div class="gateway-section">
             <div class="gateway-section-title">
