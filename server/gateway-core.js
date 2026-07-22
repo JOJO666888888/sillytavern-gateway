@@ -56,12 +56,14 @@ export class GatewayCore extends EventEmitter {
             logger.info(`[${name}] 已连接`);
             this.emit('adapterConnected', name);
 
-            // 连接成功后自动同步命令列表
+            // 连接成功后延迟自动同步命令列表（避免干扰连接初始化流程）
             if (this._commandRouter) {
-                const commands = this._commandRouter.getCommandsForSync();
-                adapter.syncCommands(commands).catch(err => {
-                    logger.error(`[${name}] 命令同步失败: ${err.message}`);
-                });
+                setTimeout(() => {
+                    const commands = this._commandRouter.getCommandsForSync();
+                    adapter.syncCommands(commands).catch(err => {
+                        logger.error(`[${name}] 命令同步失败: ${err.message}`);
+                    });
+                }, 2000);
             }
         });
         adapter.on('disconnected', (reason) => {
@@ -106,16 +108,31 @@ export class GatewayCore extends EventEmitter {
         this.messageQueue.start();
         logger.info('网关核心已启动');
 
-        // 启动所有已启用的适配器
+        // 并行启动所有已启用的适配器（避免单个适配器超时阻塞整个网关）
         const adapterConfigs = configManager.get('adapters') || {};
+        const startPromises = [];
         for (const [name, adapter] of this.adapters) {
             const config = adapterConfigs[name];
             if (config && config.enabled) {
                 logger.info(`启动适配器: ${name}`);
-                await adapter.start();
+                // 并行启动，单个失败不影响其他适配器和 HTTP 服务
+                startPromises.push(
+                    adapter.start().catch(error => {
+                        logger.error(`适配器 ${name} 启动失败: ${error.message}`);
+                    })
+                );
             } else {
                 logger.info(`适配器 ${name} 未启用，跳过`);
             }
+        }
+
+        // 不等待所有适配器连接完成，HTTP 服务立即可用
+        // 适配器连接结果通过事件异步通知
+        if (startPromises.length > 0) {
+            Promise.allSettled(startPromises).then(results => {
+                const connected = results.filter(r => r.status === 'fulfilled').length;
+                logger.info(`适配器启动完成: ${connected}/${results.length} 成功`);
+            });
         }
 
         this.emit('started');
