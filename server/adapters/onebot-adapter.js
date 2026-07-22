@@ -547,6 +547,21 @@ export class OneBotAdapter extends PlatformAdapter {
     }
 
     /**
+     * 同步命令列表到 QQ（OneBot）
+     * OneBot v11 无标准化命令注册 API，此处尝试 NapCat 扩展，失败则跳过
+     * @param {Array<{name: string, description: string}>} commands
+     * @returns {Promise<boolean>}
+     */
+    async syncCommands(commands) {
+        // OneBot v11 标准中没有命令注册 API
+        // NapCat 等实现可能有扩展，但接口不统一
+        // 此处仅记录日志，实际补全需在客户端侧手动配置
+        this.logger.info(`QQ 平台暂不支持自动命令同步，共 ${commands.length} 个命令。`);
+        this.logger.info('如需命令补全，请在 OneBot 客户端（NapCat/Lagrange）侧手动配置。');
+        return false;
+    }
+
+    /**
      * 停止适配器（清理所有资源）
      */
     async stop() {

@@ -1,4 +1,4 @@
-import { Client, GatewayIntentBits, Partials, Events, ChannelType } from 'discord.js';
+import { Client, GatewayIntentBits, Partials, Events, ChannelType, REST, Routes, SlashCommandBuilder } from 'discord.js';
 import { PlatformAdapter, ConnectionState, InboundMessage, OutboundMessage } from './base-adapter.js';
 
 /**
@@ -94,6 +94,37 @@ export class DiscordAdapter extends PlatformAdapter {
         // 消息更新
         this.client.on(Events.MessageUpdate, async (oldMessage, newMessage) => {
             this.logger.debug(`消息已编辑: ${newMessage.id}`);
+        });
+
+        // 处理斜杠命令交互（Discord Application Commands）
+        this.client.on(Events.InteractionCreate, async (interaction) => {
+            if (!interaction.isChatInputCommand()) return;
+
+            // 将 interaction 转换为标准入站消息
+            const args = interaction.options.data.map(opt => opt.value).join(' ');
+            const content = `/${interaction.commandName}${args ? ' ' + args : ''}`;
+
+            const inboundMsg = new InboundMessage({
+                platform: 'discord',
+                messageId: interaction.id,
+                chatId: interaction.channelId,
+                chatType: interaction.guildId ? 'channel' : 'private',
+                senderId: interaction.user.id,
+                senderName: interaction.user.username,
+                content: content,
+                timestamp: Date.now(),
+                raw: interaction,
+            });
+
+            // 标记为交互类型，供后续 reply 使用
+            inboundMsg._interaction = interaction;
+
+            // 回复 interaction（避免 Discord 超时报错）
+            try {
+                await interaction.deferReply();
+            } catch (_) { /* 忽略 defer 错误 */ }
+
+            this.emit('message', inboundMsg);
         });
 
         // 断开连接：仅标记未就绪，不触发自动重连
@@ -354,6 +385,56 @@ export class DiscordAdapter extends PlatformAdapter {
             };
         } catch (error) {
             return { ok: false, state: this.state, message: `验证失败: ${error.message}` };
+        }
+    }
+
+    /**
+     * 同步命令列表到 Discord
+     * 注册全局 Application Commands，使 "/" 输入时弹出命令列表
+     *
+     * @param {Array<{name: string, description: string}>} commands - 网关命令列表
+     * @returns {Promise<boolean>}
+     */
+    async syncCommands(commands) {
+        if (!this.client?.application?.id) {
+            this.logger.warn('Discord 客户端未就绪，无法同步命令');
+            return false;
+        }
+
+        try {
+            // Discord 命令名限制：小写字母+数字+下划线+连字符，1-32 字符
+            const slashCommands = [];
+            const seen = new Set();
+
+            for (const cmd of commands) {
+                let name = cmd.name.toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+                name = name.replace(/^[_-]+/, '').substring(0, 32);
+
+                if (!name || name.length < 1 || seen.has(name)) continue;
+                seen.add(name);
+
+                const desc = (cmd.description || cmd.name).substring(0, 100);
+
+                slashCommands.push(
+                    new SlashCommandBuilder()
+                        .setName(name)
+                        .setDescription(desc)
+                        .toJSON()
+                );
+            }
+
+            // 使用 REST API 注册全局命令（所有服务器生效，有 1 小时缓存延迟）
+            const rest = new REST({ version: '10' }).setToken(this.config.botToken);
+            await rest.put(
+                Routes.applicationCommands(this.client.application.id),
+                { body: slashCommands }
+            );
+
+            this.logger.info(`已同步 ${slashCommands.length} 个命令到 Discord`);
+            return true;
+        } catch (error) {
+            this.logger.error(`同步命令到 Discord 失败: ${error.message}`);
+            return false;
         }
     }
 

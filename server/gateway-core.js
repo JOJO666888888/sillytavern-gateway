@@ -24,6 +24,7 @@ export class GatewayCore extends EventEmitter {
         this.messageLog = [];             // 最近消息日志
         this.maxLogSize = 200;
         this.running = false;
+        this._commandRouter = null;       // 命令路由器引用（供命令同步使用）
 
         // 出站去重缓存: 防止消息队列重试时重复发送相同内容
         // key: "platform|chatId|contentHash", value: timestamp
@@ -54,6 +55,14 @@ export class GatewayCore extends EventEmitter {
         adapter.on('connected', () => {
             logger.info(`[${name}] 已连接`);
             this.emit('adapterConnected', name);
+
+            // 连接成功后自动同步命令列表
+            if (this._commandRouter) {
+                const commands = this._commandRouter.getCommandsForSync();
+                adapter.syncCommands(commands).catch(err => {
+                    logger.error(`[${name}] 命令同步失败: ${err.message}`);
+                });
+            }
         });
         adapter.on('disconnected', (reason) => {
             logger.warn(`[${name}] 已断开: ${reason}`);
@@ -343,6 +352,30 @@ export class GatewayCore extends EventEmitter {
      */
     getAdapter(name) {
         return this.adapters.get(name);
+    }
+
+    /**
+     * 注入命令路由器引用（供命令同步使用）
+     * @param {import('./command-router.js').CommandRouter} router
+     */
+    setCommandRouter(router) {
+        this._commandRouter = router;
+    }
+
+    /**
+     * 同步命令列表到所有已连接平台
+     * @param {Array<{name: string, description: string}>} commands - 命令列表
+     */
+    async syncAllCommands(commands) {
+        for (const [name, adapter] of this.adapters) {
+            if (adapter.isConnected()) {
+                try {
+                    await adapter.syncCommands(commands);
+                } catch (error) {
+                    logger.error(`同步命令到 ${name} 失败: ${error.message}`);
+                }
+            }
+        }
     }
 
     /**

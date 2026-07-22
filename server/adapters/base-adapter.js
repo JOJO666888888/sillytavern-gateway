@@ -199,6 +199,19 @@ export class PlatformAdapter extends EventEmitter {
     }
 
     /**
+     * 同步命令列表到平台（子类可覆盖）
+     * 将网关注册的所有命令推送到平台的原生命令补全系统，
+     * 使得用户在聊天输入 "/" 时能看到可用命令列表。
+     *
+     * @param {Array<{name: string, description: string, usage?: string}>} commands - 命令列表
+     * @returns {Promise<boolean>} 是否同步成功
+     */
+    async syncCommands(commands) {
+        // 基类默认不做任何事，由各平台适配器覆盖
+        return false;
+    }
+
+    /**
      * 将长文本分段（各平台有字符限制）
      * @param {string} text - 原始文本
      * @param {number} maxLength - 最大长度

@@ -242,6 +242,18 @@ app.post('/api/gateway/adapters/:name/:action', async (req, res) => {
 });
 
 /**
+ * 手动同步命令列表到所有平台
+ */
+app.post('/api/gateway/sync-commands', async (req, res) => {
+    if (!pluginManager) {
+        return res.status(500).json({ success: false, error: '插件系统未初始化' });
+    }
+    const commands = pluginManager.commandRouter.getCommandsForSync();
+    await gatewayCore.syncAllCommands(commands);
+    res.json({ success: true, message: `已同步 ${commands.length} 个命令到所有已连接平台` });
+});
+
+/**
  * 健康检查
  */
 app.get('/api/gateway/health', (req, res) => {

@@ -75,6 +75,13 @@ export class PluginManager {
             }
         }
 
+        // 注入 CommandRouter 到 GatewayCore，用于连接时自动同步命令
+        this.gateway.setCommandRouter(this.commandRouter);
+
+        // 初始同步：对已连接的适配器立即同步一次
+        const commands = this.commandRouter.getCommandsForSync();
+        await this.gateway.syncAllCommands(commands);
+
         logger.info(`插件系统初始化完成，已加载 ${this.loader.getAllPlugins().size} 个插件`);
     }
 
@@ -172,6 +179,10 @@ export class PluginManager {
             this.registerPlugin(instance);
         }
 
+        // 重新同步命令到所有平台
+        const commands = this.commandRouter.getCommandsForSync();
+        await this.gateway.syncAllCommands(commands);
+
         logger.info(`插件已启用: ${name}`);
         return { success: true, message: `插件 ${name} 已启用` };
     }
@@ -185,6 +196,10 @@ export class PluginManager {
 
         state.enabled = false;
         this.unregisterPlugin(name);
+
+        // 重新同步命令到所有平台（移除已禁用插件的命令）
+        const commands = this.commandRouter.getCommandsForSync();
+        await this.gateway.syncAllCommands(commands);
 
         logger.info(`插件已禁用: ${name}`);
         return { success: true, message: `插件 ${name} 已禁用` };
@@ -203,6 +218,9 @@ export class PluginManager {
             if (state?.enabled !== false) {
                 this.registerPlugin(instance);
             }
+            // 重新同步命令到所有平台
+            const commands = this.commandRouter.getCommandsForSync();
+            await this.gateway.syncAllCommands(commands);
             return { success: true, message: `插件 ${name} 已重载` };
         }
         return { success: false, error: `重载插件 ${name} 失败` };
@@ -531,6 +549,9 @@ export class PluginManager {
                 if (meta.enabled !== false) {
                     this.registerPlugin(instance);
                 }
+                // 重新同步命令到所有平台
+                const commands = this.commandRouter.getCommandsForSync();
+                await this.gateway.syncAllCommands(commands);
                 logger.info(`GitHub 插件安装成功: ${meta.displayName || meta.name} v${meta.version}`);
                 return {
                     success: true,

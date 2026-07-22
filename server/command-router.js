@@ -142,6 +142,23 @@ export class CommandRouter {
     }
 
     /**
+     * 获取所有命令（适配器同步用格式）
+     * @returns {Array<{name: string, description: string, usage: string, plugin: string}>}
+     */
+    getCommandsForSync() {
+        const list = [];
+        for (const [name, cmd] of this.commands) {
+            list.push({
+                name: name,
+                description: cmd.description || '',
+                usage: cmd.usage || '',
+                plugin: cmd.pluginName,
+            });
+        }
+        return list;
+    }
+
+    /**
      * 注册内置命令
      */
     registerBuiltinCommands() {

@@ -332,6 +332,59 @@ export class TelegramAdapter extends PlatformAdapter {
     }
 
     /**
+     * 同步命令列表到 Telegram
+     * 调用 Bot API setMyCommands，使用户在聊天框输入 "/" 时弹出命令列表
+     *
+     * @param {Array<{name: string, description: string}>} commands - 网关命令列表
+     * @returns {Promise<boolean>}
+     */
+    async syncCommands(commands) {
+        if (!this.bot) {
+            this.logger.warn('Telegram Bot 未初始化，无法同步命令');
+            return false;
+        }
+
+        try {
+            // Telegram 命令名限制：小写字母+数字+下划线，最长 32 字符
+            const tgCommands = [];
+            const seen = new Set();
+
+            for (const cmd of commands) {
+                // 转换命令名：只保留 a-z 0-9 _，其余替换为下划线
+                let name = cmd.name.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+                name = name.replace(/^_+/, '').substring(0, 32);
+
+                if (!name || seen.has(name)) continue;
+                seen.add(name);
+
+                // 描述截断到 256 字符
+                const desc = (cmd.description || cmd.name).substring(0, 256);
+                tgCommands.push({ command: name, description: desc });
+            }
+
+            // Telegram 限制最多 100 个命令
+            const trimmed = tgCommands.slice(0, 100);
+
+            // 私聊补全
+            await this.bot.setMyCommands(trimmed, { scope: { type: 'all_private_chats' } });
+            this.logger.info(`已同步 ${trimmed.length} 个命令到 Telegram（私聊补全）`);
+
+            // 群聊补全（部分客户端支持）
+            try {
+                await this.bot.setMyCommands(trimmed, { scope: { type: 'all_group_chats' } });
+                this.logger.debug('已同步命令到 Telegram 群聊补全');
+            } catch (_) {
+                // 群聊 scope 可能不支持，忽略
+            }
+
+            return true;
+        } catch (error) {
+            this.logger.error(`同步命令到 Telegram 失败: ${error.message}`);
+            return false;
+        }
+    }
+
+    /**
      * 移除消息中的 @mention
      */
     removeMention(text, botUsername) {
