@@ -21,10 +21,12 @@
         </div>
 
         <!-- 自动更新 -->
-        <div class="gateway-section gateway-update-section">
-            <div class="gateway-section-title">
+        <div class="gateway-section gateway-collapsible">
+            <div class="gateway-section-title gateway-collapse-toggle" data-toggle="gateway_update_body">
+                <i class="fa-solid fa-chevron-right gateway-collapse-arrow"></i>
                 <i class="fa-solid fa-arrows-rotate"></i> 自动更新
             </div>
+            <div id="gateway_update_body" class="gateway-collapse-body" style="display:none;">
             <div class="gateway-update-row">
                 <label class="toggle-switch">
                     <input type="checkbox" id="gateway_panel_auto_update">
@@ -39,6 +41,7 @@
                 </button>
             </div>
             <div id="gateway_panel_update_info" class="gateway-update-info" style="display:none;"></div>
+            </div>
         </div>
 
         <!-- 连接设置 -->
@@ -56,16 +59,39 @@
                     <button id="gateway_panel_connect" class="menu_button" title="连接"><i class="fa-solid fa-plug"></i></button>
                 </div>
             </div>
+
+            <!-- 本地服务控制 -->
+            <div class="gateway-field gateway-server-control">
+                <label class="checkbox-label">
+                    <input type="checkbox" id="gateway_panel_auto_start_server"> SillyTavern 启动时自动启动本地网关服务
+                </label>
+                <div class="gateway-field" style="margin-top:6px;">
+                    <label>服务入口路径 <span class="gateway-hint">(可选，留空则自动推导)</span></label>
+                    <input type="text" id="gateway_panel_server_path" class="text_pole" placeholder="D:\\path\\to\\sillytavern-gateway\\server\\index.js">
+                </div>
+                <span class="gateway-hint" style="display:block;margin-top:4px;">需要 ST 允许扩展访问 Node 环境；若不可用，仍需手动运行 <code>npm start</code></span>
+                <div class="gateway-field-row" style="margin-top:8px;">
+                    <button id="gateway_panel_start_server" class="menu_button" title="启动本地网关服务">
+                        <i class="fa-solid fa-play"></i> 启动服务
+                    </button>
+                    <button id="gateway_panel_stop_server" class="menu_button" title="停止本地网关服务">
+                        <i class="fa-solid fa-stop"></i> 停止服务
+                    </button>
+                    <span id="gateway_panel_server_state" class="gateway-status-badge disconnected">未启动</span>
+                </div>
+            </div>
             <div class="gateway-adapters-status" id="gateway_panel_adapters">
                 <!-- 动态填充验证结果汇总 -->
             </div>
         </div>
 
         <!-- 平台配置 -->
-        <div class="gateway-section">
-            <div class="gateway-section-title">
+        <div class="gateway-section gateway-collapsible">
+            <div class="gateway-section-title gateway-collapse-toggle" data-toggle="gateway_platform_body">
+                <i class="fa-solid fa-chevron-right gateway-collapse-arrow"></i>
                 <i class="fa-solid fa-sliders"></i> 平台配置
             </div>
+            <div id="gateway_platform_body" class="gateway-collapse-body" style="display:none;">
 
             <!-- QQ -->
             <div class="gateway-adapter-config">
@@ -94,6 +120,11 @@
                     <div class="gateway-field">
                         <label>Access Token</label>
                         <input type="password" id="gateway_panel_qq_token" class="text_pole" placeholder="可选">
+                    </div>
+                    <div class="gateway-field">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="gateway_panel_qq_mention"> 群组需要 @机器人
+                        </label>
                     </div>
                 </div>
             </div>
@@ -151,13 +182,16 @@
             <button id="gateway_panel_save_config" class="menu_button gateway-save-btn">
                 <i class="fa-solid fa-floppy-disk"></i> 保存配置
             </button>
+            </div>
         </div>
 
         <!-- 插件管理 -->
-        <div class="gateway-section">
-            <div class="gateway-section-title">
+        <div class="gateway-section gateway-collapsible">
+            <div class="gateway-section-title gateway-collapse-toggle" data-toggle="gateway_plugin_body">
+                <i class="fa-solid fa-chevron-right gateway-collapse-arrow"></i>
                 <i class="fa-solid fa-puzzle-piece"></i> 插件管理
             </div>
+            <div id="gateway_plugin_body" class="gateway-collapse-body" style="display:none;">
 
             <!-- 从 GitHub 安装 -->
             <div class="gateway-field">
@@ -196,14 +230,16 @@
             <div id="gateway_plugin_list" class="gateway-plugin-list">
                 <div class="gateway-empty-hint">加载中...</div>
             </div>
+            </div>
         </div>
 
         <!-- 编写参考：提供插件开发规范指南下载 -->
-        <div class="gateway-section gateway-docs-section">
-            <div class="gateway-section-title">
+        <div class="gateway-section gateway-collapsible gateway-docs-section">
+            <div class="gateway-section-title gateway-collapse-toggle" data-toggle="gateway_docs_body">
+                <i class="fa-solid fa-chevron-right gateway-collapse-arrow"></i>
                 <i class="fa-solid fa-book-open"></i> 编写参考
             </div>
-            <div class="gateway-docs-ref">
+            <div id="gateway_docs_body" class="gateway-collapse-body" style="display:none;">
                 <div class="gateway-hint">想开发自己的插件？下载《插件开发规范指南》，照着做即可（也可交给 AI 辅助编程）。</div>
                 <div class="gateway-field-row">
                     <button id="gateway_docs_download" class="menu_button" title="下载插件开发规范指南 (Markdown)">
@@ -217,15 +253,18 @@
         </div>
 
         <!-- 消息日志 -->
-        <div class="gateway-section">
-            <div class="gateway-section-title">
+        <div class="gateway-section gateway-collapsible">
+            <div class="gateway-section-title gateway-collapse-toggle" data-toggle="gateway_message_log_body">
+                <i class="fa-solid fa-chevron-right gateway-collapse-arrow"></i>
                 <i class="fa-solid fa-clock-rotate-left"></i> 最近消息
                 <button id="gateway_panel_refresh_log" class="menu_button gateway-refresh-btn" title="刷新">
                     <i class="fa-solid fa-rotate"></i>
                 </button>
             </div>
+            <div id="gateway_message_log_body" class="gateway-collapse-body" style="display:none;">
             <div id="gateway_panel_message_log" class="gateway-message-log">
                 <div class="gateway-empty-hint">暂无消息</div>
+            </div>
             </div>
         </div>
 
@@ -272,6 +311,9 @@
                         <button id="gateway_regex_extract_add" class="menu_button" title="添加提取规则（添加后自动保存，永久生效）">
                             <i class="fa-solid fa-plus"></i>
                         </button>
+                        <button id="gateway_regex_extract_cancel" class="menu_button gateway-regex-cancel" title="取消编辑" style="display:none;">
+                            <i class="fa-solid fa-xmark"></i>
+                        </button>
                     </div>
                 </div>
             </div>
@@ -281,6 +323,10 @@
                 <div class="gateway-regex-group-header">
                     <span>🗑️ 移除规则</span>
                     <span class="gateway-hint">提取后执行，移除匹配内容</span>
+                    <button id="gateway_regex_import_st" class="menu_button gateway-import-btn" title="导入 SillyTavern 导出的正则文件(.json)，自动筛选 AI输出→显示 规则">
+                        <i class="fa-solid fa-file-import"></i> 导入ST正则
+                    </button>
+                    <input type="file" id="gateway_regex_import_file" accept=".json" style="display:none;">
                 </div>
                 <div id="gateway_regex_remove_list" class="gateway-regex-list"></div>
                 <div class="gateway-regex-add-form">
@@ -291,6 +337,9 @@
                         <input type="text" id="gateway_regex_remove_desc" class="text_pole" placeholder="描述 (可选)">
                         <button id="gateway_regex_remove_add" class="menu_button" title="添加移除规则">
                             <i class="fa-solid fa-plus"></i>
+                        </button>
+                        <button id="gateway_regex_remove_cancel" class="menu_button gateway-regex-cancel" title="取消编辑" style="display:none;">
+                            <i class="fa-solid fa-xmark"></i>
                         </button>
                     </div>
                 </div>

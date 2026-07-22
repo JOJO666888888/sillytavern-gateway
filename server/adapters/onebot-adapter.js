@@ -375,6 +375,18 @@ export class OneBotAdapter extends PlatformAdapter {
             return;
         }
 
+        // 群组中检查是否需要 @
+        let content = event.content;
+        if (event.messageType === 'group' && this.config.requireMention) {
+            const mentioned = this._isMentioned(event);
+            if (!mentioned) {
+                this.logger.debug(`群消息未 @ 机器人，忽略: ${event.content}`);
+                return;
+            }
+            // 从内容中移除 @ 机器人 的文本
+            content = this._stripBotMention(event, content);
+        }
+
         // 转换为标准入站消息
         const inboundMsg = new InboundMessage({
             platform: 'qq',
@@ -383,7 +395,7 @@ export class OneBotAdapter extends PlatformAdapter {
             chatType: event.messageType === 'private' ? 'private' : 'group',
             senderId: String(event.userId),
             senderName: event.sender?.card || event.sender?.nickname || String(event.userId),
-            content: event.content,
+            content: content,
             mediaUrls: event.mediaUrls,
             timestamp: (event.time || 0) * 1000 || Date.now(),
             mentioned: event.mentioned,
@@ -391,6 +403,59 @@ export class OneBotAdapter extends PlatformAdapter {
         });
 
         this.emit('message', inboundMsg);
+    }
+
+    /**
+     * 检查消息中是否 @ 了机器人
+     * 支持：at 消息段指向 bot、回复 bot 的消息
+     * @param {object} event
+     * @returns {boolean}
+     */
+    _isMentioned(event) {
+        // 1. 检查 at 消息段是否指向 bot
+        const segments = event.segments || [];
+        for (const seg of segments) {
+            if (seg.type === 'at' && String(seg.data?.qq) === String(this.selfId)) {
+                return true;
+            }
+        }
+
+        // 2. 检查是否回复了 bot 的消息
+        // 部分 OneBot 实现（如 NapCat）会在 raw.source 中提供被回复消息的发送者
+        const replySender = event.raw?.source?.user_id;
+        if (replySender !== undefined && String(replySender) === String(this.selfId)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * 从内容中移除 @ 机器人的文本
+     * @param {object} event
+     * @param {string} content
+     * @returns {string}
+     */
+    _stripBotMention(event, content) {
+        const segments = event.segments || [];
+        const botName = this.selfId ? `@${this.selfId}` : null;
+        let result = content;
+
+        for (const seg of segments) {
+            if (seg.type === 'at' && String(seg.data?.qq) === String(this.selfId)) {
+                // 尝试从 content 中移除对应的 @昵称/QQ
+                const name = seg.data.name || seg.data.qq;
+                const atText = `@${name}`;
+                result = result.replace(atText, '').replace(/\s+/g, ' ').trim();
+            }
+        }
+
+        // 兜底：如果移除后内容未变且包含 botName，也尝试移除
+        if (result === content && botName) {
+            result = result.replace(new RegExp(`@${this.selfId}`, 'g'), '').replace(/\s+/g, ' ').trim();
+        }
+
+        return result;
     }
 
     /**

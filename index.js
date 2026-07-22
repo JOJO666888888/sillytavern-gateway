@@ -107,14 +107,182 @@ const DEFAULT_SETTINGS = {
     autoReplyEnabled: true,
     forwardingEnabled: false, // 默认游玩模式(不转发消息); 网关模式需手动开启
     autoUpdate: true,         // 启动 ST 时自动检查网关更新
+    autoStartServer: false,   // 启动 ST 时是否自动启动本地网关服务(需要 Node 环境)
+    serverPath: '',           // 本地网关服务入口路径(server/index.js 的绝对路径)，若为空则尝试从 import.meta.url 推导
 };
 
 // 扩展状态
 let gatewayConnected = false;
+let gatewayServerProcess = null;      // 本扩展自动启动的网关服务子进程
+let gatewayServerStartedByUs = false; // 是否由本扩展启动服务
 let pollTimer = null;
 let lastMessages = [];
 /** 已处理过的消息 ID 集合 (platform+chatId+timestamp) */
 const processedMessageIds = new Set();
+
+// ==================== 本地网关服务启动/停止 ====================
+
+/**
+ * 尝试获取 Node 模块
+ * 仅在 Electron 等允许 renderer 访问 Node 的环境有效
+ */
+function getNodeModule(name) {
+    if (typeof require !== 'undefined') {
+        try { return require(name); } catch (_) {}
+    }
+    if (globalThis.require) {
+        try { return globalThis.require(name); } catch (_) {}
+    }
+    return null;
+}
+
+/**
+ * 解析网关后端服务入口文件路径
+ * 优先使用用户配置路径，其次从 import.meta.url 推导
+ */
+function resolveGatewayServerPath() {
+    // 优先使用手动配置的路径
+    const configuredPath = getSettings().serverPath;
+    if (configuredPath) {
+        return configuredPath;
+    }
+
+    try {
+        const urlModule = getNodeModule('url');
+        const serverUrl = new URL('server/index.js', import.meta.url);
+        if (urlModule && urlModule.fileURLToPath) {
+            return urlModule.fileURLToPath(serverUrl);
+        }
+        // fallback: 简单转换 file:// 路径
+        return serverUrl.href.replace(/^file:\/\//, '').replace(/\//g, '\\');
+    } catch (error) {
+        console.error('[Gateway] 解析服务路径失败:', error);
+        return null;
+    }
+}
+
+/**
+ * 启动本地网关服务（作为子进程）
+ * 需要 ST 环境允许扩展访问 Node child_process，否则抛出错误
+ * @returns {Promise<{success: boolean, message: string}>}
+ */
+async function startGatewayServer() {
+    if (gatewayServerProcess) {
+        return { success: true, message: '网关服务已在运行' };
+    }
+
+    // 若服务已经在外部运行，直接认为已就绪
+    let alreadyRunning = false;
+    try {
+        const res = await fetch(`${getSettings().serverUrl}/api/gateway/health`);
+        alreadyRunning = res.ok;
+    } catch (_) {}
+    if (alreadyRunning) {
+        return { success: true, message: '网关服务已在运行（外部启动）' };
+    }
+
+    const childProcess = getNodeModule('child_process');
+    if (!childProcess || typeof childProcess.spawn !== 'function') {
+        throw new Error('当前 SillyTavern 环境不允许扩展访问 Node child_process，无法从扩展内启动网关服务');
+    }
+
+    const serverPath = resolveGatewayServerPath();
+    if (!serverPath) {
+        throw new Error('无法定位网关服务入口文件 (server/index.js)，请检查扩展目录完整性');
+    }
+
+    return new Promise((resolve, reject) => {
+        try {
+            console.log(`[Gateway] 正在启动本地网关服务: ${serverPath}`);
+            gatewayServerProcess = childProcess.spawn('node', [serverPath], {
+                detached: false,
+                stdio: ['ignore', 'pipe', 'pipe'],
+            });
+            gatewayServerStartedByUs = true;
+
+            let stdoutBuffer = '';
+            let stderrBuffer = '';
+
+            gatewayServerProcess.stdout.on('data', (data) => {
+                stdoutBuffer += data.toString();
+                const lines = stdoutBuffer.split('\n');
+                stdoutBuffer = lines.pop();
+                for (const line of lines) {
+                    if (line.trim()) console.log('[Gateway Server]', line.trim());
+                }
+            });
+
+            gatewayServerProcess.stderr.on('data', (data) => {
+                stderrBuffer += data.toString();
+                const lines = stderrBuffer.split('\n');
+                stderrBuffer = lines.pop();
+                for (const line of lines) {
+                    if (line.trim()) console.error('[Gateway Server]', line.trim());
+                }
+            });
+
+            gatewayServerProcess.on('error', (error) => {
+                console.error('[Gateway] 服务子进程错误:', error.message);
+                gatewayServerProcess = null;
+                gatewayServerStartedByUs = false;
+                reject(new Error(`启动网关服务失败: ${error.message}`));
+            });
+
+            gatewayServerProcess.on('close', (code) => {
+                console.log(`[Gateway] 服务子进程退出，code=${code}`);
+                gatewayServerProcess = null;
+                gatewayServerStartedByUs = false;
+                if (typeof updateGatewayServerUI === 'function') updateGatewayServerUI();
+            });
+
+            // 等待服务端口就绪，最多 10 秒
+            let attempts = 0;
+            const maxAttempts = 20;
+            const timer = setInterval(() => {
+                attempts++;
+                if (gatewayServerProcess === null) {
+                    clearInterval(timer);
+                    reject(new Error('网关服务启动后异常退出'));
+                    return;
+                }
+                fetch(`${getSettings().serverUrl}/api/gateway/health`)
+                    .then((res) => {
+                        if (res.ok) {
+                            clearInterval(timer);
+                            resolve({ success: true, message: '网关服务已启动并就绪' });
+                        }
+                    })
+                    .catch(() => {});
+                if (attempts >= maxAttempts) {
+                    clearInterval(timer);
+                    // 虽然还没检测到就绪，但进程可能正在启动，也算部分成功
+                    resolve({ success: true, message: '网关服务已启动，正在等待就绪' });
+                }
+            }, 500);
+        } catch (error) {
+            gatewayServerProcess = null;
+            gatewayServerStartedByUs = false;
+            reject(error);
+        }
+    });
+}
+
+/**
+ * 停止由本扩展启动的网关服务
+ */
+async function stopGatewayServer() {
+    if (!gatewayServerProcess) {
+        return { success: true, message: '网关服务未在运行' };
+    }
+    try {
+        gatewayServerProcess.kill();
+        gatewayServerProcess = null;
+        gatewayServerStartedByUs = false;
+        return { success: true, message: '网关服务已停止' };
+    } catch (error) {
+        throw new Error(`停止网关服务失败: ${error.message}`);
+    }
+}
 /**
  * 转发时间截断戳: 只转发 timestamp > 此值 的入站消息。
  * 在页面加载时和切换到网关模式时重置, 确保刷新/重启后
@@ -330,6 +498,24 @@ function updateModeUI() {
  */
 function updateUpdateUI() {
     $('#gateway_panel_auto_update').prop('checked', getSettings().autoUpdate);
+}
+
+/**
+ * 更新本地服务控制 UI
+ */
+function updateGatewayServerUI() {
+    const autoStart = getSettings().autoStartServer;
+    $('#gateway_panel_auto_start_server').prop('checked', autoStart);
+    $('#gateway_panel_server_path').val(getSettings().serverPath || '');
+    const running = !!gatewayServerProcess;
+    $('#gateway_panel_start_server').prop('disabled', running);
+    $('#gateway_panel_stop_server').prop('disabled', !running);
+    const stateEl = $('#gateway_panel_server_state');
+    if (running) {
+        stateEl.text('运行中').removeClass('disconnected').addClass('connected');
+    } else {
+        stateEl.text('未启动').removeClass('connected').addClass('disconnected');
+    }
 }
 
 /**
@@ -889,10 +1075,29 @@ async function initExtension() {
     // 设置 AI 生成监听器（捕获 AI 回复并转发）
     setupGenerationListener();
 
+    // 自动启动本地网关服务（若启用）
+    if (getSettings().autoStartServer) {
+        try {
+            await startGatewayServer();
+        } catch (error) {
+            console.warn('[Gateway] 自动启动本地服务失败:', error.message);
+            toastr.warning(`网关服务自动启动失败: ${error.message}`);
+        }
+    }
+
     // 自动连接（默认启用）
     if (getSettings().autoConnect) {
         await fetchGatewayStatus();
         startPolling();
+    }
+
+    // 注册页面关闭时清理自动启动的服务
+    if (gatewayServerStartedByUs) {
+        window.addEventListener('beforeunload', () => {
+            if (gatewayServerProcess) {
+                try { gatewayServerProcess.kill(); } catch (_) {}
+            }
+        });
     }
 
     // 新用户/未开启转发时给出提示
@@ -1002,6 +1207,9 @@ async function initGatewayPanel() {
     // 8. 恢复自动更新开关状态
     updateUpdateUI();
 
+    // 9. 恢复本地服务控制状态
+    updateGatewayServerUI();
+
     console.log('[Gateway] 顶级设置面板已注入 (与预设/API/世界书同等级)');
 }
 
@@ -1034,6 +1242,42 @@ function bindPanelEvents() {
         await fetchGatewayStatus();
         startPolling();
         refreshPanelData();
+    });
+
+    // 本地服务控制
+    $('#gateway_panel_auto_start_server').on('change', function () {
+        getSettings().autoStartServer = this.checked;
+        saveSettingsDebounced();
+    });
+
+    $('#gateway_panel_server_path').on('change', function () {
+        getSettings().serverPath = this.value.trim();
+        saveSettingsDebounced();
+    });
+
+    $('#gateway_panel_start_server').on('click', async () => {
+        try {
+            const result = await startGatewayServer();
+            toastr.success(result.message);
+            updateGatewayServerUI();
+            // 服务启动后自动连接
+            await fetchGatewayStatus();
+            startPolling();
+            refreshPanelData();
+        } catch (error) {
+            toastr.error(error.message);
+            updateGatewayServerUI();
+        }
+    });
+
+    $('#gateway_panel_stop_server').on('click', async () => {
+        try {
+            const result = await stopGatewayServer();
+            toastr.success(result.message);
+            updateGatewayServerUI();
+        } catch (error) {
+            toastr.error(error.message);
+        }
     });
 
     // 适配器配置折叠：点击标题栏切换。
@@ -1173,6 +1417,7 @@ async function savePanelConfig() {
                         mode: $('#gateway_panel_qq_mode').val(),
                         wsUrl: $('#gateway_panel_qq_ws').val().trim(),
                         accessToken: $('#gateway_panel_qq_token').val(),
+                        requireMention: $('#gateway_panel_qq_mention').is(':checked'),
                     },
                     telegram: {
                         enabled: $('#gateway_panel_tg_enabled').is(':checked'),
@@ -1228,6 +1473,7 @@ async function loadPanelConfig() {
             $('#gateway_panel_qq_mode').val(adapters.qq.mode);
             $('#gateway_panel_qq_ws').val(adapters.qq.wsUrl);
             $('#gateway_panel_qq_token').val(adapters.qq.accessToken);
+            $('#gateway_panel_qq_mention').prop('checked', adapters.qq.requireMention !== false);
         }
         if (adapters.telegram) {
             $('#gateway_panel_tg_enabled').prop('checked', adapters.telegram.enabled);
@@ -1501,6 +1747,7 @@ async function searchPlugins() {
 // ==================== 正则过滤器设置 ====================
 
 let regexConfig = { extractPatterns: [], removePatterns: [], fallbackToOriginal: true, trimWhitespace: true };
+let editingRegex = { type: null, idx: -1 }; // 当前正在编辑的规则 {type: 'extract' | 'remove', idx: number}
 
 /**
  * 加载正则过滤器配置
@@ -1551,7 +1798,7 @@ function renderRegexConfig() {
 
     // 提取规则列表
     const extractHtml = regexConfig.extractPatterns.map((r, i) => `
-        <div class="gateway-regex-item" data-idx="${i}" data-type="extract">
+        <div class="gateway-regex-item ${editingRegex.type === 'extract' && editingRegex.idx === i ? 'editing' : ''}" data-idx="${i}" data-type="extract">
             <div class="gateway-regex-item-main">
                 <span class="gateway-regex-item-status ${r.enabled ? 'on' : 'off'}">${r.enabled ? '✅' : '⏸️'}</span>
                 <span class="gateway-regex-item-name">${escapeHtml(r.name)}</span>
@@ -1559,6 +1806,7 @@ function renderRegexConfig() {
                 <span class="gateway-regex-item-group">组:${r.group ?? 1}</span>
             </div>
             <div class="gateway-regex-item-actions">
+                <button class="menu_button regex-rule-edit" data-type="extract" data-idx="${i}" title="编辑"><i class="fa-solid fa-pen-to-square"></i></button>
                 <button class="menu_button regex-rule-toggle" data-type="extract" data-idx="${i}" title="启用/禁用">${r.enabled ? '⏸️' : '▶️'}</button>
                 <button class="menu_button regex-rule-delete" data-type="extract" data-idx="${i}" title="删除"><i class="fa-solid fa-trash"></i></button>
             </div>
@@ -1568,7 +1816,7 @@ function renderRegexConfig() {
 
     // 移除规则列表
     const removeHtml = regexConfig.removePatterns.map((r, i) => `
-        <div class="gateway-regex-item" data-idx="${i}" data-type="remove">
+        <div class="gateway-regex-item ${editingRegex.type === 'remove' && editingRegex.idx === i ? 'editing' : ''}" data-idx="${i}" data-type="remove">
             <div class="gateway-regex-item-main">
                 <span class="gateway-regex-item-status ${r.enabled ? 'on' : 'off'}">${r.enabled ? '✅' : '⏸️'}</span>
                 <span class="gateway-regex-item-name">${escapeHtml(r.name)}</span>
@@ -1576,6 +1824,7 @@ function renderRegexConfig() {
                 <span class="gateway-regex-item-group">→"${r.replacement ?? ''}"</span>
             </div>
             <div class="gateway-regex-item-actions">
+                <button class="menu_button regex-rule-edit" data-type="remove" data-idx="${i}" title="编辑"><i class="fa-solid fa-pen-to-square"></i></button>
                 <button class="menu_button regex-rule-toggle" data-type="remove" data-idx="${i}" title="启用/禁用">${r.enabled ? '⏸️' : '▶️'}</button>
                 <button class="menu_button regex-rule-delete" data-type="remove" data-idx="${i}" title="删除"><i class="fa-solid fa-trash"></i></button>
             </div>
@@ -1583,14 +1832,61 @@ function renderRegexConfig() {
     `).join('') || '<div class="gateway-empty-hint">无移除规则</div>';
     $('#gateway_regex_remove_list').html(removeHtml);
 
+    // 根据编辑状态更新按钮与表单
+    updateRegexEditUI();
+
     // 绑定规则操作按钮
     bindRegexRuleButtons();
+}
+
+/**
+ * 根据编辑状态更新按钮与表单
+ */
+function updateRegexEditUI() {
+    const isEditing = editingRegex.type !== null && editingRegex.idx >= 0;
+
+    if (isEditing) {
+        const rule = regexConfig[editingRegex.type === 'extract' ? 'extractPatterns' : 'removePatterns'][editingRegex.idx];
+        if (rule) {
+            if (editingRegex.type === 'extract') {
+                $('#gateway_regex_extract_name').val(rule.name);
+                $('#gateway_regex_extract_pattern').val(rule.pattern);
+                $('#gateway_regex_extract_group').val(rule.group ?? 1);
+                $('#gateway_regex_extract_desc').val(rule.description || '');
+                $('#gateway_regex_extract_add').html('<i class="fa-solid fa-check"></i>').attr('title', '保存修改');
+                $('#gateway_regex_extract_cancel').show();
+            } else {
+                $('#gateway_regex_remove_name').val(rule.name);
+                $('#gateway_regex_remove_pattern').val(rule.pattern);
+                $('#gateway_regex_remove_replacement').val(rule.replacement ?? '');
+                $('#gateway_regex_remove_desc').val(rule.description || '');
+                $('#gateway_regex_remove_add').html('<i class="fa-solid fa-check"></i>').attr('title', '保存修改');
+                $('#gateway_regex_remove_cancel').show();
+            }
+        }
+    } else {
+        // 重置表单
+        $('#gateway_regex_extract_name, #gateway_regex_extract_pattern, #gateway_regex_extract_desc').val('');
+        $('#gateway_regex_extract_group').val(1);
+        $('#gateway_regex_remove_name, #gateway_regex_remove_pattern, #gateway_regex_remove_replacement, #gateway_regex_remove_desc').val('');
+        $('#gateway_regex_extract_add').html('<i class="fa-solid fa-plus"></i>').attr('title', '添加提取规则（添加后自动保存，永久生效）');
+        $('#gateway_regex_remove_add').html('<i class="fa-solid fa-plus"></i>').attr('title', '添加移除规则');
+        $('#gateway_regex_extract_cancel, #gateway_regex_remove_cancel').hide();
+    }
 }
 
 /**
  * 绑定规则操作按钮
  */
 function bindRegexRuleButtons() {
+    // 编辑
+    $('.regex-rule-edit').off('click').on('click', async function () {
+        const type = $(this).data('type');
+        const idx = $(this).data('idx');
+        editingRegex = { type, idx };
+        renderRegexConfig();
+    });
+
     // 启用/禁用（改动后立即持久化）
     $('.regex-rule-toggle').off('click').on('click', async function () {
         const type = $(this).data('type');
@@ -1608,6 +1904,9 @@ function bindRegexRuleButtons() {
         const type = $(this).data('type');
         const idx = $(this).data('idx');
         const key = type === 'extract' ? 'extractPatterns' : 'removePatterns';
+        if (editingRegex.type === type && editingRegex.idx === idx) {
+            editingRegex = { type: null, idx: -1 };
+        }
         regexConfig[key].splice(idx, 1);
         renderRegexConfig();
         await saveRegexConfig();
@@ -1634,12 +1933,23 @@ function bindRegexEvents() {
             return;
         }
 
-        regexConfig.extractPatterns.push({ name, enabled: true, pattern, group, description: desc });
+        if (editingRegex.type === 'extract') {
+            regexConfig.extractPatterns[editingRegex.idx] = { name, enabled: true, pattern, group, description: desc };
+            editingRegex = { type: null, idx: -1 };
+        } else {
+            regexConfig.extractPatterns.push({ name, enabled: true, pattern, group, description: desc });
+        }
         $('#gateway_regex_extract_name').val('');
         $('#gateway_regex_extract_pattern').val('');
         $('#gateway_regex_extract_desc').val('');
         renderRegexConfig();
         saveRegexConfig(); // 立即持久化, 规则不会因面板重载而丢失
+    });
+
+    // 取消编辑提取规则
+    $('#gateway_regex_extract_cancel').on('click', () => {
+        editingRegex = { type: null, idx: -1 };
+        renderRegexConfig();
     });
 
     // 添加移除规则
@@ -1658,13 +1968,24 @@ function bindRegexEvents() {
             return;
         }
 
-        regexConfig.removePatterns.push({ name, enabled: true, pattern, replacement, description: desc });
+        if (editingRegex.type === 'remove') {
+            regexConfig.removePatterns[editingRegex.idx] = { name, enabled: true, pattern, replacement, description: desc };
+            editingRegex = { type: null, idx: -1 };
+        } else {
+            regexConfig.removePatterns.push({ name, enabled: true, pattern, replacement, description: desc });
+        }
         $('#gateway_regex_remove_name').val('');
         $('#gateway_regex_remove_pattern').val('');
         $('#gateway_regex_remove_replacement').val('');
         $('#gateway_regex_remove_desc').val('');
         renderRegexConfig();
         saveRegexConfig(); // 立即持久化, 规则不会因面板重载而丢失
+    });
+
+    // 取消编辑移除规则
+    $('#gateway_regex_remove_cancel').on('click', () => {
+        editingRegex = { type: null, idx: -1 };
+        renderRegexConfig();
     });
 
     // 全局选项（Fallback/去空白）变化时自动保存
@@ -1716,5 +2037,44 @@ function bindRegexEvents() {
         } catch (error) {
             resultEl.show().html(`<div class="regex-match-fail">❌ 正则错误: ${escapeHtml(error.message)}</div>`);
         }
+    });
+
+    // === 导入 SillyTavern 正则 ===
+    $('#gateway_regex_import_st').on('click', () => {
+        $('#gateway_regex_import_file').trigger('click');
+    });
+
+    $('#gateway_regex_import_file').on('change', async function () {
+        const file = this.files[0];
+        if (!file) return;
+        // 重置 input 以便同一文件可再次选择
+        const resetInput = () => { this.value = ''; };
+
+        try {
+            const text = await file.text();
+            let rules;
+            try {
+                rules = JSON.parse(text);
+            } catch (e) {
+                toastr.error(`文件解析失败: 不是有效的 JSON (${e.message})`);
+                resetInput();
+                return;
+            }
+
+            const data = await apiRequest('/api/plugins/regex-filter/import-st', {
+                method: 'POST',
+                body: JSON.stringify({ rules }),
+            });
+
+            if (data.imported > 0) {
+                toastr.success(`✅ 导入成功: ${data.imported} 条规则，跳过 ${data.skipped} 条`);
+                await loadRegexConfig(); // 刷新列表
+            } else {
+                toastr.info(`导入完成: 无新规则导入 (跳过 ${data.skipped} 条，可能不适用或已存在)`);
+            }
+        } catch (error) {
+            toastr.error(`导入失败: ${error.message}`);
+        }
+        resetInput();
     });
 }

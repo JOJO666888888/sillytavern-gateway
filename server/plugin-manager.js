@@ -350,6 +350,26 @@ export class PluginManager {
             res.json({ success: true, message: `插件 ${name} 配置已更新` });
         });
 
+        // 导入 SillyTavern 正则到 regex-filter 插件
+        app.post('/api/plugins/regex-filter/import-st', (req, res) => {
+            const loaded = this.loader.getAllPlugins().get('regex-filter');
+            if (!loaded || !loaded.instance) {
+                return res.status(404).json({ success: false, error: 'regex-filter 插件未加载' });
+            }
+
+            const { rules } = req.body;
+            if (!rules) {
+                return res.status(400).json({ success: false, error: '请提供 rules 字段（ST 正则 JSON 对象或数组）' });
+            }
+
+            try {
+                const result = loaded.instance.importFromST(rules);
+                res.json({ success: true, ...result });
+            } catch (error) {
+                res.status(400).json({ success: false, error: `导入失败: ${error.message}` });
+            }
+        });
+
         // 卸载插件
         app.delete('/api/plugins/:name', async (req, res) => {
             const result = await this.uninstallPlugin(req.params.name);

@@ -24,6 +24,7 @@ const DEFAULT_CONFIG = {
             reconnectInterval: 5000,      // 初始重连间隔 (ms)
             maxReconnectInterval: 60000,  // 最大重连间隔 (ms)
             messageDedupWindow: 30000,    // 消息去重窗口 (ms)
+            requireMention: true,         // 群组中是否需要@机器人才响应
         },
         telegram: {
             enabled: false,

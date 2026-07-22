@@ -5,9 +5,10 @@
  *
  * 功能：
  * - 提取规则：用正则匹配并提取正文（如 <maintext>...</maintext> 之间的内容）
- * - 移除规则：用正则移除不需要的片段
+ * - 移除规则：用正则移除不需要的片段（兼容 SillyTavern 原生正则格式）
  * - 支持多规则、优先级、平台过滤
  * - 运行时通过命令管理规则
+ * - 支持导入 SillyTavern 导出的正则文件（.json）
  */
 
 import { GatewayPlugin } from '../../server/plugin-sdk.js';
@@ -19,7 +20,7 @@ export default class RegexFilterPlugin extends GatewayPlugin {
             alias: ['正则'],
             handler: 'handleRegex',
             description: '正则过滤器管理',
-            usage: '/regex <list|add|remove|enable|disable|test|fallback>',
+            usage: '/regex <list|add|remove|enable|disable|test|fallback|import>',
         },
     ];
 
@@ -138,7 +139,7 @@ export default class RegexFilterPlugin extends GatewayPlugin {
     }
 
     /**
-     * 应用移除规则
+     * 应用移除规则（兼容原生格式和 ST 导入格式）
      */
     _applyRemove(content) {
         const patterns = this._getRemovePatterns();
@@ -147,9 +148,25 @@ export default class RegexFilterPlugin extends GatewayPlugin {
             if (!rule.enabled) continue;
 
             try {
-                const regex = new RegExp(rule.pattern, rule.flags || 'gs');
-                const replacement = rule.replacement ?? '';
+                const pattern = rule.pattern || rule.find_regex || rule.findRegex;
+                const replacement = rule.replacement ?? rule.replace_string ?? rule.replaceString ?? '';
+                const flags = rule.flags || 'gs';
+
+                if (!pattern) continue;
+
+                const regex = new RegExp(pattern, flags);
                 content = content.replace(regex, replacement);
+
+                // ST 格式: trimStrings — 移除指定的首尾字符串
+                const trimStrings = rule.trim_strings || rule.trimStrings;
+                if (Array.isArray(trimStrings) && trimStrings.length > 0) {
+                    for (const ts of trimStrings) {
+                        if (!ts) continue;
+                        // 循环移除首尾匹配
+                        while (content.startsWith(ts)) content = content.slice(ts.length);
+                        while (content.endsWith(ts)) content = content.slice(0, -ts.length);
+                    }
+                }
             } catch (error) {
                 this.logger.error(`移除规则 [${rule.name}] 正则错误: ${error.message}`);
             }
@@ -214,6 +231,9 @@ export default class RegexFilterPlugin extends GatewayPlugin {
                 return this._cmdTest(ctx);
             case 'fallback':
                 return this._cmdFallback(ctx);
+            case 'import':
+            case '导入':
+                return this._cmdImport(ctx);
             case 'help':
             case '帮助':
                 return this._cmdHelp(ctx);
@@ -411,6 +431,169 @@ export default class RegexFilterPlugin extends GatewayPlugin {
     }
 
     /**
+     * 导入 SillyTavern 正则
+     * /regex import <json字符串>
+     * 或通过 API: POST /api/plugins/regex-filter/import-st
+     */
+    async _cmdImport(ctx) {
+        const jsonStr = ctx.args.slice(1).join(' ');
+        if (!jsonStr) {
+            return ctx.reply(
+                '用法: /regex import <SillyTavern正则JSON>\n\n' +
+                '支持格式:\n' +
+                '  - 单条正则 JSON 对象\n' +
+                '  - 正则数组\n' +
+                '  - ST 导出的 .json 文件内容\n\n' +
+                '也可通过前端面板的"导入ST正则"按钮上传文件'
+            );
+        }
+
+        try {
+            const result = this.importFromST(jsonStr);
+            return ctx.reply(result.message);
+        } catch (error) {
+            return ctx.reply(`❌ 导入失败: ${error.message}`);
+        }
+    }
+
+    // ==================== SillyTavern 正则导入 ====================
+
+    /**
+     * 从 SillyTavern 正则格式导入
+     * 支持 ST 导出的 .json 文件内容（单条对象或数组）
+     *
+     * ST 正则格式 (TavernRegex):
+     *   { scriptName/script_name, enabled, findRegex/find_regex,
+     *     replaceString/replace_string, trimStrings/trim_strings,
+     *     source: { ai_output, ... }, destination: { display, ... } }
+     *
+     * 导入策略:
+     *   - 仅导入 source.ai_output=true 且 destination.display=true 的规则
+     *     （即"作用于AI输出→显示"的正则，与网关出站过滤语义一致）
+     *   - 若 source/destination 字段缺失，视为全匹配（兼容旧版导出）
+     *   - 自动跳过重复规则（按 pattern 判重）
+     *
+     * @param {string|object|Array} input - JSON 字符串或已解析的对象/数组
+     * @returns {{message: string, imported: number, skipped: number}}
+     */
+    importFromST(input) {
+        let data = input;
+        if (typeof input === 'string') {
+            data = JSON.parse(input);
+        }
+
+        // 统一为数组
+        const regexList = Array.isArray(data) ? data : [data];
+
+        if (regexList.length === 0) {
+            return { message: '❌ 未找到任何正则规则', imported: 0, skipped: 0 };
+        }
+
+        const patterns = this._getRemovePatterns();
+        const existingPatterns = new Set(patterns.map(p => p.pattern || p.find_regex || p.findRegex));
+
+        let imported = 0;
+        let skipped = 0;
+        const importedNames = [];
+
+        for (const raw of regexList) {
+            // 规范化字段名（兼容 camelCase 和 snake_case）
+            const rule = this._normalizeSTRule(raw);
+
+            if (!rule.findRegex) {
+                skipped++;
+                continue;
+            }
+
+            // 过滤: 仅导入 "AI输出 → 显示" 的规则
+            if (!this._isRelevantForGateway(rule)) {
+                skipped++;
+                continue;
+            }
+
+            // 去重
+            if (existingPatterns.has(rule.findRegex)) {
+                skipped++;
+                continue;
+            }
+
+            // 验证正则有效性
+            try {
+                new RegExp(rule.findRegex);
+            } catch (e) {
+                this.logger.warn(`跳过无效正则 [${rule.name}]: ${e.message}`);
+                skipped++;
+                continue;
+            }
+
+            // 转换为插件格式并加入移除规则
+            patterns.push({
+                name: rule.name,
+                enabled: rule.enabled,
+                pattern: rule.findRegex,
+                replacement: rule.replaceString,
+                trimStrings: rule.trimStrings,
+                description: `[ST导入] ${rule.name}`,
+                stImported: true,
+                // 保留 ST 原始元数据供参考
+                stSource: rule.source,
+                stDestination: rule.destination,
+            });
+            existingPatterns.add(rule.findRegex);
+            imported++;
+            importedNames.push(rule.name);
+        }
+
+        if (imported > 0) {
+            this.setConfig('removePatterns', patterns);
+        }
+
+        const message = [
+            `✅ SillyTavern 正则导入完成`,
+            `   导入: ${imported} 条`,
+            `   跳过: ${skipped} 条 (不适用/重复/无效)`,
+            importedNames.length > 0 ? `   已导入: ${importedNames.join(', ')}` : '',
+        ].filter(Boolean).join('\n');
+
+        return { message, imported, skipped };
+    }
+
+    /**
+     * 规范化 ST 正则字段名（兼容 camelCase / snake_case / 旧版格式）
+     * @param {object} raw - 原始 ST 正则对象
+     * @returns {object} 规范化后的对象
+     */
+    _normalizeSTRule(raw) {
+        return {
+            name: raw.script_name || raw.scriptName || raw.name || '未命名',
+            enabled: raw.enabled !== false,
+            findRegex: raw.find_regex || raw.findRegex || raw.pattern || '',
+            replaceString: raw.replace_string ?? raw.replaceString ?? raw.replacement ?? '',
+            trimStrings: raw.trim_strings || raw.trimStrings || [],
+            source: raw.source || null,
+            destination: raw.destination || null,
+        };
+    }
+
+    /**
+     * 判断 ST 正则是否适用于网关出站过滤
+     * 条件: source 包含 ai_output 且 destination 包含 display
+     * 若 source/destination 缺失（旧版导出），默认视为适用
+     */
+    _isRelevantForGateway(rule) {
+        // 无 source/destination 信息 → 兼容旧版，默认导入
+        if (!rule.source && !rule.destination) return true;
+
+        // 有 source 但不包含 ai_output → 不适用
+        if (rule.source && !rule.source.ai_output) return false;
+
+        // 有 destination 但不包含 display → 不适用
+        if (rule.destination && !rule.destination.display) return false;
+
+        return true;
+    }
+
+    /**
      * 帮助
      */
     async _cmdHelp(ctx) {
@@ -425,10 +608,12 @@ export default class RegexFilterPlugin extends GatewayPlugin {
             '/regex disable <extract|remove> <名称或序号>',
             '/regex test <正则> [组号] - 测试正则匹配',
             '/regex fallback <on|off> - 未命中时是否发送原文',
+            '/regex import <JSON> - 导入 SillyTavern 正则',
             '',
             '💡 提取规则: 按顺序匹配，命中第一个即提取对应组内容',
             '💡 移除规则: 在提取后执行，移除所有匹配内容',
             '💡 正则默认使用 s 标志（. 匹配换行符）',
+            '💡 import 支持 ST 导出的正则 JSON（自动过滤 AI输出→显示 规则）',
         ].join('\n'));
     }
 

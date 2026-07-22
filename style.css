@@ -922,6 +922,52 @@
     font-size: 11px;
 }
 
+.gateway-regex-group-header .gateway-import-btn {
+    margin-left: auto;
+    font-size: 11px;
+    padding: 3px 8px;
+    font-weight: normal;
+    opacity: 0.9;
+}
+
+.gateway-regex-group-header .gateway-import-btn:hover {
+    opacity: 1;
+}
+
+.gateway-regex-item.editing {
+    outline: 1px solid var(--SmartThemeBorderColor, #666);
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.gateway-regex-cancel {
+    color: var(--SmartThemeBodyColor, #fff);
+}
+
+/* 本地服务控制 */
+.gateway-server-control {
+    padding: 8px;
+    background: rgba(255, 255, 255, 0.02);
+    border-radius: 6px;
+}
+
+.gateway-server-control .gateway-field-row {
+    align-items: center;
+}
+
+.gateway-server-control .gateway-status-badge {
+    margin-left: auto;
+}
+
+.gateway-server-control .gateway-status-badge.connected {
+    background: rgba(74, 222, 128, 0.2);
+    color: #4ade80;
+}
+
+.gateway-server-control .gateway-status-badge.disconnected {
+    background: rgba(156, 163, 175, 0.2);
+    color: #9ca3af;
+}
+
 .gateway-regex-list {
     margin-bottom: 8px;
 }
