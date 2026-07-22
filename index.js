@@ -132,6 +132,10 @@ function getSettings() {
     if (!extension_settings.gateway) {
         extension_settings.gateway = { ...DEFAULT_SETTINGS };
     }
+    // 存量用户兼容：旧版设置无 forwardingEnabled 字段, 回退为 true（保持原有行为）
+    if (extension_settings.gateway.forwardingEnabled === undefined) {
+        extension_settings.gateway.forwardingEnabled = true;
+    }
     return extension_settings.gateway;
 }
 
@@ -814,6 +818,14 @@ async function initExtension() {
         startPolling();
     }
 
+    // 新用户/未开启转发时给出提示
+    if (!getSettings().forwardingEnabled) {
+        toastr.info('当前为"游玩模式"——消息不会转发。如需使用网关功能，请在面板中切换到"网关模式"。', '', {
+            timeOut: 8000,
+            extendedTimeOut: 3000,
+        });
+    }
+
     console.log('[Gateway] 扩展加载完成，AI 自动回复管线已就绪');
 }
 
@@ -1077,6 +1089,28 @@ async function savePanelConfig() {
             }),
         });
         toastr.success('网关配置已保存');
+
+        // 自动启动已启用的适配器, 避免用户误以为"保存=启动"
+        try {
+            const adapterChecks = [
+                { name: 'qq', prefix: 'qq' },
+                { name: 'telegram', prefix: 'tg' },
+                { name: 'discord', prefix: 'dc' },
+            ];
+            let anyStarted = false;
+            for (const { name, prefix } of adapterChecks) {
+                if ($(`#gateway_panel_${prefix}_enabled`).is(':checked')) {
+                    try {
+                        await apiRequest(`/api/gateway/adapters/${name}/start`, { method: 'POST' });
+                        anyStarted = true;
+                    } catch (_) { /* 适配器可能已在运行或配置有误, 静默忽略 */ }
+                }
+            }
+            if (anyStarted) {
+                // 刷新状态以反映适配器启动结果
+                await fetchGatewayStatus();
+            }
+        } catch (_) { /* 网关未连接时忽略, 不影响主流程 */ }
     } catch (error) {
         toastr.error(`保存失败: ${error.message}`);
     }
@@ -1131,6 +1165,12 @@ async function verifyAdapter(platform) {
         if (result.ok) {
             toastr.success(`${icon} ${result.message}`);
             if (stateEl.length) stateEl.text('✓ 正常').attr('class', 'gateway-adapter-state connected');
+            // 凭据有效但适配器可能未连接 — 消除"验证通过但显示离线"的认知矛盾
+            if (result.state && result.state !== 'connected') {
+                toastr.warning(`${icon} 凭据有效，但适配器未连接（状态: ${result.state}）。请确认已在配置中启用并重启网关服务。`, '', {
+                    timeOut: 8000,
+                });
+            }
         } else {
             toastr.error(`${icon} ${result.message || '验证失败'}`);
             if (stateEl.length) stateEl.text('✗ 异常').attr('class', 'gateway-adapter-state error');
