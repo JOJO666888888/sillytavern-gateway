@@ -1383,6 +1383,24 @@ async function loadRegexConfig() {
 }
 
 /**
+ * 将当前正则配置立即持久化到后端
+ * 所有增/删/改操作后都会调用, 确保规则不会因面板重载/刷新而丢失
+ * @returns {Promise<boolean>} 是否保存成功
+ */
+async function saveRegexConfig() {
+    try {
+        await apiRequest('/api/plugins/regex-filter/config', {
+            method: 'POST',
+            body: JSON.stringify(regexConfig),
+        });
+        return true;
+    } catch (error) {
+        toastr.error(`正则配置保存失败: ${error.message}（请确认网关已连接）`);
+        return false;
+    }
+}
+
+/**
  * 渲染正则配置到 UI
  */
 function renderRegexConfig() {
@@ -1432,24 +1450,26 @@ function renderRegexConfig() {
  * 绑定规则操作按钮
  */
 function bindRegexRuleButtons() {
-    // 启用/禁用
-    $('.regex-rule-toggle').off('click').on('click', function () {
+    // 启用/禁用（改动后立即持久化）
+    $('.regex-rule-toggle').off('click').on('click', async function () {
         const type = $(this).data('type');
         const idx = $(this).data('idx');
         const key = type === 'extract' ? 'extractPatterns' : 'removePatterns';
         if (regexConfig[key][idx]) {
             regexConfig[key][idx].enabled = !regexConfig[key][idx].enabled;
             renderRegexConfig();
+            await saveRegexConfig();
         }
     });
 
-    // 删除
-    $('.regex-rule-delete').off('click').on('click', function () {
+    // 删除（改动后立即持久化）
+    $('.regex-rule-delete').off('click').on('click', async function () {
         const type = $(this).data('type');
         const idx = $(this).data('idx');
         const key = type === 'extract' ? 'extractPatterns' : 'removePatterns';
         regexConfig[key].splice(idx, 1);
         renderRegexConfig();
+        await saveRegexConfig();
     });
 }
 
@@ -1478,6 +1498,7 @@ function bindRegexEvents() {
         $('#gateway_regex_extract_pattern').val('');
         $('#gateway_regex_extract_desc').val('');
         renderRegexConfig();
+        saveRegexConfig(); // 立即持久化, 规则不会因面板重载而丢失
     });
 
     // 添加移除规则
@@ -1502,21 +1523,22 @@ function bindRegexEvents() {
         $('#gateway_regex_remove_replacement').val('');
         $('#gateway_regex_remove_desc').val('');
         renderRegexConfig();
+        saveRegexConfig(); // 立即持久化, 规则不会因面板重载而丢失
     });
 
-    // 保存配置
+    // 全局选项（Fallback/去空白）变化时自动保存
+    $('#gateway_regex_fallback, #gateway_regex_trim').on('change', () => {
+        regexConfig.fallbackToOriginal = $('#gateway_regex_fallback').is(':checked');
+        regexConfig.trimWhitespace = $('#gateway_regex_trim').is(':checked');
+        saveRegexConfig();
+    });
+
+    // 手动保存按钮（规则的增删改已自动保存, 此按钮用于兜底确认）
     $('#gateway_regex_save').on('click', async () => {
         regexConfig.fallbackToOriginal = $('#gateway_regex_fallback').is(':checked');
         regexConfig.trimWhitespace = $('#gateway_regex_trim').is(':checked');
-
-        try {
-            await apiRequest('/api/plugins/regex-filter/config', {
-                method: 'POST',
-                body: JSON.stringify(regexConfig),
-            });
+        if (await saveRegexConfig()) {
             toastr.success('正则过滤配置已保存');
-        } catch (error) {
-            toastr.error(`保存失败: ${error.message}`);
         }
     });
 

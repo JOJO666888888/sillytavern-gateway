@@ -246,9 +246,9 @@
                     <input type="text" id="gateway_regex_extract_name" class="text_pole" placeholder="名称 (如: maintext)">
                     <input type="text" id="gateway_regex_extract_pattern" class="text_pole" placeholder="正则 (如: <maintext>([\s\S]*?)</maintext>)">
                     <div class="gateway-field-row">
-                        <input type="number" id="gateway_regex_extract_group" class="text_pole" value="1" min="0" max="20" title="提取组号" style="width:60px;">
+                        <input type="number" id="gateway_regex_extract_group" class="text_pole" value="1" min="0" max="20" title="提取第几个捕获组(括号)：0=整个匹配，1=第一个括号内容(默认)。与生效次数无关，规则添加后永久生效" style="width:60px;">
                         <input type="text" id="gateway_regex_extract_desc" class="text_pole" placeholder="描述 (可选)">
-                        <button id="gateway_regex_extract_add" class="menu_button" title="添加提取规则">
+                        <button id="gateway_regex_extract_add" class="menu_button" title="添加提取规则（添加后自动保存，永久生效）">
                             <i class="fa-solid fa-plus"></i>
                         </button>
                     </div>
@@ -288,6 +288,7 @@
                 <div id="gateway_regex_test_result" class="gateway-regex-test-result" style="display:none;"></div>
             </div>
 
+            <div class="gateway-hint" style="margin-bottom:6px;">💡 规则的增/删/改及上方开关均会自动保存并永久生效，无需手动保存。</div>
             <button id="gateway_regex_save" class="menu_button gateway-save-btn">
                 <i class="fa-solid fa-floppy-disk"></i> 保存正则配置
             </button>
