@@ -1,6 +1,7 @@
 import express from 'express';
 import http from 'http';
 import path from 'path';
+import { exec } from 'child_process';
 import { fileURLToPath } from 'url';
 import { createLogger } from './utils/logger.js';
 import configManager from './utils/config.js';
@@ -14,6 +15,7 @@ import { PluginManager } from './plugin-manager.js';
 
 const logger = createLogger('server');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.join(__dirname, '..');
 
 const app = express();
 app.use(express.json());
@@ -248,6 +250,90 @@ app.get('/api/gateway/health', (req, res) => {
         uptime: process.uptime(),
         timestamp: Date.now(),
     });
+});
+
+// ==================== 自动更新 API ====================
+
+/**
+ * 在仓库根目录执行 git 命令
+ */
+function runGit(args) {
+    return new Promise((resolve, reject) => {
+        exec(`git ${args}`, { cwd: REPO_ROOT, timeout: 30000 }, (error, stdout, stderr) => {
+            if (error) {
+                reject(new Error((stderr || error.message).trim()));
+            } else {
+                resolve(stdout.trim());
+            }
+        });
+    });
+}
+
+/**
+ * 检查更新: 对比本地 HEAD 与 origin/main 的差异
+ */
+app.get('/api/gateway/update/check', async (req, res) => {
+    try {
+        await runGit('fetch origin main');
+        const currentCommit = (await runGit('rev-parse HEAD')).substring(0, 7);
+        const latestCommit = (await runGit('rev-parse origin/main')).substring(0, 7);
+        const behindBy = parseInt(await runGit('rev-list HEAD...origin/main --count')) || 0;
+
+        res.json({
+            success: true,
+            hasUpdate: behindBy > 0,
+            currentCommit,
+            latestCommit,
+            behindBy,
+        });
+    } catch (error) {
+        res.json({ success: false, error: `检查更新失败: ${error.message}` });
+    }
+});
+
+/**
+ * 应用更新: git pull --ff-only, 若 package.json 变动则自动 npm install
+ */
+app.post('/api/gateway/update/apply', async (req, res) => {
+    try {
+        // 1. 检查工作目录是否干净
+        const status = await runGit('status --porcelain');
+        if (status) {
+            return res.json({ success: false, error: '工作目录有未提交的更改，请先提交或撤销后再更新' });
+        }
+
+        // 2. Fast-forward pull
+        const pullResult = await runGit('pull --ff-only origin main');
+
+        // 3. 检查 package.json 是否变动
+        const changed = await runGit('diff HEAD@{1} HEAD --name-only');
+        const changedFiles = changed.split('\n').filter(Boolean);
+        const pkgChanged = changedFiles.includes('package.json');
+
+        let extraMessage = '';
+        if (pkgChanged) {
+            try {
+                await new Promise((resolve, reject) => {
+                    exec('npm install --no-audit --no-fund', { cwd: REPO_ROOT, timeout: 120000 }, (err) => {
+                        if (err) reject(err);
+                        else resolve();
+                    });
+                });
+                extraMessage = '，依赖已自动更新';
+            } catch (_) {
+                extraMessage = '，但依赖更新失败，请手动执行 npm install';
+            }
+        }
+
+        res.json({
+            success: true,
+            message: `更新成功${extraMessage}。请重启网关服务以应用更改。`,
+            changedFiles,
+            needRestart: true,
+        });
+    } catch (error) {
+        res.json({ success: false, error: `更新失败: ${error.message}` });
+    }
 });
 
 // ==================== 启动服务 ====================

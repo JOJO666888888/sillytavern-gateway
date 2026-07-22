@@ -1035,3 +1035,44 @@
 .regex-match-fail {
     color: #f44336;
 }
+
+/* ==================== 自动更新区块 ==================== */
+
+.gateway-update-section {
+    border-left: 3px solid #6c5ce7;
+}
+
+.gateway-update-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.gateway-update-label {
+    flex: 1;
+    font-size: 13px;
+    color: var(--SmartThemeBodyColor, #ccc);
+}
+
+.gateway-update-apply-btn {
+    background: linear-gradient(135deg, #6c5ce7, #a29bfe) !important;
+    color: #fff !important;
+    border: none !important;
+    font-weight: bold;
+}
+
+.gateway-update-apply-btn:hover {
+    background: linear-gradient(135deg, #5b4cdb, #8b7ef0) !important;
+}
+
+.gateway-update-info {
+    margin-top: 8px;
+    padding: 8px 12px;
+    border-radius: 6px;
+    background: rgba(108, 92, 231, 0.1);
+    border: 1px solid rgba(108, 92, 231, 0.25);
+    color: var(--SmartThemeBodyColor, #ccc);
+    font-size: 12px;
+    word-break: break-all;
+}

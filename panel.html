@@ -20,6 +20,27 @@
             </div>
         </div>
 
+        <!-- 自动更新 -->
+        <div class="gateway-section gateway-update-section">
+            <div class="gateway-section-title">
+                <i class="fa-solid fa-arrows-rotate"></i> 自动更新
+            </div>
+            <div class="gateway-update-row">
+                <label class="toggle-switch">
+                    <input type="checkbox" id="gateway_panel_auto_update">
+                    <span class="toggle-slider"></span>
+                </label>
+                <span class="gateway-update-label">启动 SillyTavern 时自动检查更新</span>
+                <button id="gateway_panel_update_check" class="menu_button" title="立即检查更新">
+                    <i class="fa-solid fa-magnifying-glass"></i> 检查更新
+                </button>
+                <button id="gateway_panel_update_apply" class="menu_button gateway-update-apply-btn" title="应用更新" style="display:none;">
+                    <i class="fa-solid fa-download"></i> 立即更新
+                </button>
+            </div>
+            <div id="gateway_panel_update_info" class="gateway-update-info" style="display:none;"></div>
+        </div>
+
         <!-- 连接设置 -->
         <div class="gateway-section">
             <div class="gateway-section-title">

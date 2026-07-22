@@ -106,6 +106,7 @@ const DEFAULT_SETTINGS = {
     pollInterval: 3000,
     autoReplyEnabled: true,
     forwardingEnabled: false, // 默认游玩模式(不转发消息); 网关模式需手动开启
+    autoUpdate: true,         // 启动 ST 时自动检查网关更新
 };
 
 // 扩展状态
@@ -322,6 +323,82 @@ function updateModeUI() {
     // 区块配色: 网关模式绿色高亮, 游玩模式灰色
     $('#gateway_mode_block').toggleClass('mode-active', enabled);
     $('#gateway_panel_forwarding').prop('checked', enabled);
+}
+
+/**
+ * 恢复自动更新开关状态
+ */
+function updateUpdateUI() {
+    $('#gateway_panel_auto_update').prop('checked', getSettings().autoUpdate);
+}
+
+/**
+ * 检查网关更新
+ * @param {boolean} silent - true 时仅在发现更新时通知, 无更新则静默
+ */
+async function checkForUpdate(silent = false) {
+    const checkBtn = $('#gateway_panel_update_check');
+    const infoEl = $('#gateway_panel_update_info');
+
+    checkBtn.prop('disabled', true).html('<i class="fa-solid fa-spinner fa-spin"></i>');
+
+    try {
+        const result = await apiRequest('/api/gateway/update/check');
+        if (result.hasUpdate) {
+            infoEl.show().html(`
+                <i class="fa-solid fa-circle-up"></i> 发现新版本！
+                当前 <code>${result.currentCommit}</code> → 最新 <code>${result.latestCommit}</code>
+                （落后 <b>${result.behindBy}</b> 个提交）
+            `);
+            $('#gateway_panel_update_apply').show();
+            if (!silent) {
+                toastr.info(`发现新版本（落后 ${result.behindBy} 个提交）`, '网关更新');
+            }
+        } else {
+            infoEl.show().html('<i class="fa-solid fa-circle-check"></i> 已是最新版本 ✓');
+            $('#gateway_panel_update_apply').hide();
+            if (!silent) {
+                toastr.success('已是最新版本');
+            }
+        }
+    } catch (error) {
+        infoEl.show().html(`<i class="fa-solid fa-triangle-exclamation"></i> ${escapeHtml(error.message)}`);
+        if (!silent) {
+            toastr.error(`检查更新失败: ${error.message}`);
+        }
+    } finally {
+        checkBtn.prop('disabled', false).html('<i class="fa-solid fa-magnifying-glass"></i> 检查更新');
+    }
+}
+
+/**
+ * 应用网关更新（git pull + 自动 npm install）
+ */
+async function applyUpdate() {
+    const btn = $('#gateway_panel_update_apply');
+    const infoEl = $('#gateway_panel_update_info');
+
+    if (!confirm('确定要更新网关程序吗？更新后需要重启网关服务。')) return;
+
+    btn.prop('disabled', true).html('<i class="fa-solid fa-spinner fa-spin"></i> 更新中');
+
+    try {
+        const result = await apiRequest('/api/gateway/update/apply', { method: 'POST' });
+        if (result.success) {
+            toastr.success(result.message);
+            infoEl.show().html(`<i class="fa-solid fa-circle-check"></i> ${escapeHtml(result.message)}`);
+            btn.hide();
+            // 提示重启
+            toastr.info('请重启网关服务以应用更改（在终端中重新运行 node server/index.js）', '', { timeOut: 15000 });
+        } else {
+            toastr.error(result.error);
+            infoEl.show().html(`<i class="fa-solid fa-triangle-exclamation"></i> ${escapeHtml(result.error)}`);
+        }
+    } catch (error) {
+        toastr.error(`更新失败: ${error.message}`);
+    } finally {
+        btn.prop('disabled', false).html('<i class="fa-solid fa-download"></i> 立即更新');
+    }
 }
 
 // ==================== UI 更新 ====================
@@ -826,6 +903,11 @@ async function initExtension() {
         });
     }
 
+    // 自动更新检查
+    if (getSettings().autoUpdate && gatewayConnected) {
+        setTimeout(() => checkForUpdate(true), 3000); // 延迟 3s, 避免与启动阶段网络请求竞争
+    }
+
     console.log('[Gateway] 扩展加载完成，AI 自动回复管线已就绪');
 }
 
@@ -916,6 +998,9 @@ async function initGatewayPanel() {
 
     // 7. 恢复模式开关状态（游玩模式 / 网关模式）
     updateModeUI();
+
+    // 8. 恢复自动更新开关状态
+    updateUpdateUI();
 
     console.log('[Gateway] 顶级设置面板已注入 (与预设/API/世界书同等级)');
 }
@@ -1014,6 +1099,20 @@ function bindPanelEvents() {
 
     // 下载插件开发规范指南（编写参考）
     $('#gateway_docs_download').on('click', downloadPluginGuide);
+
+    // === 自动更新 ===
+    // 自动更新开关
+    $('#gateway_panel_auto_update').on('change', function () {
+        const settings = getSettings();
+        settings.autoUpdate = this.checked;
+        saveSettingsDebounced();
+    });
+
+    // 立即检查更新
+    $('#gateway_panel_update_check').on('click', () => checkForUpdate(false));
+
+    // 应用更新
+    $('#gateway_panel_update_apply').on('click', applyUpdate);
 }
 
 /**
