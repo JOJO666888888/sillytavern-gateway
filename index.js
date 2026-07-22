@@ -230,6 +230,7 @@ async function processIncomingMessages(messages) {
             pendingReplyTarget = {
                 platform: msg.platform,
                 chatId: msg.chatId,
+                chatType: msg.chatType || 'private', // 频道消息需传 chatType, 否则 Discord 会用频道ID当用户ID查询导致发送失败
             };
 
             // 1. 注入用户消息到 ST 聊天
@@ -282,6 +283,7 @@ function setupGenerationListener() {
                 body: JSON.stringify({
                     platform: target.platform,
                     chatId: target.chatId,
+                    chatType: target.chatType || 'private',
                     content: replyContent,
                 }),
             });

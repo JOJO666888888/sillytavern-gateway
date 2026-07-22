@@ -25,6 +25,11 @@ export class GatewayCore extends EventEmitter {
         this.maxLogSize = 200;
         this.running = false;
 
+        // 出站去重缓存: 防止消息队列重试时重复发送相同内容
+        // key: "platform|chatId|contentHash", value: timestamp
+        this._recentOutbound = new Map();
+        this._outboundDedupWindow = 15000; // 15秒内相同内容同目标视为重复
+
         // 设置消息队列的发送处理器
         this.messageQueue.setSendHandler(async (msg) => {
             return await this.dispatchOutbound(msg);
@@ -237,13 +242,15 @@ export class GatewayCore extends EventEmitter {
 
         const adapter = this.adapters.get(message.platform);
         if (!adapter) {
-            logger.error(`未找到平台适配器: ${message.platform}`);
-            return false;
+            const err = new Error(`未找到平台适配器: ${message.platform}`);
+            logger.error(err.message);
+            throw err;
         }
 
         if (!adapter.isConnected()) {
-            logger.warn(`[${message.platform}] 适配器未连接，无法发送`);
-            return false;
+            const err = new Error(`[${message.platform}] 适配器未连接 (${adapter.state})，无法发送`);
+            logger.warn(err.message);
+            throw err;
         }
 
         try {
@@ -251,17 +258,31 @@ export class GatewayCore extends EventEmitter {
             const segments = adapter.splitMessage(message.content, this.getMaxLength(message.platform));
 
             for (const segment of segments) {
+                // 出站去重: 防止消息队列重试时重复发送相同内容到同一目标
+                const dedupKey = `${message.platform}|${message.chatId}|${this._hashContent(segment)}`;
+                const lastSent = this._recentOutbound.get(dedupKey);
+                if (lastSent && (Date.now() - lastSent) < this._outboundDedupWindow) {
+                    logger.warn(`[${message.platform}] 跳过重复发送 (${Date.now() - lastSent}ms 内已发送过相同内容)`);
+                    continue;
+                }
+
                 const segMsg = new OutboundMessage({
                     ...message,
                     content: segment,
                 });
                 await adapter.send(segMsg);
 
+                // 记录已发送（用于去重）
+                this._recentOutbound.set(dedupKey, Date.now());
+
                 // 分段间添加小延迟避免频率限制
                 if (segments.length > 1) {
                     await this.delay(500);
                 }
             }
+
+            // 定期清理过期的去重条目
+            this._cleanDedupCache();
 
             logger.info(`[${message.platform}] 消息已发送到 ${message.chatId}`);
             return true;
@@ -358,6 +379,29 @@ export class GatewayCore extends EventEmitter {
      */
     delay(ms) {
         return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    /**
+     * 对消息内容做简单哈希（用于去重键）
+     * @param {string} content
+     * @returns {string} 8位十六进制哈希
+     */
+    _hashContent(content) {
+        let hash = 5381;
+        for (let i = 0; i < content.length; i++) {
+            hash = ((hash << 5) + hash + content.charCodeAt(i)) | 0;
+        }
+        return (hash >>> 0).toString(16).padStart(8, '0');
+    }
+
+    /**
+     * 清理过期的去重缓存条目（超过去重窗口2倍的条目）
+     */
+    _cleanDedupCache() {
+        const cutoff = Date.now() - this._outboundDedupWindow * 2;
+        for (const [key, ts] of this._recentOutbound) {
+            if (ts < cutoff) this._recentOutbound.delete(key);
+        }
     }
 }
 

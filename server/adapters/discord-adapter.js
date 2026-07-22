@@ -59,12 +59,31 @@ export class DiscordAdapter extends PlatformAdapter {
      * 设置事件处理器
      */
     setupEventHandlers() {
-        // 客户端就绪
+        // 客户端就绪（仅首次触发，用于通知网关连接成功）
         this.client.once(Events.ClientReady, (client) => {
             this.ready = true;
             this.logger.info(`Discord Bot 已上线: ${client.user.tag}`);
             this.setState(ConnectionState.CONNECTED);
             this.emit('connected');
+        });
+
+        // Shard 就绪（每次 shard 就绪都触发，包括重连后）
+        // 这是修复"重连后无法发送消息"的关键：断连后 discord.js 内部自动重连，
+        // ShardReady 会再次触发，我们在此恢复 ready 标志和 CONNECTED 状态。
+        this.client.on(Events.ShardReady, (id, unavailableGuilds) => {
+            this.ready = true;
+            const guildCount = unavailableGuilds?.size ?? 0;
+            this.logger.info(`Discord Shard ${id} 已就绪${guildCount > 0 ? ` (${guildCount} 个服务器不可用)` : ''}`);
+            if (this.state !== ConnectionState.CONNECTED) {
+                this.setState(ConnectionState.CONNECTED);
+            }
+        });
+
+        // Shard 会话恢复（断连后无需完整重连即恢复）
+        this.client.on(Events.ShardResume, (id, replayedEvents) => {
+            this.ready = true;
+            this.logger.info(`Discord Shard ${id} 会话已恢复 (重放 ${replayedEvents} 个事件)`);
+            this.setState(ConnectionState.CONNECTED);
         });
 
         // 消息创建
@@ -77,11 +96,13 @@ export class DiscordAdapter extends PlatformAdapter {
             this.logger.debug(`消息已编辑: ${newMessage.id}`);
         });
 
-        // 断开连接
+        // 断开连接：仅标记未就绪，不触发自动重连
+        // discord.js 内部有完善的 WebSocket 重连机制，我们只需等待 ShardReady/ShardResume 恢复。
+        // 如果在这里调用 handleDisconnect，会与 discord.js 内部重连产生竞态（两边同时尝试重连），
+        // 导致创建重复 Client 实例、状态混乱、ready 永远无法恢复。
         this.client.on(Events.ShardDisconnect, (event) => {
             this.logger.warn(`Discord Shard 断开: ${event.code}`);
             this.ready = false;
-            this.handleDisconnect(`Shard 断开 (${event.code})`);
         });
 
         // 重连
