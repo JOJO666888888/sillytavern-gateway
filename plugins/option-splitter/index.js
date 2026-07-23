@@ -178,6 +178,7 @@ export default class OptionSplitterPlugin extends GatewayPlugin {
         }
 
         let m;
+        let idx = 0;
         while ((m = regex.exec(text)) !== null) {
             // 取最后一个非 undefined 的捕获组作为选项内容
             // 默认正则有2组：m[1]=序号, m[2]=内容，应取 m[2]
@@ -189,9 +190,12 @@ export default class OptionSplitterPlugin extends GatewayPlugin {
                     break;
                 }
             }
+            // 保留序号信息（m[1] 用于重建 "选项X：" 标签）
+            const index = (m[1] !== undefined) ? m[1] : String(++idx);
             options.push({
                 content: matched.trim(),
                 raw: m[0].trim(),
+                index,
             });
         }
         return options;
@@ -223,7 +227,12 @@ export default class OptionSplitterPlugin extends GatewayPlugin {
         if (mainText) parts.push(''); // 空行分隔
 
         options.forEach((o, i) => {
-            const text = this.getConfig('stripPrefix') !== false ? o.content : o.raw;
+            let text;
+            if (this.getConfig('stripPrefix') !== false) {
+                text = `选项${o.index}：${o.content}`;
+            } else {
+                text = o.raw;
+            }
             parts.push(`${prefix}${text}`);
         });
 
@@ -252,7 +261,13 @@ export default class OptionSplitterPlugin extends GatewayPlugin {
                 try {
                     await this._delay(i === 0 ? initialDelay : optionDelay);
 
-                    const text = stripPrefix ? options[i].content : options[i].raw;
+                    let text;
+                    if (stripPrefix) {
+                        // 去掉 > 前缀，但保留 "选项X：" 标签
+                        text = `选项${options[i].index}：${options[i].content}`;
+                    } else {
+                        text = options[i].raw;
+                    }
                     if (!text) continue;
 
                     const optMsg = new OutboundMessage({
@@ -341,7 +356,6 @@ export default class OptionSplitterPlugin extends GatewayPlugin {
         ].join('\n');
 
         const { options, mainText } = this._extractFromContent(sample);
-        const strip = this.getConfig('stripPrefix') !== false;
 
         const lines = [
             '🧪 解析测试',
@@ -351,7 +365,7 @@ export default class OptionSplitterPlugin extends GatewayPlugin {
             '',
             `── 选项 ${options.length} 条（将逐条发送）──`,
         ];
-        options.forEach((o, i) => lines.push(`  ${i + 1}. ${strip ? o.content : o.raw}`));
+        options.forEach((o, i) => lines.push(`  ${i + 1}. 选项${o.index}：${o.content}`));
         return ctx.reply(lines.join('\n'));
     }
 
