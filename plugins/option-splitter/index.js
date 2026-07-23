@@ -166,7 +166,7 @@ export default class OptionSplitterPlugin extends GatewayPlugin {
 
         let regex;
         if (customPattern) {
-            // 自定义正则：用户提供的模式，取第一个捕获组作为选项内容
+            // 自定义正则：用户提供的模式，取最后一个捕获组作为选项内容
             try {
                 regex = new RegExp(customPattern, 'gm');
             } catch (e) {
@@ -179,8 +179,16 @@ export default class OptionSplitterPlugin extends GatewayPlugin {
 
         let m;
         while ((m = regex.exec(text)) !== null) {
-            // 捕获组优先，无捕获组则取整个匹配
-            const matched = m[1] || m[0];
+            // 取最后一个非 undefined 的捕获组作为选项内容
+            // 默认正则有2组：m[1]=序号, m[2]=内容，应取 m[2]
+            // 自定义正则若只有1组，取 m[1]；无组则取 m[0]
+            let matched = m[0];
+            for (let i = m.length - 1; i >= 1; i--) {
+                if (m[i] !== undefined) {
+                    matched = m[i];
+                    break;
+                }
+            }
             options.push({
                 content: matched.trim(),
                 raw: m[0].trim(),
