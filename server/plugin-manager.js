@@ -244,6 +244,7 @@ export class PluginManager {
         for (const [name, loaded] of this.loader.getAllPlugins()) {
             const { instance, meta } = loaded;
             const state = this.pluginStates.get(name);
+            const configSchema = meta.config || {};
             plugins.push({
                 name,
                 displayName: meta.displayName || name,
@@ -253,6 +254,9 @@ export class PluginManager {
                 enabled: state?.enabled !== false,
                 commands: instance.getCommands().map(c => c.name),
                 listeners: instance.getListeners().length,
+                // R3: 配置 schema 信息，前端据此决定是否显示"配置"按钮
+                hasConfig: Object.keys(configSchema).length > 0,
+                configUi: meta.configUi || 'auto',
             });
         }
         return plugins;
@@ -276,6 +280,29 @@ export class PluginManager {
             listeners: instance.getListeners(),
             schedules: instance.getSchedules(),
             config: this.loadPluginConfig(name),
+        };
+    }
+
+    /**
+     * 获取插件配置 schema（R3: schema 驱动 UI 后端支持）
+     * 返回 plugin.json 中声明的 config 字段 + configUi 模式
+     * @param {string} name - 插件名
+     * @returns {object|null} { configSchema, configUi } 或 null（插件不存在/无 schema）
+     */
+    getPluginSchema(name) {
+        const loaded = this.loader.getAllPlugins().get(name);
+        if (!loaded) return null;
+
+        const meta = loaded.meta || {};
+        const configSchema = meta.config || {};
+        const configUi = meta.configUi || 'auto'; // 'auto' | 'custom' | 'none'
+
+        return {
+            name,
+            displayName: meta.displayName || name,
+            configSchema,
+            configUi,
+            hasSchema: Object.keys(configSchema).length > 0,
         };
     }
 
@@ -366,6 +393,15 @@ export class PluginManager {
                 loaded.instance._pluginConfig = req.body;
             }
             res.json({ success: true, message: `插件 ${name} 配置已更新` });
+        });
+
+        // R3: 获取插件配置 schema（前端 schema 驱动 UI 使用）
+        app.get('/api/plugins/:name/schema', (req, res) => {
+            const schema = this.getPluginSchema(req.params.name);
+            if (!schema) {
+                return res.status(404).json({ success: false, error: '插件不存在' });
+            }
+            res.json({ success: true, schema });
         });
 
         // 导入 SillyTavern 正则到 regex-filter 插件

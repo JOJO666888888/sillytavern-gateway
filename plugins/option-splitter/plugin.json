@@ -1,0 +1,73 @@
+{
+    "name": "option-splitter",
+    "displayName": "选项拆分发送",
+    "version": "2.0.0",
+    "author": "gateway-plugin",
+    "description": "将AI回复中的结构化内容（选项/卡片/要点）从正文中拆出，先发送正文，再逐条补发。支持自定义提取规则与发送策略。",
+    "main": "index.js",
+    "priority": 100,
+    "enabled": true,
+    "dependencies": [],
+    "permissions": ["config"],
+    "configUi": "auto",
+    "config": {
+        "enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "是否启用拆分（关闭后原样发送整条消息）",
+            "ui": { "group": "基本", "order": 1 }
+        },
+        "extractPattern": {
+            "type": "string",
+            "default": "",
+            "description": "自定义选项提取正则（留空=自动检测 >选项X： 格式）。示例: ^▼(.+)$ 提取以▼开头的行",
+            "ui": { "group": "提取", "order": 2, "placeholder": "留空=自动检测 >选项X： 格式" }
+        },
+        "optionsTag": {
+            "type": "string",
+            "default": "options",
+            "description": "选项块标签名（AI 用 <options>...</options> 包裹选项时的标签名）",
+            "ui": { "group": "提取", "order": 3, "placeholder": "options" }
+        },
+        "stripPrefix": {
+            "type": "boolean",
+            "default": true,
+            "description": "发送选项时去掉匹配的前缀行（如 >选项一：），只发选项内容",
+            "ui": { "group": "提取", "order": 4 }
+        },
+        "outputFormat": {
+            "type": "string",
+            "default": "sequential",
+            "description": "发送策略：sequential=逐条补发，batch=合并为一条消息发送",
+            "enum": [
+                { "value": "sequential", "label": "逐条补发（Galgame 风格）" },
+                { "value": "batch", "label": "合并发送（正文+选项一条消息）" }
+            ],
+            "ui": { "group": "发送", "order": 5 }
+        },
+        "initialDelay": {
+            "type": "number",
+            "default": 500,
+            "description": "正文发出后，隔多久开始发第一个选项（毫秒）",
+            "ui": { "group": "发送", "order": 6, "min": 0, "step": 100, "unit": "ms" }
+        },
+        "optionDelay": {
+            "type": "number",
+            "default": 800,
+            "description": "每个选项之间的发送间隔（毫秒）",
+            "ui": { "group": "发送", "order": 7, "min": 0, "step": 100, "unit": "ms" }
+        },
+        "optionPrefix": {
+            "type": "string",
+            "default": "",
+            "description": "补发每条选项时添加的前缀（如加emoji编号 🔵）",
+            "ui": { "group": "发送", "order": 8, "placeholder": "留空=无前缀" }
+        },
+        "applyToPlatforms": {
+            "type": "array",
+            "default": [],
+            "description": "仅对这些平台生效（空数组=全部平台），如 qq,telegram",
+            "ui": { "group": "过滤", "order": 9, "inputMode": "csv", "placeholder": "qq,telegram,discord" }
+        }
+    }
+}

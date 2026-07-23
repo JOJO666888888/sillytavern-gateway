@@ -442,6 +442,86 @@ filterOutbound(message) {
 
 > 📖 完整实现参考内置插件 `plugins/regex-filter/index.js`（提取规则 + 移除规则 + fallback + 平台白名单）。
 
+### 8.3 衍生消息发送（bypassFilters + skipDedup）
+
+当插件需要**补发衍生消息**（如拆分选项、追加卡片）时，使用 `sendDirect` 的 `options` 参数：
+
+```javascript
+const gateway = this._services.gateway;
+
+// R1: bypassFilters 绕过过滤器链（避免自己的过滤器再次拦截）
+// R2: skipDedup 跳过 15 秒去重检查（允许内容相同的消息重复发送）
+await gateway.sendDirect(derivedMessage, {
+    bypassFilters: true,
+    skipDedup: true,
+});
+```
+
+| 选项 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `bypassFilters` | boolean | false | 跳过出站过滤器链，直接进入去重→分片→发送 |
+| `skipDedup` | boolean | false | 跳过 15 秒去重窗口检查 |
+
+**典型场景**：选项拆分插件从 AI 回复中提取选项后，正文正常走过滤器链，选项用 `bypassFilters + skipDedup` 补发。
+
+> ⚠️ `bypassFilters: true` 意味着衍生消息**不经过任何过滤器的清洗**。如果衍生消息需要正则清洗，不要用此选项，改用消息标记属性做递归守卫。
+
+### 8.4 配置 UI 声明式驱动（configUi）
+
+在 `plugin.json` 中声明 `config` schema 后，设置 `configUi` 字段控制配置 UI 生成方式：
+
+```json
+{
+    "configUi": "auto",
+    "config": {
+        "enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "是否启用",
+            "ui": { "group": "基本", "order": 1 }
+        },
+        "delay": {
+            "type": "number",
+            "default": 800,
+            "description": "延迟（毫秒）",
+            "ui": { "group": "时序", "order": 2, "min": 0, "step": 100, "unit": "ms" }
+        },
+        "platforms": {
+            "type": "array",
+            "default": [],
+            "description": "生效平台",
+            "ui": { "group": "过滤", "order": 3, "inputMode": "csv", "placeholder": "qq,telegram" }
+        },
+        "mode": {
+            "type": "string",
+            "default": "sequential",
+            "description": "发送模式",
+            "enum": [
+                { "value": "sequential", "label": "逐条发送" },
+                { "value": "batch", "label": "合并发送" }
+            ]
+        }
+    }
+}
+```
+
+| `configUi` 值 | 行为 |
+|---------------|------|
+| `"auto"` (默认) | 前端面板自动根据 schema 生成配置弹窗（从插件列表点击"配置"按钮打开） |
+| `"custom"` | 不生成自动 UI，插件使用自己的定制面板（如 regex-filter） |
+| `"none"` | 不显示配置按钮 |
+
+**支持的字段类型与 UI 映射**：
+
+| `type` | 生成的控件 | `ui` 扩展选项 |
+|--------|-----------|--------------|
+| `boolean` | toggle-switch | - |
+| `number` | `<input type="number">` | `min`, `max`, `step`, `unit` |
+| `string` | `<input type="text">` 或 `<select>`（有 `enum` 时） | `placeholder` |
+| `array` | CSV 输入框 或 textarea | `inputMode: "csv" \| "textarea"`, `placeholder` |
+
+> 💡 `configUi: "auto"` 的插件从 GitHub 安装后即自动获得配置 UI，**无需修改 panel.html**。
+
 ---
 
 ## 9. PluginContext（ctx）上下文 API
@@ -892,12 +972,19 @@ ctx.getAdapters() / ctx.getSessions()
 ctx.stopPropagation()             // 中断管线
 ```
 
-### 15.3 出站过滤器
+### 15.3 出站过滤器与衍生消息发送
 
 ```text
+// 注册过滤器
 const off = gateway.addOutboundFilter(fn, {name, priority})
 // fn(message) => message | null   (null = 丢弃)
 off()                              // 注销
+
+// 发送衍生消息（R1+R2）
+await gateway.sendDirect(message, { bypassFilters: true, skipDedup: true })
+await gateway.sendMessage(message, { bypassFilters: true, skipDedup: true })
+// bypassFilters: 跳过过滤器链
+// skipDedup: 跳过 15 秒去重窗口
 ```
 
 ### 15.4 REST API
@@ -911,6 +998,7 @@ POST   /api/plugins/:name/reload          重载
 DELETE /api/plugins/:name                 卸载
 GET    /api/plugins/:name/config          读配置
 POST   /api/plugins/:name/config          写配置
+GET    /api/plugins/:name/schema          读配置 schema（R3）
 POST   /api/plugins/install/github        GitHub 安装
 GET    /api/plugins/marketplace/search    市场搜索
 ```

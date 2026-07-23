@@ -186,19 +186,36 @@ export class GatewayCore extends EventEmitter {
      * 发送消息到指定平台（通过队列）
      * @param {OutboundMessage} message
      * @param {object} options - 队列选项
+     *   @param {boolean} options.bypassFilters - R1: 绕过出站过滤器链（用于补发衍生消息）
+     *   @param {boolean} options.skipDedup - R2: 跳过 15 秒去重检查（用于有意重复的消息）
      */
     sendMessage(message, options = {}) {
         this.addMessageLog('outbound', message);
+        // R1/R2: 将发送选项标记到消息 metadata 上，使其能穿越队列到达 dispatchOutbound
+        if (options.bypassFilters || options.skipDedup) {
+            message.metadata = message.metadata || {};
+            if (options.bypassFilters) message.metadata._bypassFilters = true;
+            if (options.skipDedup) message.metadata.skipDedup = true;
+        }
         this.messageQueue.enqueue(message, options);
     }
 
     /**
      * 直接发送消息（不经过队列）
      * @param {OutboundMessage} message
+     * @param {object} options - 发送选项
+     *   @param {boolean} options.bypassFilters - R1: 绕过出站过滤器链
+     *   @param {boolean} options.skipDedup - R2: 跳过去重检查
      * @returns {Promise<boolean>}
      */
-    async sendDirect(message) {
+    async sendDirect(message, options = {}) {
         this.addMessageLog('outbound', message);
+        // R1/R2: 将发送选项标记到消息 metadata 上
+        if (options.bypassFilters || options.skipDedup) {
+            message.metadata = message.metadata || {};
+            if (options.bypassFilters) message.metadata._bypassFilters = true;
+            if (options.skipDedup) message.metadata.skipDedup = true;
+        }
         return await this.dispatchOutbound(message);
     }
 
@@ -259,10 +276,13 @@ export class GatewayCore extends EventEmitter {
      * @returns {Promise<boolean>}
      */
     async dispatchOutbound(message) {
-        // 应用出站过滤器
-        const filtered = this.applyOutboundFilters(message);
+        // R1: 检查是否绕过过滤器链（补发衍生消息时使用）
+        const bypassFilters = message.metadata?._bypassFilters === true;
+
+        // 应用出站过滤器（除非标记了 bypassFilters）
+        const filtered = bypassFilters ? message : this.applyOutboundFilters(message);
         if (!filtered) return false;
-        if (filtered.content !== message.content) {
+        if (filtered !== message && filtered.content !== message.content) {
             message = filtered;
         }
 
@@ -279,17 +299,24 @@ export class GatewayCore extends EventEmitter {
             throw err;
         }
 
+        // R2: 检查是否跳过去重检查（有意重复的消息）
+        const skipDedup = message.metadata?.skipDedup === true;
+
         try {
             // 长文本分段发送
             const segments = adapter.splitMessage(message.content, this.getMaxLength(message.platform));
 
             for (const segment of segments) {
                 // 出站去重: 防止消息队列重试时重复发送相同内容到同一目标
-                const dedupKey = `${message.platform}|${message.chatId}|${this._hashContent(segment)}`;
-                const lastSent = this._recentOutbound.get(dedupKey);
-                if (lastSent && (Date.now() - lastSent) < this._outboundDedupWindow) {
-                    logger.warn(`[${message.platform}] 跳过重复发送 (${Date.now() - lastSent}ms 内已发送过相同内容)`);
-                    continue;
+                // R2: skipDedup 标记的消息跳过此检查
+                let dedupKey = null;
+                if (!skipDedup) {
+                    dedupKey = `${message.platform}|${message.chatId}|${this._hashContent(segment)}`;
+                    const lastSent = this._recentOutbound.get(dedupKey);
+                    if (lastSent && (Date.now() - lastSent) < this._outboundDedupWindow) {
+                        logger.warn(`[${message.platform}] 跳过重复发送 (${Date.now() - lastSent}ms 内已发送过相同内容)`);
+                        continue;
+                    }
                 }
 
                 const segMsg = new OutboundMessage({
@@ -299,7 +326,9 @@ export class GatewayCore extends EventEmitter {
                 await adapter.send(segMsg);
 
                 // 记录已发送（用于去重）
-                this._recentOutbound.set(dedupKey, Date.now());
+                if (dedupKey) {
+                    this._recentOutbound.set(dedupKey, Date.now());
+                }
 
                 // 分段间添加小延迟避免频率限制
                 if (segments.length > 1) {
@@ -310,7 +339,7 @@ export class GatewayCore extends EventEmitter {
             // 定期清理过期的去重条目
             this._cleanDedupCache();
 
-            logger.info(`[${message.platform}] 消息已发送到 ${message.chatId}`);
+            logger.info(`[${message.platform}] 消息已发送到 ${message.chatId}${bypassFilters ? ' (绕过过滤器)' : ''}${skipDedup ? ' (跳过去重)' : ''}`);
             return true;
         } catch (error) {
             logger.error(`[${message.platform}] 发送失败: ${error.message}`);

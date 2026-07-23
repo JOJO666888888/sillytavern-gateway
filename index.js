@@ -293,6 +293,10 @@ let forwardCutoffTs = Date.now();
 let pendingReplyTarget = null;
 /** 是否正在处理消息（防止重复触发） */
 let isProcessing = false;
+/** 会话-角色绑定表 (由 st-data-manager 插件维护，ST 扩展轮询拉取) */
+let gatewayBindings = {};
+/** 上次拉取绑定表的时间戳（节流，避免每次轮询都拉取） */
+let lastBindingsFetch = 0;
 
 /**
  * 获取扩展设置
@@ -348,6 +352,19 @@ async function fetchGatewayStatus() {
         // 处理新消息（自动回复管线）
         // 双门控: 仅网关模式(forwardingEnabled)且开启自动回复时才转发
         if (status.recentMessages && getSettings().forwardingEnabled && getSettings().autoReplyEnabled) {
+            // 拉取角色绑定表（每 5 秒最多拉取一次，避免频繁请求）
+            const now = Date.now();
+            if (now - lastBindingsFetch > 5000) {
+                lastBindingsFetch = now;
+                try {
+                    const pluginConfig = await apiRequest('/api/plugins/st-data-manager/config');
+                    if (pluginConfig?.config?.bindings) {
+                        gatewayBindings = pluginConfig.config.bindings;
+                    }
+                } catch (e) {
+                    // 插件未安装或网关未连接，使用空绑定表
+                }
+            }
             await processIncomingMessages(status.recentMessages);
         }
 
@@ -357,6 +374,127 @@ async function fetchGatewayStatus() {
         updateConnectionStatus(false);
         return null;
     }
+}
+
+// ==================== 角色路由（st-data-manager 插件联动） ====================
+
+/**
+ * 切换 ST 当前角色
+ * 尝试多种方式，兼容不同 ST 版本：
+ *   1. 通过 slash command /loadchar
+ *   2. 通过 selectCharacterById 全局函数
+ *   3. 通过 ST 后端 API
+ *
+ * @param {string} characterName - 目标角色名
+ * @returns {Promise<boolean>} 是否切换成功
+ */
+async function switchCharacter(characterName) {
+    const context = getContext();
+
+    // 已是当前角色，无需切换
+    if (context.name2 === characterName) {
+        return true;
+    }
+
+    // 查找角色
+    const characters = context.characters || [];
+    const targetChar = characters.find(c => c.name === characterName);
+    if (!targetChar) {
+        console.warn(`[Gateway] 角色路由: 未找到角色 "${characterName}"，保持当前角色`);
+        return false;
+    }
+
+    // 方式1: 通过 slash command /loadchar（最稳定）
+    try {
+        const { SlashCommandParser: Parser } = context;
+        if (Parser) {
+            // ST 的 SlashCommandParser 可通过 parseAndWait 或类似方法执行命令
+            // 不同 ST 版本 API 可能不同，尝试多种调用方式
+            if (typeof Parser.parse === 'function') {
+                await Parser.parse(`/loadchar ${characterName}`);
+                console.log(`[Gateway] 角色路由: 已通过 /loadchar 切换到 "${characterName}"`);
+                return true;
+            }
+        }
+    } catch (e) {
+        console.warn(`[Gateway] /loadchar 切换失败: ${e.message}`);
+    }
+
+    // 方式2: 通过 selectCharacterById 全局函数
+    try {
+        // selectCharacterById 可能在 script.js 或 characters.js 中
+        const charModule = await import(`${SERVER_ROOT}/scripts/characters.js`).catch(() => null);
+        if (charModule?.selectCharacterById) {
+            await charModule.selectCharacterById(targetChar.avatar);
+            console.log(`[Gateway] 角色路由: 已通过 selectCharacterById 切换到 "${characterName}"`);
+            return true;
+        }
+    } catch (e) {
+        console.warn(`[Gateway] selectCharacterById 切换失败: ${e.message}`);
+    }
+
+    // 方式3: 通过全局 window 对象查找
+    try {
+        if (typeof window !== 'undefined' && typeof window.selectCharacterById === 'function') {
+            await window.selectCharacterById(targetChar.avatar);
+            console.log(`[Gateway] 角色路由: 已通过 window.selectCharacterById 切换到 "${characterName}"`);
+            return true;
+        }
+    } catch (e) {
+        console.warn(`[Gateway] window.selectCharacterById 失败: ${e.message}`);
+    }
+
+    console.error(`[Gateway] 角色路由: 所有切换方式均失败，无法切换到 "${characterName}"`);
+    return false;
+}
+
+/**
+ * 等待角色加载完成
+ * 监听 CHARACTER_CHANGED 事件，超时后强制返回
+ *
+ * @param {string} characterName - 期望的角色名
+ * @param {number} timeoutMs - 超时时间（毫秒）
+ * @returns {Promise<void>}
+ */
+function waitForCharacterLoad(characterName, timeoutMs = 2000) {
+    return new Promise((resolve) => {
+        const context = getContext();
+
+        // 如果已经是目标角色，立即返回
+        if (context.name2 === characterName) {
+            resolve();
+            return;
+        }
+
+        let resolved = false;
+        const timer = setTimeout(() => {
+            if (!resolved) {
+                resolved = true;
+                console.warn(`[Gateway] 角色路由: 等待 "${characterName}" 加载超时，继续处理`);
+                resolve();
+            }
+        }, timeoutMs);
+
+        // 监听角色变更事件
+        const handler = () => {
+            const ctx = getContext();
+            if (ctx.name2 === characterName && !resolved) {
+                resolved = true;
+                clearTimeout(timer);
+                eventSource.off(event_types.CHARACTER_CHANGED, handler);
+                console.log(`[Gateway] 角色路由: "${characterName}" 加载完成`);
+                resolve();
+            }
+        };
+
+        // CHARACTER_CHANGED 可能在不同 ST 版本中名称不同
+        const evtType = event_types.CHARACTER_CHANGED || event_types.CHAT_CHANGED;
+        if (evtType) {
+            eventSource.on(evtType, handler);
+        } else {
+            // 无事件可用，直接等超时
+        }
+    });
 }
 
 // ==================== AI 自动回复管线 ====================
@@ -398,6 +536,23 @@ async function processIncomingMessages(messages) {
 
         try {
             isProcessing = true;
+
+            // === 角色路由：按绑定表切换 ST 角色 ===
+            const sessionKey = `${msg.platform}:${msg.chatId}`;
+            const binding = gatewayBindings[sessionKey];
+            if (binding && binding.characterName) {
+                const ctx = getContext();
+                const currentName = ctx.name2;
+                if (currentName !== binding.characterName) {
+                    console.log(`[Gateway] 角色路由: ${sessionKey} 需要切换 ${currentName} -> ${binding.characterName}`);
+                    const switched = await switchCharacter(binding.characterName);
+                    if (switched) {
+                        await waitForCharacterLoad(binding.characterName, 2000);
+                    }
+                }
+            } else {
+                // 未绑定，保持当前角色（不影响原有行为）
+            }
 
             // 记录回复目标
             pendingReplyTarget = {
@@ -1605,6 +1760,7 @@ async function loadPluginList() {
                 </div>
                 <div class="gateway-plugin-actions">
                     <span class="gateway-plugin-commands" title="命令: ${p.commands.join(', ')}">${p.commands.length} 命令</span>
+                    ${p.hasConfig && p.configUi !== 'none' && p.configUi !== 'custom' ? `<button class="menu_button gateway-plugin-config" data-name="${p.name}" title="配置"><i class="fa-solid fa-sliders"></i></button>` : ''}
                     <button class="menu_button gateway-plugin-toggle ${p.enabled ? 'active' : ''}" data-name="${p.name}" data-enabled="${p.enabled}">
                         ${p.enabled ? '✅' : '⏸️'}
                     </button>
@@ -1632,6 +1788,12 @@ async function loadPluginList() {
             } catch (e) {
                 toastr.error(e.message);
             }
+        });
+
+        // R3: 绑定配置按钮（schema 驱动的动态配置弹窗）
+        listEl.find('.gateway-plugin-config').off('click').on('click', async function () {
+            const name = $(this).data('name');
+            await openPluginConfigPopup(name);
         });
 
         listEl.find('.gateway-plugin-reload').off('click').on('click', async function () {
@@ -2077,4 +2239,208 @@ function bindRegexEvents() {
         }
         resetInput();
     });
+}
+
+// ==================== R3: Schema 驱动的插件配置弹窗 ====================
+
+/**
+ * 打开插件配置弹窗（schema 驱动，自动生成表单）
+ * @param {string} pluginName - 插件名
+ */
+async function openPluginConfigPopup(pluginName) {
+    try {
+        // 并行获取 schema 和当前配置
+        const [schemaRes, configRes] = await Promise.all([
+            apiRequest(`/api/plugins/${pluginName}/schema`),
+            apiRequest(`/api/plugins/${pluginName}/config`),
+        ]);
+
+        const schema = schemaRes.schema;
+        const config = configRes.config || {};
+
+        if (!schema.hasSchema) {
+            toastr.info(`插件 ${schema.displayName || pluginName} 没有可配置项`);
+            return;
+        }
+
+        // 构建表单 HTML
+        const formHtml = renderSchemaConfigForm(schema, config, pluginName);
+
+        // 用 ST 弹窗展示
+        const dialog = $(`
+            <div class="gateway-plugin-config-popup">
+                <h3><i class="fa-solid fa-sliders"></i> ${escapeHtml(schema.displayName || pluginName)} 配置</h3>
+                ${formHtml}
+            </div>
+        `);
+
+        callGenericPopup(dialog, POPUP_TYPE.TEXT, '', {
+            wide: true,
+            large: true,
+            okButton: '保存',
+            cancelButton: '取消',
+        }).then(async (result) => {
+            if (result === 1) {
+                // 用户点击"保存"
+                await savePluginConfigFromForm(pluginName, schema);
+            }
+        });
+
+    } catch (error) {
+        toastr.error(`加载插件配置失败: ${error.message}`);
+    }
+}
+
+/**
+ * 根据 schema 渲染配置表单
+ * @param {object} schema - 从 /api/plugins/:name/schema 获取的 schema
+ * @param {object} config - 当前配置值
+ * @param {string} pluginName - 插件名（用于生成字段 ID）
+ * @returns {string} 表单 HTML
+ */
+function renderSchemaConfigForm(schema, config, pluginName) {
+    const configSchema = schema.configSchema;
+    const prefix = `plugin_config_${pluginName.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+
+    // 按 ui.order 排序字段
+    const fields = Object.entries(configSchema).map(([key, def]) => ({
+        key,
+        def,
+        order: def.ui?.order ?? 99,
+    })).sort((a, b) => a.order - b.order);
+
+    const fieldHtml = fields.map(({ key, def }) => {
+        const value = config[key] ?? def.default;
+        const desc = def.description ? `<span class="gateway-hint">${escapeHtml(def.description)}</span>` : '';
+        const fieldId = `${prefix}_${key}`;
+
+        switch (def.type) {
+            case 'boolean':
+                return `
+                    <div class="gateway-field">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="${fieldId}" data-key="${key}" ${value !== false ? 'checked' : ''}>
+                            <span class="toggle-slider"></span>
+                        </label>
+                        <span>${escapeHtml(def.description || key)}</span>
+                    </div>
+                `;
+
+            case 'number': {
+                const min = def.ui?.min ?? def.min ?? '';
+                const max = def.ui?.max ?? def.max ?? '';
+                const step = def.ui?.step ?? def.step ?? 1;
+                const unit = def.ui?.unit ? ` ${escapeHtml(def.ui.unit)}` : '';
+                return `
+                    <div class="gateway-field">
+                        <label>${escapeHtml(def.description || key)}${unit}</label>
+                        <input type="number" id="${fieldId}" data-key="${key}" class="text_pole"
+                            value="${value}" ${min !== '' ? `min="${min}"` : ''} ${max !== '' ? `max="${max}"` : ''} step="${step}">
+                    </div>
+                `;
+            }
+
+            case 'string': {
+                if (def.enum) {
+                    const options = def.enum.map(opt =>
+                        `<option value="${escapeHtml(opt.value ?? opt)}" ${value === (opt.value ?? opt) ? 'selected' : ''}>${escapeHtml(opt.label ?? opt.value ?? opt)}</option>`
+                    ).join('');
+                    return `
+                        <div class="gateway-field">
+                            <label>${escapeHtml(def.description || key)}</label>
+                            <select id="${fieldId}" data-key="${key}" class="text_pole">${options}</select>
+                        </div>
+                    `;
+                }
+                const placeholder = def.ui?.placeholder || def.placeholder || '';
+                return `
+                    <div class="gateway-field">
+                        <label>${escapeHtml(def.description || key)}</label>
+                        <input type="text" id="${fieldId}" data-key="${key}" class="text_pole"
+                            value="${escapeHtml(String(value ?? ''))}" placeholder="${escapeHtml(placeholder)}">
+                    </div>
+                `;
+            }
+
+            case 'array': {
+                const arrValue = Array.isArray(value) ? value.join(',') : String(value ?? '');
+                const placeholder = def.ui?.placeholder || def.placeholder || '逗号分隔';
+                const inputMode = def.ui?.inputMode || 'csv';
+                if (inputMode === 'textarea') {
+                    return `
+                        <div class="gateway-field">
+                            <label>${escapeHtml(def.description || key)}</label>
+                            <textarea id="${fieldId}" data-key="${key}" class="text_pole" rows="3"
+                                placeholder="${escapeHtml(placeholder)}">${escapeHtml(arrValue)}</textarea>
+                        </div>
+                    `;
+                }
+                return `
+                    <div class="gateway-field">
+                        <label>${escapeHtml(def.description || key)}</label>
+                        <input type="text" id="${fieldId}" data-key="${key}" class="text_pole"
+                            value="${escapeHtml(arrValue)}" placeholder="${escapeHtml(placeholder)}">
+                    </div>
+                `;
+            }
+
+            default:
+                return `
+                    <div class="gateway-field">
+                        <label>${escapeHtml(def.description || key)} <span class="gateway-hint">(未知类型: ${escapeHtml(def.type)})</span></label>
+                        <input type="text" id="${fieldId}" data-key="${key}" class="text_pole"
+                            value="${escapeHtml(String(value ?? ''))}">
+                    </div>
+                `;
+        }
+    }).join('');
+
+    return `<div class="gateway-plugin-config-form">${fieldHtml}</div>`;
+}
+
+/**
+ * 从表单收集配置并保存到后端
+ * @param {string} pluginName - 插件名
+ * @param {object} schema - 插件 schema
+ */
+async function savePluginConfigFromForm(pluginName, schema) {
+    const configSchema = schema.configSchema;
+    const prefix = `plugin_config_${pluginName.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+    const newConfig = {};
+
+    for (const [key, def] of Object.entries(configSchema)) {
+        const fieldId = `${prefix}_${key}`;
+        const el = document.getElementById(fieldId);
+        if (!el) continue;
+
+        switch (def.type) {
+            case 'boolean':
+                newConfig[key] = el.checked;
+                break;
+            case 'number':
+                newConfig[key] = parseInt(el.value) || 0;
+                break;
+            case 'array': {
+                const text = el.value.trim();
+                newConfig[key] = text
+                    ? text.split(/[,，\s]+/).map(s => s.trim()).filter(Boolean)
+                    : [];
+                break;
+            }
+            case 'string':
+            default:
+                newConfig[key] = el.value;
+                break;
+        }
+    }
+
+    try {
+        await apiRequest(`/api/plugins/${pluginName}/config`, {
+            method: 'POST',
+            body: JSON.stringify(newConfig),
+        });
+        toastr.success(`${schema.displayName || pluginName} 配置已保存`);
+    } catch (error) {
+        toastr.error(`保存失败: ${error.message}`);
+    }
 }

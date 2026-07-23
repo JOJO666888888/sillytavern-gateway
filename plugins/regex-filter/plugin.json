@@ -9,6 +9,7 @@
     "enabled": true,
     "dependencies": [],
     "permissions": ["config"],
+    "configUi": "custom",
     "config": {
         "extractPatterns": {
             "type": "array",
