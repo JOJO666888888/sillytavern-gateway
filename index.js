@@ -2282,7 +2282,9 @@ async function openPluginConfigPopup(pluginName) {
         }).then(async (result) => {
             if (result === 1) {
                 // 用户点击"保存"
-                await savePluginConfigFromForm(pluginName, schema);
+                // 必须传入 dialog jQuery 对象：弹窗此时已从 DOM 移除，
+                // document.getElementById() 会返回 null，但 jQuery 仍持有元素引用
+                await savePluginConfigFromForm(pluginName, schema, dialog);
             }
         });
 
@@ -2403,25 +2405,25 @@ function renderSchemaConfigForm(schema, config, pluginName) {
  * @param {string} pluginName - 插件名
  * @param {object} schema - 插件 schema
  */
-async function savePluginConfigFromForm(pluginName, schema) {
+async function savePluginConfigFromForm(pluginName, schema, dialog) {
     const configSchema = schema.configSchema;
-    const prefix = `plugin_config_${pluginName.replace(/[^a-zA-Z0-9_]/g, '_')}`;
     const newConfig = {};
 
     for (const [key, def] of Object.entries(configSchema)) {
-        const fieldId = `${prefix}_${key}`;
-        const el = document.getElementById(fieldId);
-        if (!el) continue;
+        // 用 dialog.find() 而非 document.getElementById()：
+        // 弹窗关闭后元素已从 DOM 移除，但 jQuery 对象仍持有引用
+        const el = dialog.find(`[data-key="${key}"]`);
+        if (!el.length) continue;
 
         switch (def.type) {
             case 'boolean':
-                newConfig[key] = el.checked;
+                newConfig[key] = el.is(':checkbox') ? el.prop('checked') : el.val();
                 break;
             case 'number':
-                newConfig[key] = parseInt(el.value) || 0;
+                newConfig[key] = parseFloat(el.val()) || 0;
                 break;
             case 'array': {
-                const text = el.value.trim();
+                const text = (el.val() || '').trim();
                 newConfig[key] = text
                     ? text.split(/[,，\s]+/).map(s => s.trim()).filter(Boolean)
                     : [];
@@ -2429,7 +2431,7 @@ async function savePluginConfigFromForm(pluginName, schema) {
             }
             case 'string':
             default:
-                newConfig[key] = el.value;
+                newConfig[key] = el.val() || '';
                 break;
         }
     }
