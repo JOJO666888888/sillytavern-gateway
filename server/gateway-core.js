@@ -448,6 +448,8 @@ export class GatewayCore extends EventEmitter {
             senderName: message.senderName || '',
             content: message.content?.substring(0, 100),
             timestamp: Date.now(),
+            // 标记插件命令：以 / 开头的入站消息，前端应过滤不注入 ST
+            isCommand: direction === 'inbound' && typeof message.content === 'string' && message.content.trim().startsWith('/'),
         });
 
         if (this.messageLog.length > this.maxLogSize) {

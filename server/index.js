@@ -64,22 +64,23 @@ function setupMessageHandling() {
     gatewayCore.onMessage(async (message) => {
         logger.info(`处理消息: [${message.platform}] ${message.senderName}: ${message.content}`);
 
-        // 记录到会话历史
+        // 优先交给插件系统处理（命令路由 + 事件管线）
+        // 命令必须在记录会话历史之前处理，避免 /help 等命令文本污染 AI 上下文
+        if (pluginManager) {
+            const handled = await pluginManager.handleMessage(message);
+            if (handled) {
+                return; // 插件已处理（命令执行完毕），不记录历史、不转发到 ST
+            }
+        }
+
+        // 非命令消息：记录到会话历史
         sessionManager.addMessage(message.platform, message.chatId, {
             role: 'user',
             content: message.content,
             name: message.senderName,
         });
 
-        // 优先交给插件系统处理（命令路由 + 事件管线）
-        if (pluginManager) {
-            const handled = await pluginManager.handleMessage(message);
-            if (handled) {
-                return; // 插件已处理，不再走默认逻辑
-            }
-        }
-
-        // 插件未处理的消息 → 触发外部处理（SillyTavern 扩展轮询）
+        // 触发外部处理（SillyTavern 扩展轮询）
         gatewayCore.emit('externalMessage', message);
     });
 }

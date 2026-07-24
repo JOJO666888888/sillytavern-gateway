@@ -506,6 +506,8 @@ async function processIncomingMessages(messages) {
     // 只处理入站、未处理过、且晚于截断时间到达的消息
     const newMessages = messages.filter(msg => {
         if (msg.direction !== 'inbound') return false;
+        // 过滤插件命令：以 / 开头的消息由命令路由器处理，不注入 ST
+        if (msg.isCommand) return false;
         // 时间截断: 只处理进入页面/开启网关模式之后才到达的消息,
         // 防止刷新/重启后把之前缓存的老消息批量转发进来
         if (msg.timestamp <= forwardCutoffTs) return false;
