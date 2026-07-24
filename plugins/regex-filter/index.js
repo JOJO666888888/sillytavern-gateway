@@ -149,7 +149,8 @@ export default class RegexFilterPlugin extends GatewayPlugin {
 
             try {
                 const pattern = rule.pattern || rule.find_regex || rule.findRegex;
-                const replacement = rule.replacement ?? rule.replace_string ?? rule.replaceString ?? '';
+                // 统一读取替换文本：兼容 replacement / replace_string / replaceString / replacement_string
+                const replacement = rule.replacement ?? rule.replace_string ?? rule.replaceString ?? rule.replacement_string ?? '';
                 const flags = rule.flags || 'gs';
 
                 if (!pattern) continue;
@@ -176,6 +177,22 @@ export default class RegexFilterPlugin extends GatewayPlugin {
     }
 
     // ==================== 配置辅助 ====================
+
+    /**
+     * 对外暴露的文本处理方法（供 REST API /preview 调用）
+     * 走完整的提取+移除+trim 流程，返回处理后的文本
+     * @param {string} text - 原始文本
+     * @returns {string} 处理后的文本
+     */
+    processText(text) {
+        if (!text) return '';
+        let content = this._applyExtract(text);
+        content = this._applyRemove(content);
+        if (this.getConfig('trimWhitespace') !== false) {
+            content = content.trim();
+        }
+        return content;
+    }
 
     _ensureDefaults() {
         if (!this.getConfig('extractPatterns')) {
@@ -229,6 +246,9 @@ export default class RegexFilterPlugin extends GatewayPlugin {
             case 'test':
             case '测试':
                 return this._cmdTest(ctx);
+            case 'test-full':
+            case '完整测试':
+                return this._cmdTestFull(ctx);
             case 'fallback':
                 return this._cmdFallback(ctx);
             case 'import':
@@ -411,6 +431,43 @@ export default class RegexFilterPlugin extends GatewayPlugin {
         } catch (error) {
             return ctx.reply(`❌ 正则错误: ${error.message}`);
         }
+    }
+
+    /**
+     * 使用自定义文本走完整规则链测试（提取+移除）
+     * /regex test-full <文本>
+     * 将文本通过所有已启用的提取和移除规则处理，展示每步结果
+     */
+    async _cmdTestFull(ctx) {
+        const text = ctx.args.slice(1).join(' ');
+        if (!text) {
+            return ctx.reply('用法: /regex test-full <测试文本>\n将文本通过所有已启用规则处理，展示提取+移除后的结果');
+        }
+
+        const lines = ['🧪 正则过滤器完整测试', '', '【原始文本】', '---', text, '---'];
+
+        // 第一步：提取
+        const extractPatterns = this._getExtractPatterns().filter(r => r.enabled);
+        if (extractPatterns.length > 0) {
+            const afterExtract = this._applyExtract(text);
+            lines.push('', '【提取后】', '---', afterExtract || '(空)', '---');
+            if (!afterExtract) {
+                lines.push('', '⚠️ 提取后为空，后续移除规则不会执行');
+                return ctx.reply(lines.join('\n'));
+            }
+        } else {
+            lines.push('', '【提取规则】无，跳过提取步骤');
+        }
+
+        // 第二步：移除
+        const afterRemove = this._applyRemove(text);
+        lines.push('', '【移除后】', '---', afterRemove || '(空)', '---');
+
+        // 第三步：trim
+        const afterTrim = this.getConfig('trimWhitespace') !== false ? afterRemove.trim() : afterRemove;
+        lines.push('', '【最终结果】', '---', afterTrim || '(空)', '---');
+
+        return ctx.reply(lines.join('\n'));
     }
 
     /**
@@ -606,7 +663,8 @@ export default class RegexFilterPlugin extends GatewayPlugin {
             '/regex remove <extract|remove> <名称或序号>',
             '/regex enable <extract|remove> <名称或序号>',
             '/regex disable <extract|remove> <名称或序号>',
-            '/regex test <正则> [组号] - 测试正则匹配',
+            '/regex test <正则> [组号] - 测试单条正则匹配',
+            '/regex test-full <文本> - 用自定义文本走完整规则链测试',
             '/regex fallback <on|off> - 未命中时是否发送原文',
             '/regex import <JSON> - 导入 SillyTavern 正则',
             '',

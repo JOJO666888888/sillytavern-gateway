@@ -424,6 +424,24 @@ export class PluginManager {
             }
         });
 
+        // 正则过滤器：测试文本通过规则链处理后的结果（不实际发送）
+        app.post('/api/plugins/regex-filter/preview', (req, res) => {
+            const loaded = this.loader.getAllPlugins().get('regex-filter');
+            if (!loaded || !loaded.instance) {
+                return res.status(404).json({ success: false, error: 'regex-filter 插件未加载' });
+            }
+            const { text } = req.body;
+            if (typeof text !== 'string') {
+                return res.status(400).json({ success: false, error: '请提供 text 字段' });
+            }
+            try {
+                const processedText = loaded.instance.processText(text);
+                res.json({ success: true, processedText });
+            } catch (error) {
+                res.status(500).json({ success: false, error: error.message });
+            }
+        });
+
         // 卸载插件
         app.delete('/api/plugins/:name', async (req, res) => {
             const result = await this.uninstallPlugin(req.params.name);

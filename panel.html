@@ -352,8 +352,16 @@
                 </div>
                 <textarea id="gateway_regex_test_input" class="text_pole" rows="3" placeholder="粘贴测试文本..."></textarea>
                 <div class="gateway-field-row">
-                    <input type="text" id="gateway_regex_test_pattern" class="text_pole" placeholder="输入正则表达式...">
-                    <button id="gateway_regex_test_btn" class="menu_button">测试</button>
+                    <input type="text" id="gateway_regex_test_pattern" class="text_pole" placeholder="输入正则表达式（单条匹配测试）...">
+                    <button id="gateway_regex_test_btn" class="menu_button" title="测试单条正则的匹配结果">匹配</button>
+                </div>
+                <div class="gateway-field-row">
+                    <button id="gateway_regex_test_full_btn" class="menu_button" title="将文本通过所有已启用规则处理，展示提取+移除+替换每步效果">
+                        <i class="fa-solid fa-list-check"></i> 完整规则链测试
+                    </button>
+                    <button id="gateway_regex_test_send_btn" class="menu_button" title="将文本通过规则链处理后转发到bot">
+                        <i class="fa-solid fa-paper-plane"></i> 转发到bot
+                    </button>
                 </div>
                 <div id="gateway_regex_test_result" class="gateway-regex-test-result" style="display:none;"></div>
             </div>

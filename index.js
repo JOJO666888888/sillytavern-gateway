@@ -2169,7 +2169,7 @@ function bindRegexEvents() {
     // 刷新
     $('#gateway_regex_refresh').on('click', loadRegexConfig);
 
-    // 正则测试
+    // 正则测试 — 单条正则匹配
     $('#gateway_regex_test_btn').on('click', () => {
         const text = $('#gateway_regex_test_input').val();
         const pattern = $('#gateway_regex_test_pattern').val().trim();
@@ -2198,6 +2198,194 @@ function bindRegexEvents() {
             }
         } catch (error) {
             resultEl.show().html(`<div class="regex-match-fail">❌ 正则错误: ${escapeHtml(error.message)}</div>`);
+        }
+    });
+
+    // 正则测试 — 完整规则链测试（提取+移除+替换，展示每步结果）
+    $('#gateway_regex_test_full_btn').on('click', async () => {
+        const text = $('#gateway_regex_test_input').val();
+        const resultEl = $('#gateway_regex_test_result');
+
+        if (!text) {
+            toastr.warning('请输入测试文本');
+            return;
+        }
+
+        resultEl.show().html('<div class="regex-match-info">⏳ 正在处理...</div>');
+
+        try {
+            // 调用后端 test-full 接口
+            // 通过命令系统转发：用 ctx.reply 返回结果
+            // 这里直接在前端模拟规则链处理，展示替换效果
+            const steps = [];
+            let current = text;
+
+            // 第一步：提取规则
+            const extractRules = (regexConfig.extractPatterns || []).filter(r => r.enabled);
+            if (extractRules.length > 0) {
+                let extracted = null;
+                for (const rule of extractRules) {
+                    try {
+                        const regex = new RegExp(rule.pattern, 's');
+                        const match = current.match(regex);
+                        if (match) {
+                            const group = rule.group ?? 1;
+                            extracted = match[group] ?? match[0];
+                            steps.push({
+                                name: `提取: ${rule.name}`,
+                                success: true,
+                                input: current,
+                                output: extracted,
+                                pattern: rule.pattern,
+                            });
+                            current = extracted;
+                            break;
+                        }
+                    } catch (e) {
+                        steps.push({
+                            name: `提取: ${rule.name}`,
+                            success: false,
+                            error: e.message,
+                            pattern: rule.pattern,
+                        });
+                    }
+                }
+                if (extracted === null) {
+                    steps.push({
+                        name: '提取',
+                        success: false,
+                        error: '未命中任何提取规则',
+                    });
+                }
+            }
+
+            // 第二步：移除规则（展示替换前后）
+            const removeRules = (regexConfig.removePatterns || []).filter(r => r.enabled);
+            for (const rule of removeRules) {
+                try {
+                    const pattern = rule.pattern || rule.find_regex || rule.findRegex;
+                    const replacement = rule.replacement ?? rule.replace_string ?? rule.replaceString ?? '';
+                    const flags = rule.flags || 'gs';
+                    if (!pattern) continue;
+
+                    const before = current;
+                    const regex = new RegExp(pattern, flags);
+                    current = current.replace(regex, replacement);
+
+                    // trimStrings
+                    const trimStrings = rule.trim_strings || rule.trimStrings;
+                    if (Array.isArray(trimStrings)) {
+                        for (const ts of trimStrings) {
+                            if (!ts) continue;
+                            while (current.startsWith(ts)) current = current.slice(ts.length);
+                            while (current.endsWith(ts)) current = current.slice(0, -ts.length);
+                        }
+                    }
+
+                    steps.push({
+                        name: `移除: ${rule.name}`,
+                        success: true,
+                        input: before,
+                        output: current,
+                        pattern: pattern,
+                        replacement: replacement,
+                        changed: before !== current,
+                    });
+                } catch (e) {
+                    steps.push({
+                        name: `移除: ${rule.name}`,
+                        success: false,
+                        error: e.message,
+                        pattern: rule.pattern,
+                    });
+                }
+            }
+
+            // 第三步：trim
+            if (regexConfig.trimWhitespace !== false) {
+                const before = current;
+                current = current.trim();
+                if (before !== current) {
+                    steps.push({
+                        name: '去除首尾空白',
+                        success: true,
+                        input: before,
+                        output: current,
+                        changed: true,
+                    });
+                }
+            }
+
+            // 渲染结果
+            const stepsHtml = steps.map(s => {
+                if (!s.success) {
+                    return `<div class="regex-step regex-step-fail">
+                        <span class="regex-step-name">❌ ${escapeHtml(s.name)}</span>
+                        <span class="regex-step-error">${escapeHtml(s.error)}</span>
+                        ${s.pattern ? `<code class="regex-step-pattern">${escapeHtml(s.pattern)}</code>` : ''}
+                    </div>`;
+                }
+                const changed = s.changed !== undefined ? s.changed : (s.input !== s.output);
+                const icon = changed ? '✅' : '⏭️';
+                const inputPreview = escapeHtml((s.input || '').substring(0, 150));
+                const outputPreview = escapeHtml((s.output || '').substring(0, 150));
+                const replacementInfo = s.replacement !== undefined
+                    ? `<span class="regex-step-replacement">→ "${escapeHtml(s.replacement)}"</span>` : '';
+                return `<div class="regex-step regex-step-success">
+                    <span class="regex-step-name">${icon} ${escapeHtml(s.name)}</span>
+                    ${s.pattern ? `<code class="regex-step-pattern">${escapeHtml(s.pattern)}</code>` : ''}
+                    ${replacementInfo}
+                    ${changed ? `<div class="regex-step-diff"><div class="regex-step-input"><b>前:</b> ${inputPreview}${(s.input||'').length > 150 ? '...' : ''}</div><div class="regex-step-output"><b>后:</b> ${outputPreview}${(s.output||'').length > 150 ? '...' : ''}</div></div>` : '<span class="regex-step-nochange">无变化</span>'}
+                </div>`;
+            }).join('');
+
+            resultEl.html(`
+                <div class="regex-test-full-result">
+                    <div class="regex-test-steps">${stepsHtml || '<div class="regex-match-fail">无已启用的规则</div>'}</div>
+                    <div class="regex-test-final">
+                        <div class="regex-test-final-label">📋 最终结果:</div>
+                        <div class="regex-test-final-content">${escapeHtml(current).replace(/\n/g, '<br>')}</div>
+                    </div>
+                </div>
+            `);
+        } catch (error) {
+            resultEl.show().html(`<div class="regex-match-fail">❌ 处理失败: ${escapeHtml(error.message)}</div>`);
+        }
+    });
+
+    // 正则测试 — 转发到 bot（通过后端规则链处理后展示实际发送效果）
+    $('#gateway_regex_test_send_btn').on('click', async () => {
+        const text = $('#gateway_regex_test_input').val();
+        const resultEl = $('#gateway_regex_test_result');
+
+        if (!text) {
+            toastr.warning('请输入测试文本');
+            return;
+        }
+
+        resultEl.show().html('<div class="regex-match-info">⏳ 正在通过网关规则链处理...</div>');
+
+        try {
+            // 调用后端 preview 接口，走插件实际规则链处理
+            const data = await apiRequest('/api/plugins/regex-filter/preview', {
+                method: 'POST',
+                body: JSON.stringify({ text }),
+            });
+            const processed = data.processedText || '';
+            const changed = processed !== text;
+            resultEl.html(`
+                <div class="regex-test-full-result">
+                    <div class="regex-step regex-step-success">
+                        <span class="regex-step-name">${changed ? '✅' : '⏭️'} 规则链处理完成 ${changed ? '（内容已变化）' : '（无变化）'}</span>
+                    </div>
+                    <div class="regex-test-final">
+                        <div class="regex-test-final-label">📤 实际发送内容（bot 将收到的文本）:</div>
+                        <div class="regex-test-final-content">${escapeHtml(processed).replace(/\n/g, '<br>') || '<span class="regex-match-hint">(空)</span>'}</div>
+                    </div>
+                </div>
+            `);
+        } catch (error) {
+            resultEl.html(`<div class="regex-match-fail">❌ 处理失败: ${escapeHtml(error.message)}<br><span class="regex-match-hint">提示：可使用「完整规则链测试」在前端模拟查看效果</span></div>`);
         }
     });
 

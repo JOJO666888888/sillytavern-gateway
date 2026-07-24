@@ -1082,6 +1082,123 @@
     color: #f44336;
 }
 
+.regex-match-info {
+    color: #2196f3;
+}
+
+.regex-match-hint {
+    color: var(--SmartThemeQuoteColor, #888);
+    font-size: 11px;
+}
+
+/* 完整规则链测试结果 */
+.regex-test-full-result {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.regex-test-steps {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.regex-step {
+    padding: 6px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+}
+
+.regex-step-success {
+    background: rgba(76, 175, 80, 0.08);
+    border-left: 3px solid #4caf50;
+}
+
+.regex-step-fail {
+    background: rgba(244, 67, 54, 0.08);
+    border-left: 3px solid #f44336;
+}
+
+.regex-step-name {
+    font-weight: bold;
+    display: inline-block;
+    margin-right: 6px;
+}
+
+.regex-step-error {
+    color: #f44336;
+    font-size: 11px;
+}
+
+.regex-step-pattern {
+    display: block;
+    margin-top: 2px;
+    padding: 2px 4px;
+    background: rgba(128, 128, 128, 0.1);
+    border-radius: 3px;
+    font-family: monospace;
+    font-size: 11px;
+    word-break: break-all;
+    color: var(--SmartThemeQuoteColor, #999);
+}
+
+.regex-step-replacement {
+    color: #ff9800;
+    font-size: 11px;
+    margin-left: 4px;
+}
+
+.regex-step-diff {
+    margin-top: 4px;
+    padding: 4px 6px;
+    background: rgba(0, 0, 0, 0.05);
+    border-radius: 3px;
+}
+
+.regex-step-input {
+    color: var(--SmartThemeQuoteColor, #999);
+    font-size: 11px;
+    word-break: break-all;
+}
+
+.regex-step-output {
+    color: var(--SmartThemeBodyColor, #ccc);
+    font-size: 11px;
+    word-break: break-all;
+    margin-top: 2px;
+}
+
+.regex-step-nochange {
+    color: var(--SmartThemeQuoteColor, #999);
+    font-size: 11px;
+    font-style: italic;
+}
+
+.regex-test-final {
+    margin-top: 4px;
+    padding: 8px;
+    background: rgba(33, 150, 243, 0.08);
+    border-radius: 4px;
+    border-left: 3px solid #2196f3;
+}
+
+.regex-test-final-label {
+    font-weight: bold;
+    font-size: 12px;
+    margin-bottom: 4px;
+    color: #2196f3;
+}
+
+.regex-test-final-content {
+    font-size: 13px;
+    line-height: 1.5;
+    word-break: break-all;
+    color: var(--SmartThemeBodyColor, #ccc);
+    max-height: 200px;
+    overflow-y: auto;
+}
+
 /* ==================== 自动更新区块 ==================== */
 
 .gateway-update-section {
