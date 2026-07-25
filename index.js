@@ -2467,6 +2467,7 @@ async function openPluginConfigPopup(pluginName) {
         callGenericPopup(dialog, POPUP_TYPE.TEXT, '', {
             wide: true,
             large: true,
+            allowVerticalScrolling: true,
             okButton: '保存',
             cancelButton: '取消',
         }).then(async (result) => {

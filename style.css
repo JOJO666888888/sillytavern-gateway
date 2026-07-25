@@ -1239,3 +1239,74 @@
     font-size: 12px;
     word-break: break-all;
 }
+
+/* ===== 插件配置弹窗（schema 驱动 UI）===== */
+.gateway-plugin-config-popup {
+    max-height: 70vh;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding-right: 8px;
+    margin: 0 -8px;
+}
+
+.gateway-plugin-config-popup::-webkit-scrollbar {
+    width: 8px;
+}
+.gateway-plugin-config-popup::-webkit-scrollbar-track {
+    background: transparent;
+}
+.gateway-plugin-config-popup::-webkit-scrollbar-thumb {
+    background: var(--SmartThemeBorderColor, #666);
+    border-radius: 4px;
+}
+
+.gateway-plugin-config-popup h3 {
+    position: sticky;
+    top: 0;
+    background: var(--SmartThemeBlurTintColor, #1a1a1a);
+    padding: 8px 0;
+    margin: 0 0 12px 0;
+    z-index: 10;
+    border-bottom: 1px solid var(--SmartThemeBorderColor, #333);
+}
+
+.gateway-plugin-config-form {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.gateway-plugin-config-form .gateway-field {
+    padding: 6px 0;
+    border-bottom: 1px dashed rgba(128, 128, 128, 0.2);
+}
+
+.gateway-plugin-config-form .gateway-field:last-child {
+    border-bottom: none;
+}
+
+.gateway-plugin-config-form textarea.text_pole {
+    min-height: 80px;
+    resize: vertical;
+    font-family: monospace;
+    font-size: 12px;
+}
+
+/* 手机端适配 */
+@media screen and (max-width: 768px) {
+    .gateway-plugin-config-popup {
+        max-height: 85vh;
+        padding-right: 4px;
+        font-size: 14px;
+    }
+    .gateway-plugin-config-popup h3 {
+        font-size: 16px;
+        padding: 6px 0;
+    }
+    .gateway-plugin-config-form .gateway-field {
+        padding: 8px 0;
+    }
+    .gateway-plugin-config-form textarea.text_pole {
+        min-height: 100px;
+    }
+}
