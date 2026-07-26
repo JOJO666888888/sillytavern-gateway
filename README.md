@@ -82,9 +82,10 @@ sillytavern-gateway/
 ```bash
 cp .env.example .env      # 填入 bot token
 docker compose up -d
+docker compose exec gateway npm run token --silent   # 取鉴权 token
 ```
 
-网关跑在 `http://127.0.0.1:3210`，在 SillyTavern 网关面板填入地址与鉴权 token 即可。
+网关跑在 `http://127.0.0.1:3210`，在 SillyTavern 网关面板填入地址与上面这个 token 即可。
 完整说明（卷/权限/接 NapCat/公网暴露/排障）见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
 
 > 注：Docker 方式跑的是**后端网关服务**。若要用 SillyTavern 里的网关面板，

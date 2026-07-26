@@ -20,15 +20,15 @@ FROM node:22-slim AS deps
 WORKDIR /app
 
 # 先只拷贝依赖清单——源码改动不会使这层缓存失效
-COPY package.json package-lock.json* ./
+COPY package.json package-lock.json ./
 
-# npm ci 需要 lock 文件；没有则退回 npm install。
+# 一律用 npm ci（不退回 npm install）：
+# 只有它能保证镜像里的依赖树和 lock 文件逐字一致。而且 lock 与 package.json
+# 不同步时它会**直接失败**，而不是像 npm install 那样默默改写 lock 装一套新的
+# —— 这正是我们要的：不同步就该在构建期炸掉，而不是发到生产才发现。
 # --omit=dev：本项目无 devDependencies，写上是为了将来加了也不会进镜像。
-RUN if [ -f package-lock.json ]; then \
-        npm ci --omit=dev --no-audit --no-fund; \
-    else \
-        npm install --omit=dev --no-audit --no-fund; \
-    fi \
+# 可选依赖（三个平台 SDK）不 omit，见文件头说明。
+RUN npm ci --omit=dev --no-audit --no-fund \
     && npm cache clean --force
 
 

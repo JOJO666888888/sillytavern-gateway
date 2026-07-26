@@ -34,7 +34,8 @@
 
 **步骤**
 
-1. 安装官方 SDK（可选依赖，未装不影响网关启动）：
+1. 安装官方 SDK。它是 `optionalDependencies`，**根目录 `npm install` 已经装上了**，
+   Docker 镜像里也预装好。只有当初装时跳过了可选依赖才需要补：
 
    ```bash
    npm install @larksuiteoapi/node-sdk
@@ -67,7 +68,7 @@
 
 **步骤**
 
-1. 安装 SDK：`npm install qq-official-bot`
+1. 安装 SDK：`npm install qq-official-bot`（可选依赖，根目录 `npm install` 与 Docker 镜像已含）
 2. 在 [QQ 开放平台](https://q.qq.com/) 创建机器人，获取 **AppID / AppSecret**（Token 可选），
    开通所需场景（群/单聊/频道）并配置。
 3. 面板「平台配置 → 🐧 QQ官方」填 AppID / AppSecret，按需勾选沙箱，保存启用；
@@ -89,7 +90,7 @@
 
 **步骤**
 
-1. 安装 SDK：`npm install dingtalk-stream`
+1. 安装 SDK：`npm install dingtalk-stream`（可选依赖，根目录 `npm install` 与 Docker 镜像已含）
 2. 在[钉钉开放平台](https://open.dingtalk.com/)创建企业内部应用，添加「机器人」能力，
    获取 **ClientId(AppKey) / ClientSecret(AppSecret)**，消息接收模式选 **Stream 模式**。
 3. 面板「平台配置 → 🔔 钉钉」填 ClientId / ClientSecret，保存启用；

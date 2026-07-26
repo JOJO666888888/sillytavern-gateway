@@ -50,13 +50,15 @@ export class DingTalkAdapter extends PlatformAdapter {
 
         // 注册机器人消息回调
         this.client.registerCallbackListener(this._TOPIC_ROBOT, (res) => {
+            // 先 ack 再处理：SDK 内部只是 EventEmitter.emit，**回调的返回值会被丢弃**，
+            // 必须显式调用 socketCallBackResponse。不 ack 的话钉钉服务端会认为
+            // 消息未送达，每 60s 重推一次同一条消息 —— 表现为"同一句话被回复很多遍"。
+            this._ack(res);
             try {
                 this._onMessage(res);
             } catch (err) {
                 this.logger.error(`处理钉钉消息失败: ${err.message}`);
             }
-            // 立即 ack，避免重复推送
-            return this._EventAck ? { status: this._EventAck.SUCCESS, message: 'OK' } : undefined;
         });
 
         await this.client.connect();
@@ -77,6 +79,20 @@ export class DingTalkAdapter extends PlatformAdapter {
             this._sessionWebhooks.clear();
         }
         this.setState(ConnectionState.DISCONNECTED);
+    }
+
+    /** 回执一条 Stream 推送，告诉钉钉服务端"收到了，别重推" */
+    _ack(res) {
+        const messageId = res?.headers?.messageId;
+        if (!messageId || typeof this.client?.socketCallBackResponse !== 'function') return;
+        try {
+            this.client.socketCallBackResponse(messageId, {
+                status: this._EventAck?.SUCCESS || 'SUCCESS',
+                message: 'OK',
+            });
+        } catch (err) {
+            this.logger.warn(`钉钉消息回执失败: ${err.message}`);
+        }
     }
 
     /**

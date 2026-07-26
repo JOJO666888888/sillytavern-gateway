@@ -23,11 +23,16 @@ GATEWAY_AUTH_TOKEN=换成你自己的一长串随机字符
 
 生成一个：`openssl rand -hex 24`
 
-**或让它自动生成**，然后从日志取：
+**或让它自动生成**，首次启动后取出来：
 
 ```bash
-docker compose logs gateway | grep "鉴权 token"
+docker compose exec gateway npm run token --silent
 ```
+
+> 别去日志里找。日志管道会把长十六进制串脱敏成 `<redacted-hex>`——
+> 这样你贴日志求助时不会连凭据一起贴出去，代价是 token 在日志里看不见。
+> 上面这条命令直接读配置，是取回 token 的正规途径。
+> （宿主机上也可以直接看 `config/gateway.json` 的 `server.authToken`。）
 
 > 用环境变量提供 token 时，它**不会**被写进 `config/gateway.json`。
 > 这是有意为之——`config/` 是挂载卷，凭据写进去等于落盘。
@@ -190,7 +195,7 @@ docker compose logs gateway  # 看有没有报错
 否则端口映射进来也访问不到（compose 里已强制设为 `0.0.0.0`）。
 
 **面板一直显示未连接**
-多半是 token 不对。`docker compose logs gateway | grep "鉴权 token"` 取出来重填。
+多半是 token 不对。`docker compose exec gateway npm run token --silent` 取出来重填。
 
 **日志里 EACCES / permission denied**
 见上面"卷权限"一节。正常情况下 entrypoint 会自动处理；

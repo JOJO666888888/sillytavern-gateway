@@ -8,7 +8,8 @@
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
     "test": "node --test --test-force-exit \"test/*.test.js\"",
-    "test:watch": "node --test --watch \"test/*.test.js\""
+    "test:watch": "node --test --watch \"test/*.test.js\"",
+    "token": "node scripts/show-token.js"
   },
   "engines": {
     "node": ">=18"
@@ -35,7 +36,7 @@
   },
   "optionalDependencies": {
     "@larksuiteoapi/node-sdk": "^1.30.0",
-    "qq-official-bot": "^2.5.0",
-    "dingtalk-stream": "^2.1.6"
+    "qq-official-bot": "^1.2.3",
+    "dingtalk-stream": "^2.1.5"
   }
 }

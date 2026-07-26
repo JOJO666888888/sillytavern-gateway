@@ -220,8 +220,12 @@ class ConfigManager {
         if (requireAuth && (!token || typeof token !== 'string')) {
             const generated = crypto.randomBytes(24).toString('hex');
             this.set('server.authToken', generated);
-            logger.warn('已自动生成网关鉴权 token（server.authToken）。请在 SillyTavern 网关面板中填入该 token 才能连接。');
-            logger.warn(`当前鉴权 token: ${generated}`);
+            // 这里**不打印 token 本身**：日志管道会把长十六进制串脱敏成
+            // <redacted-hex>（防止用户贴日志求助时泄露凭据），打了也看不见。
+            // token 已随 set() 落盘，指路让用户自己取。
+            logger.warn('已自动生成网关鉴权 token 并写入配置文件，需填进 SillyTavern 网关面板才能连接。');
+            logger.warn('取用方式：npm run token（容器内 docker compose exec gateway npm run token）');
+            logger.warn('或自行指定：设置环境变量 GATEWAY_AUTH_TOKEN，此时 token 不会落盘。');
         }
     }
 

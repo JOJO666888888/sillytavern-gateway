@@ -23,6 +23,12 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
 
+      # Dockerfile 用 npm ci，它要求 lock 与 package.json 严格同步。
+      # 一旦有人改了 package.json 忘了跟着更新 lock，镜像构建会失败——
+      # 那时才发现太晚了，所以在最便宜的 job 里先拦一道。
+      - name: 校验 lock 文件与 package.json 同步
+        run: npm ci --dry-run --no-audit --no-fund
+
       # 可选依赖（飞书/QQ官方/钉钉 SDK、puppeteer-core）在 CI 中不需要，
       # 跳过它们可显著加快安装且避免网络波动导致的假失败。
       - name: 安装依赖
@@ -36,6 +42,33 @@ jobs:
 
       - name: 运行测试
         run: npm test
+
+  # 上面的 test job 用 --omit=optional，所以 test/platform-adapters.test.js 里的
+  # "契约"用例全被跳过。那些用例才是真正核对适配器与平台 SDK 是否对得上的地方
+  # （intent 名字、构造参数、ack 方式），必须有一处把可选依赖装全后跑一遍，
+  # 否则 SDK 发新版改了接口我们无从知晓。
+  sdk-contract:
+    name: 平台 SDK 契约
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: 安装全部依赖（含可选平台 SDK）
+        run: npm ci --no-audit --no-fund
+
+      - name: 确认三个平台 SDK 真的装上了
+        run: |
+          for p in @larksuiteoapi/node-sdk qq-official-bot dingtalk-stream; do
+            [ -d "node_modules/$p" ] || { echo "❌ $p 未安装"; exit 1; }
+            echo "✅ $p"
+          done
+
+      - name: 运行适配器契约测试
+        run: node --test --test-force-exit test/platform-adapters.test.js
 
   docker:
     name: 镜像构建与容器冒烟
@@ -107,6 +140,22 @@ jobs:
             echo "❌ 挂载卷不可写（entrypoint 的属主修正失效）"; docker logs stgw; exit 1; }
           echo "✅ 挂载卷可写"
 
+          # 镜像宣称"可选平台 SDK 默认已装"，验证它确实装了。
+          # 这三个是 optionalDependencies——版本范围写错时 npm 会静默跳过，
+          # 用户只会在启用平台时看到"未安装 SDK"，构建阶段毫无征兆。
+          for p in @larksuiteoapi/node-sdk qq-official-bot dingtalk-stream; do
+            docker exec stgw test -d "/app/node_modules/$p" || {
+              echo "❌ 可选平台 SDK $p 未装进镜像"; exit 1; }
+          done
+          echo "✅ 三个可选平台 SDK 均已装入镜像"
+
+          # 取 token 的正规途径必须在容器里能用（日志是脱敏的，从那儿取不到）
+          docker exec stgw npm run token --silent > /tmp/tok.txt 2>/dev/null || {
+            echo "❌ npm run token 执行失败"; exit 1; }
+          grep -qx "ci-test-token" /tmp/tok.txt || {
+            echo "❌ npm run token 输出与注入的 token 不符: $(cat /tmp/tok.txt)"; exit 1; }
+          echo "✅ npm run token 可取回环境变量注入的 token"
+
           # 最终运行身份必须是非 root（entrypoint 以 root 起，但要降权）
           WHO=$(docker exec stgw sh -c 'ps -o user= -p 1 2>/dev/null | head -1' || true)
           RUNAS=$(docker exec stgw sh -c 'ps -o user= -C node 2>/dev/null | head -1' || true)
@@ -135,9 +184,44 @@ jobs:
           [ "$ELAPSED" -lt 8 ] || { echo "❌ 关闭耗时 ${ELAPSED}s，SIGTERM 可能未被处理"; exit 1; }
           echo "✅ 优雅关闭 (${ELAPSED}s)"
 
+      # 单独起一个不给 token 的容器，覆盖"首次启动自动生成"这条路径。
+      # 这正是之前坏掉的场景：token 自动生成了，但日志脱敏把它抹成
+      # <redacted-hex>，而文档却让用户去日志里找——等于永远拿不到。
+      - name: 容器冒烟（自动生成 token 的路径）
+        run: |
+          mkdir -p /tmp/vol2/config
+          docker run -d --name stgw2 \
+            -v /tmp/vol2/config:/app/config \
+            -p 127.0.0.1:3211:3210 \
+            stgw:ci
+
+          for i in $(seq 1 40); do
+            if curl -sf http://127.0.0.1:3211/api/gateway/health > /dev/null; then break; fi
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:3211/api/gateway/health > /dev/null || {
+            echo "❌ 容器未就绪"; docker logs stgw2; exit 1; }
+
+          TOKEN=$(docker exec stgw2 npm run token --silent)
+          [ "${#TOKEN}" -eq 48 ] || {
+            echo "❌ 未取到自动生成的 token（长度 ${#TOKEN}）"; docker logs stgw2; exit 1; }
+          echo "✅ 自动生成的 token 可通过 npm run token 取回"
+
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "X-Gateway-Token: $TOKEN" http://127.0.0.1:3211/api/gateway/status)
+          [ "$CODE" = "200" ] || { echo "❌ 取回的 token 无效，返回 $CODE"; exit 1; }
+          echo "✅ 取回的 token 可通过鉴权"
+
+          # 反向验证：这个 token 绝不能出现在日志里（用户贴日志求助时会泄露）
+          if docker logs stgw2 2>&1 | grep -q "$TOKEN"; then
+            echo "❌ 鉴权 token 明文出现在日志中"; exit 1
+          fi
+          echo "✅ token 未泄露到日志"
+
       - name: 失败时输出容器日志
         if: failure()
-        run: docker logs stgw || true
+        run: |
+          docker logs stgw || true
+          docker logs stgw2 || true
 
   smoke:
     name: 启动冒烟

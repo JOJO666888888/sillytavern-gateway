@@ -27,17 +27,25 @@ export class QQOfficialAdapter extends PlatformAdapter {
         this._replyTtl = 4.5 * 60 * 1000; // 略小于官方 5 分钟窗口
     }
 
-    /** 根据配置组装 intents */
+    /**
+     * 根据配置组装 intents。
+     *
+     * 这里必须用 SDK `Intends` 枚举里的**键名**，不是官方文档里的事件名。
+     * 群聊(@机器人)与单聊(C2C)同属 `GROUP_AND_C2C_EVENT` 这一个 intent，
+     * 无法分别订阅——SDK 对无法识别的名字只打一条 warn 然后跳过，
+     * 结果就是连上了却永远收不到消息。
+     */
     _intents() {
         const c = this.config;
         const intents = [];
-        if (c.enableGroup !== false) intents.push('GROUP_AT_MESSAGE_CREATE');
-        if (c.enableC2C !== false) intents.push('C2C_MESSAGE_CREATE');
+        if (c.enableGroup !== false || c.enableC2C !== false) {
+            intents.push('GROUP_AND_C2C_EVENT');
+        }
         if (c.enableGuild !== false) {
             intents.push('GUILD_MESSAGES', 'PUBLIC_GUILD_MESSAGES', 'DIRECT_MESSAGE');
         }
-        // 保底：至少订阅群 @ 消息
-        if (intents.length === 0) intents.push('GROUP_AT_MESSAGE_CREATE');
+        // 保底：至少订阅群/单聊消息
+        if (intents.length === 0) intents.push('GROUP_AND_C2C_EVENT');
         return intents;
     }
 
@@ -61,7 +69,11 @@ export class QQOfficialAdapter extends PlatformAdapter {
             throw new Error('qq-official-bot SDK 接口异常（未找到 Bot 构造器）');
         }
 
+        // mode 必填：SDK 用它决定接收器实现，缺省会直接抛
+        // "Unknown receiver mode: undefined"。webhook/middleware 需要公网回调地址，
+        // 网关是本地部署，只用 websocket 长连接。
         this.bot = new Bot({
+            mode: 'websocket',
             appid: String(this.config.appId),
             secret: String(this.config.secret),
             token: this.config.token ? String(this.config.token) : undefined,
@@ -152,15 +164,30 @@ export class QQOfficialAdapter extends PlatformAdapter {
             chatId,
             chatType,
             senderId: String(e.sender?.user_id || e.user_id || ''),
-            senderName: e.sender?.user_openid || e.sender?.nickname || String(e.user_id || 'QQ用户'),
+            senderName: e.sender?.user_name || e.sender?.user_openid || String(e.user_id || 'QQ用户'),
             content: text,
             media,
             mentioned: true,
-            timestamp: (e.timestamp ? new Date(e.timestamp).getTime() : Date.now()) || Date.now(),
+            timestamp: this._toMillis(e.timestamp),
             raw: e,
         });
 
         this.emit('message', inbound);
+    }
+
+    /**
+     * SDK 把事件的 timestamp 归一成了**秒**级 epoch（parse 时做了 /1000）。
+     * 直接 new Date(秒) 会得到 1970 年，聊天记录的时间戳会全错。
+     * 官方原始事件里也可能是 ISO 字符串，两种都兜住。
+     */
+    _toMillis(ts) {
+        if (!ts) return Date.now();
+        if (typeof ts === 'number') {
+            // 小于 1e12 的按秒处理（1e12 毫秒 ≈ 2001 年，早于 QQ 开放平台存在的时间）
+            return ts < 1e12 ? Math.round(ts * 1000) : Math.round(ts);
+        }
+        const parsed = new Date(ts).getTime();
+        return Number.isFinite(parsed) ? parsed : Date.now();
     }
 
     /** 解析消息内容与媒体 */
