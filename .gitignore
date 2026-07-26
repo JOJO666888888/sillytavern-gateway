@@ -9,3 +9,6 @@ assets/
 
 # NapCat 的 QQ 登录态与配置（--profile napcat 时由 compose 创建）
 napcat/
+
+# 本地 agent 配置（含命令历史，可能带凭据）
+.claude/
