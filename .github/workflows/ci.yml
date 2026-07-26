@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: 测试 (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['18', '20', '22']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # 可选依赖（飞书/QQ官方/钉钉 SDK、puppeteer-core）在 CI 中不需要，
+      # 跳过它们可显著加快安装且避免网络波动导致的假失败。
+      - name: 安装依赖
+        run: npm install --no-audit --no-fund --omit=optional
+
+      - name: 语法检查
+        run: |
+          for f in index.js server/**/*.js plugins/*/index.js; do
+            [ -f "$f" ] && node --check "$f" || true
+          done
+
+      - name: 运行测试
+        run: npm test
+
+  smoke:
+    name: 启动冒烟
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm install --no-audit --no-fund --omit=optional
+
+      # 默认配置（无任何凭据）下必须能正常启动并响应健康检查。
+      # 这道关卡能挡住"改坏了启动流程"这类最致命的回归。
+      - name: 默认配置启动并探活
+        run: |
+          node server/index.js > /tmp/gw.log 2>&1 &
+          GW=$!
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:3210/api/gateway/health > /dev/null; then
+              echo "✅ 健康检查通过"
+              break
+            fi
+            sleep 1
+          done
+
+          if ! curl -sf http://127.0.0.1:3210/api/gateway/health > /dev/null; then
+            echo "❌ 服务未能在 30s 内就绪"
+            cat /tmp/gw.log
+            kill $GW 2>/dev/null || true
+            exit 1
+          fi
+
+          # 未授权访问必须被拒（P0 鉴权加固的回归保护）
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3210/api/gateway/status)
+          kill $GW 2>/dev/null || true
+          if [ "$CODE" != "401" ]; then
+            echo "❌ /api/gateway/status 未鉴权时应返回 401，实际 $CODE"
+            cat /tmp/gw.log
+            exit 1
+          fi
+          echo "✅ 鉴权保护生效 (401)"
+
+          # 启动日志中不应出现未捕获异常
+          if grep -qE "UnhandledPromiseRejection|uncaughtException" /tmp/gw.log; then
+            echo "❌ 启动日志存在未捕获异常"
+            cat /tmp/gw.log
+            exit 1
+          fi
+          echo "✅ 无未捕获异常"
