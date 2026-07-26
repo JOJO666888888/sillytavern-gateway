@@ -59,6 +59,11 @@
                     <button id="gateway_panel_connect" class="menu_button" title="连接"><i class="fa-solid fa-plug"></i></button>
                 </div>
             </div>
+            <div class="gateway-field">
+                <label>鉴权 Token</label>
+                <input type="password" id="gateway_panel_auth_token" class="text_pole" placeholder="网关启动日志中的 server.authToken">
+                <span class="gateway-hint">网关已默认开启鉴权。请填入后端首次启动生成的 token（见网关控制台日志或 config/gateway.json）。</span>
+            </div>
 
             <!-- 本地服务控制 -->
             <div class="gateway-field gateway-server-control">

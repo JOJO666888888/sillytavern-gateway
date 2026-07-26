@@ -180,6 +180,12 @@ export default class OptionSplitterPlugin extends GatewayPlugin {
         let m;
         let idx = 0;
         while ((m = regex.exec(text)) !== null) {
+            // 防御零长匹配死循环：用户自定义正则（如 ^.*$）遇空行会零长匹配，
+            // lastIndex 不前进 → 无限循环卡死整个进程。手动推进。
+            if (m.index === regex.lastIndex) {
+                regex.lastIndex++;
+                continue;
+            }
             // 取最后一个非 undefined 的捕获组作为选项内容
             // 默认正则有2组：m[1]=序号, m[2]=内容，应取 m[2]
             // 自定义正则若只有1组，取 m[1]；无组则取 m[0]

@@ -102,6 +102,7 @@ const { sendMessageAsUser, doNavbarIconClick } = await import(`${SERVER_ROOT}/sc
 // 扩展设置默认值
 const DEFAULT_SETTINGS = {
     serverUrl: 'http://127.0.0.1:3210',
+    authToken: '',            // 网关 API 鉴权 token（对应后端 server.authToken）
     autoConnect: true,
     pollInterval: 3000,
     autoReplyEnabled: true,
@@ -324,10 +325,15 @@ async function apiRequest(endpoint, options = {}) {
             ...options,
             headers: {
                 'Content-Type': 'application/json',
+                // 网关默认开启鉴权，携带 token（后端 health 接口豁免）
+                ...(settings.authToken ? { 'X-Gateway-Token': settings.authToken } : {}),
                 ...options.headers,
             },
         });
 
+        if (response.status === 401) {
+            throw new Error('鉴权失败（401）：请在面板填入正确的网关 Token');
+        }
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
@@ -1324,6 +1330,10 @@ async function initGatewayPanel() {
     bindPanelEvents();
     bindRegexEvents();
 
+    // 恢复网关地址与鉴权 token 输入
+    $('#gateway_panel_url').val(getSettings().serverUrl || 'http://127.0.0.1:3210');
+    $('#gateway_panel_auth_token').val(getSettings().authToken || '');
+
     // 7. 恢复模式开关状态（游玩模式 / 网关模式）
     updateModeUI();
 
@@ -1355,13 +1365,21 @@ function bindPanelEvents() {
         updateModeUI();
     });
 
+    // 鉴权 token 输入变更即保存
+    $('#gateway_panel_auth_token').on('change', function () {
+        getSettings().authToken = this.value.trim();
+        saveSettingsDebounced();
+    });
+
     // 连接按钮
     $('#gateway_panel_connect').on('click', async () => {
         const url = $('#gateway_panel_url').val().trim();
         if (url) {
             getSettings().serverUrl = url;
-            saveSettingsDebounced();
         }
+        const token = $('#gateway_panel_auth_token').val().trim();
+        getSettings().authToken = token;
+        saveSettingsDebounced();
         await fetchGatewayStatus();
         startPolling();
         refreshPanelData();

@@ -15,6 +15,41 @@ import { execSync } from 'child_process';
 const logger = createLogger('plugin-manager');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// 合法插件名：小写字母/数字开头，仅含 [a-z0-9._-]，长度 ≤ 64。
+// 用于所有以插件名拼接文件路径的场景，杜绝 ../ 、%2F、绝对路径等穿越。
+const PLUGIN_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
+
+// 下载/解压安全上限
+const MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024;  // 单个插件 ZIP 上限 25MB
+const DOWNLOAD_TIMEOUT_MS = 30000;
+
+/**
+ * 校验插件名合法性；非法则抛错。
+ * @param {string} name
+ * @returns {string} 规范化后的名字
+ */
+function assertValidPluginName(name) {
+    if (typeof name !== 'string' || !PLUGIN_NAME_RE.test(name) || name === '.' || name === '..') {
+        throw new Error(`非法插件名: ${JSON.stringify(name)}（仅允许字母数字及 . _ -，长度≤64）`);
+    }
+    return name;
+}
+
+/**
+ * 断言 target 解析后位于 baseDir 之内（含相等），否则抛错。防止 path.join 穿越。
+ * @param {string} baseDir
+ * @param {string} target
+ * @returns {string} 解析后的绝对路径
+ */
+function assertInside(baseDir, target) {
+    const base = path.resolve(baseDir);
+    const resolved = path.resolve(target);
+    if (resolved !== base && !resolved.startsWith(base + path.sep)) {
+        throw new Error('路径越界：拒绝访问目标目录之外的位置');
+    }
+    return resolved;
+}
+
 /**
  * 插件管理器
  */
@@ -100,6 +135,7 @@ export class PluginManager {
                 alias: cmd.alias || [],
                 description: cmd.description || '',
                 usage: cmd.usage || '',
+                adminOnly: cmd.adminOnly === true,
                 pluginName: instance.meta.name,
                 handler: async (ctx) => {
                     if (typeof instance[cmd.handler] === 'function') {
@@ -312,7 +348,14 @@ export class PluginManager {
      * 加载插件配置
      */
     loadPluginConfig(name) {
-        const configPath = path.join(this.dataDir, `${name}.json`);
+        let configPath;
+        try {
+            assertValidPluginName(name);
+            configPath = assertInside(this.dataDir, path.join(this.dataDir, `${name}.json`));
+        } catch (error) {
+            logger.warn(`拒绝读取插件配置: ${error.message}`);
+            return {};
+        }
         if (fs.existsSync(configPath)) {
             try {
                 return JSON.parse(fs.readFileSync(configPath, 'utf-8'));
@@ -324,12 +367,21 @@ export class PluginManager {
     }
 
     /**
-     * 保存插件配置
+     * 保存插件配置（原子写：tmp + rename，避免中途崩溃截断丢配置）
      */
     savePluginConfig(name, config) {
-        const configPath = path.join(this.dataDir, `${name}.json`);
+        let configPath;
         try {
-            fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+            assertValidPluginName(name);
+            configPath = assertInside(this.dataDir, path.join(this.dataDir, `${name}.json`));
+        } catch (error) {
+            logger.error(`拒绝保存插件配置: ${error.message}`);
+            return;
+        }
+        try {
+            const tmp = `${configPath}.tmp`;
+            fs.writeFileSync(tmp, JSON.stringify(config, null, 2), 'utf-8');
+            fs.renameSync(tmp, configPath);
         } catch (error) {
             logger.error(`保存插件 ${name} 配置失败: ${error.message}`);
         }
@@ -376,6 +428,10 @@ export class PluginManager {
 
         // 获取插件配置
         app.get('/api/plugins/:name/config', (req, res) => {
+            // 仅允许读取已加载插件的配置，杜绝用插件名路径穿越读取 config/gateway.json 等
+            if (!this.loader.getAllPlugins().get(req.params.name)) {
+                return res.status(404).json({ success: false, error: '插件不存在' });
+            }
             const config = this.loadPluginConfig(req.params.name);
             res.json({ success: true, config });
         });
@@ -463,7 +519,9 @@ export class PluginManager {
                 }
 
                 const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
-                const targetDir = path.join(this.loader.pluginsDir, meta.name);
+                // 校验 meta.name 并断言目标目录落在 plugins/ 之内，防止 ../ 覆盖核心文件
+                assertValidPluginName(meta.name);
+                const targetDir = assertInside(this.loader.pluginsDir, path.join(this.loader.pluginsDir, meta.name));
 
                 // 复制插件到 plugins 目录
                 fs.cpSync(pluginPath, targetDir, { recursive: true });
@@ -564,9 +622,10 @@ export class PluginManager {
                 pluginSourceDir = path.join(extractDir, entries[0]);
             }
 
-            // 如果有子目录
+            // 如果有子目录：断言仍落在解压目录内，防止 ../../ 逃逸读取任意目录
             if (actualSubfolder) {
-                pluginSourceDir = path.join(pluginSourceDir, actualSubfolder);
+                const rootAfterUnzip = pluginSourceDir;
+                pluginSourceDir = assertInside(rootAfterUnzip, path.join(rootAfterUnzip, actualSubfolder));
             }
 
             // 验证 plugin.json
@@ -582,7 +641,10 @@ export class PluginManager {
             }
 
             const meta = JSON.parse(fs.readFileSync(path.join(pluginSourceDir, 'plugin.json'), 'utf-8'));
-            const targetDir = path.join(this.loader.pluginsDir, meta.name);
+            // 校验 meta.name（来自不可信 ZIP）并断言目标落在 plugins/ 内，
+            // 防止 {"name":"../../server"} 之类删除/覆盖核心文件
+            assertValidPluginName(meta.name);
+            const targetDir = assertInside(this.loader.pluginsDir, path.join(this.loader.pluginsDir, meta.name));
 
             // 如果已存在，先卸载
             if (this.loader.getPlugin(meta.name)) {
@@ -592,8 +654,13 @@ export class PluginManager {
                 fs.rmSync(targetDir, { recursive: true });
             }
 
-            // 复制到 plugins 目录
-            fs.cpSync(pluginSourceDir, targetDir, { recursive: true });
+            // 安全：拒绝插件包内的符号链接（可指向宿主任意文件，构成越界读写/逃逸）。
+            // 注：外部 unzip/PowerShell 解压不校验 zip-slip，完整防护应改用纯 JS 解压库
+            // 并逐条目断言路径归属（见 docs 综合分析报告 P0-4）；此处先堵住最实际的 symlink 逃逸。
+            this._assertNoSymlinks(pluginSourceDir);
+
+            // 复制到 plugins 目录（不跟随符号链接）
+            fs.cpSync(pluginSourceDir, targetDir, { recursive: true, dereference: false });
 
             // 加载插件
             const config = this.loadPluginConfig(meta.name);
@@ -679,12 +746,32 @@ export class PluginManager {
      * 下载文件
      */
     async _downloadFile(url, destPath) {
-        const response = await fetch(url, { redirect: 'follow' });
-        if (!response.ok) {
-            throw new Error(`下载失败: HTTP ${response.status}`);
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS);
+        try {
+            const response = await fetch(url, { redirect: 'follow', signal: controller.signal });
+            if (!response.ok) {
+                throw new Error(`下载失败: HTTP ${response.status}`);
+            }
+            // 预检 Content-Length（若提供）
+            const declared = parseInt(response.headers.get('content-length') || '0', 10);
+            if (declared && declared > MAX_DOWNLOAD_BYTES) {
+                throw new Error(`插件包过大（${(declared / 1048576).toFixed(1)}MB，上限 ${MAX_DOWNLOAD_BYTES / 1048576}MB）`);
+            }
+            const buffer = Buffer.from(await response.arrayBuffer());
+            // 兜底：无 Content-Length 时按实际大小再校验一次
+            if (buffer.length > MAX_DOWNLOAD_BYTES) {
+                throw new Error(`插件包过大（${(buffer.length / 1048576).toFixed(1)}MB，上限 ${MAX_DOWNLOAD_BYTES / 1048576}MB）`);
+            }
+            fs.writeFileSync(destPath, buffer);
+        } catch (error) {
+            if (error.name === 'AbortError') {
+                throw new Error(`下载超时（${DOWNLOAD_TIMEOUT_MS / 1000}s）`);
+            }
+            throw error;
+        } finally {
+            clearTimeout(timer);
         }
-        const buffer = Buffer.from(await response.arrayBuffer());
-        fs.writeFileSync(destPath, buffer);
     }
 
     /**
@@ -701,6 +788,25 @@ export class PluginManager {
             }
         } catch (error) {
             throw new Error(`解压失败: ${error.message}`);
+        }
+    }
+
+    /**
+     * 递归断言目录内无符号链接，命中即抛错。
+     * @param {string} dir
+     * @param {number} depth
+     */
+    _assertNoSymlinks(dir, depth = 0) {
+        if (depth > 8) return; // 防御异常深目录
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+            const full = path.join(dir, entry.name);
+            if (entry.isSymbolicLink()) {
+                throw new Error(`插件包含符号链接，出于安全拒绝安装: ${entry.name}`);
+            }
+            if (entry.isDirectory() && entry.name !== 'node_modules') {
+                this._assertNoSymlinks(full, depth + 1);
+            }
         }
     }
 

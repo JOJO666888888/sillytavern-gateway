@@ -39,6 +39,7 @@ export class CommandRouter {
             description: cmd.description || '',
             usage: cmd.usage || '',
             pluginName: cmd.pluginName || 'system',
+            adminOnly: cmd.adminOnly === true, // 仅管理员可执行
             handler: cmd.handler,
         };
 
@@ -98,6 +99,29 @@ export class CommandRouter {
             return false;
         }
 
+        // 权限校验：adminOnly 命令，或被 security.adminCommands 列入的命令，
+        // 仅允许 admins 白名单中的用户执行（身份形如 "platform:senderId"）。
+        const cfg = services.configManager;
+        const adminCommands = (cfg?.get('security.adminCommands') || []).map(s => String(s).toLowerCase());
+        const needsAdmin = cmd.adminOnly || adminCommands.includes(cmd.name);
+        if (needsAdmin) {
+            const admins = cfg?.get('admins') || [];
+            const who = `${message.platform}:${message.senderId}`;
+            const isAdmin = admins.includes(who) || admins.includes(String(message.senderId));
+            if (!isAdmin) {
+                logger.warn(`拒绝越权命令 /${cmd.name}（来自 ${who}，非管理员）`);
+                try {
+                    const denyCtx = new PluginContext({
+                        message, gateway: services.gateway,
+                        sessionManager: services.sessionManager, configManager: cfg,
+                        pluginName: cmd.pluginName, commandArgs: args,
+                    });
+                    await denyCtx.reply('⛔ 该命令仅管理员可用');
+                } catch (_) { /* ignore */ }
+                return true;
+            }
+        }
+
         // 构建上下文
         const ctx = new PluginContext({
             message,
@@ -116,9 +140,9 @@ export class CommandRouter {
             return true;
         } catch (error) {
             logger.error(`命令 /${cmd.name} 执行失败: ${error.message}`);
-            // 回复错误信息
+            // 回复通用错误信息（不回显 error.message，避免泄露服务器绝对路径等内部细节）
             try {
-                await ctx.reply(`命令执行出错: ${error.message}`);
+                await ctx.reply('命令执行出错，请稍后重试或联系管理员');
             } catch (_) { /* ignore */ }
             return true;
         }

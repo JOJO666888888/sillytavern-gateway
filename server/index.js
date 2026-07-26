@@ -1,6 +1,7 @@
 import express from 'express';
 import http from 'http';
 import path from 'path';
+import crypto from 'crypto';
 import { exec } from 'child_process';
 import { fileURLToPath } from 'url';
 import { createLogger } from './utils/logger.js';
@@ -23,13 +24,69 @@ app.use(express.json());
 // 插件管理器
 let pluginManager = null;
 
-// CORS 支持（允许 SillyTavern 前端访问）
+/**
+ * 判断请求 Origin 是否允许跨域。
+ * 默认放行 localhost / 127.0.0.1 / [::1] 的任意端口（SillyTavern 常见部署），
+ * 以及 server.allowedOrigins 白名单里显式列出的地址。
+ * 不再使用通配 '*'，避免任意恶意网页 drive-by 调用本地端口。
+ */
+function isOriginAllowed(origin) {
+    if (!origin) return false;
+    const allowed = configManager.get('server.allowedOrigins') || [];
+    if (allowed.includes(origin)) return true;
+    try {
+        const { hostname } = new URL(origin);
+        return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+    } catch (_) {
+        return false;
+    }
+}
+
+// CORS：收敛为 Origin 反射白名单（非通配），并声明自定义鉴权头
 app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
+    const origin = req.headers.origin;
+    if (isOriginAllowed(origin)) {
+        res.header('Access-Control-Allow-Origin', origin);
+        res.header('Vary', 'Origin');
+    }
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Gateway-Token');
     if (req.method === 'OPTIONS') {
-        return res.sendStatus(200);
+        return res.sendStatus(204);
+    }
+    next();
+});
+
+/** 恒定时间比较两个 token，避免时序侧信道 */
+function tokenEquals(a, b) {
+    if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
+    try {
+        return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+    } catch (_) {
+        return false;
+    }
+}
+
+// 鉴权中间件：所有 /api/* 需携带正确的 X-Gateway-Token。
+// 例外：健康检查（前端探活用，先于配置 token）与 OPTIONS 预检。
+app.use((req, res, next) => {
+    if (req.method === 'OPTIONS') return next();
+    if (!req.path.startsWith('/api/')) return next();
+    if (req.path === '/api/gateway/health') return next();
+
+    const requireAuth = configManager.get('server.requireAuth') !== false;
+    if (!requireAuth) return next();
+
+    const expected = configManager.get('server.authToken');
+    if (!expected) {
+        // requireAuth 开启但无 token（异常状态）→ 拒绝，避免裸奔
+        return res.status(503).json({ success: false, error: '网关鉴权未就绪（authToken 缺失）' });
+    }
+
+    const provided = req.headers['x-gateway-token'] ||
+        (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
+    if (!tokenEquals(String(provided), String(expected))) {
+        return res.status(401).json({ success: false, error: '未授权：缺少或错误的 X-Gateway-Token' });
     }
     next();
 });
@@ -113,7 +170,8 @@ app.get('/api/gateway/docs/plugin-guide', (req, res) => {
  * 获取配置
  */
 app.get('/api/gateway/config', (req, res) => {
-    res.json(configManager.getAll());
+    // 脱敏：绝不明文返回 Bot Token 等敏感字段
+    res.json(configManager.getRedacted());
 });
 
 /**
@@ -384,6 +442,18 @@ async function startServer() {
         logger.info(`HTTP API 服务已启动: http://${HOST}:${PORT}`);
         logger.info(`API 文档: http://${HOST}:${PORT}/api/gateway/health`);
         logger.info(`插件管理: http://${HOST}:${PORT}/api/plugins`);
+
+        const requireAuth = configManager.get('server.requireAuth') !== false;
+        if (requireAuth) {
+            const token = configManager.get('server.authToken') || '';
+            const masked = token ? `***${token.slice(-4)}` : '(未设置)';
+            logger.info(`🔐 API 鉴权已开启。请在 SillyTavern 网关面板填入 token（当前 ${masked}），完整值见 config/gateway.json 的 server.authToken`);
+        } else {
+            logger.warn('⚠️ API 鉴权已关闭（server.requireAuth=false）。任何本机进程/网页均可调用网关 API，仅建议在完全可信环境使用。');
+        }
+        if (HOST !== '127.0.0.1' && HOST !== 'localhost') {
+            logger.warn(`⚠️ 网关绑定在 ${HOST}（非本地回环）。请确保已开启鉴权并置于可信网络，否则 Bot Token 与会话数据存在暴露风险。`);
+        }
     });
 }
 
