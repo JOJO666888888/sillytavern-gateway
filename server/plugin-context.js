@@ -19,7 +19,10 @@ export class PluginContext {
      * @param {object} options.commandArgs - 命令参数（如果是命令触发）
      */
     constructor(options = {}) {
-        const { message, gateway, sessionManager, configManager, pluginName, commandArgs } = options;
+        const {
+            message, gateway, sessionManager, configManager, pluginName, commandArgs,
+            gatewayConfig,
+        } = options;
 
         // 消息信息
         this.message = message || null;
@@ -43,6 +46,9 @@ export class PluginContext {
         this._gateway = gateway;
         this._sessionManager = sessionManager;
         this._configManager = configManager;
+        // 按插件权限收窄的网关配置视图（凭据脱敏）。由 PluginManager 注入；
+        // 缺失时 getConfig() 一律拒绝，避免"注入缺失=意外放行"。
+        this._gatewayConfig = gatewayConfig || null;
         this._pluginName = pluginName || '';
     }
 
@@ -159,12 +165,23 @@ export class PluginContext {
     // ==================== 配置操作 ====================
 
     /**
-     * 读取网关全局配置
+     * 读取网关全局配置（受权限约束 + 凭据脱敏）
+     *
+     * 安全修复：此前此方法直接透传 configManager.get()，任何插件
+     * `ctx.getConfig('adapters.telegram.botToken')` 即可窃取全部平台凭据
+     * 与网关鉴权 token。现在改走受控视图：
+     *   - 未声明 gateway.config 权限 → 返回 undefined
+     *   - 已声明 → 值仍经脱敏，凭据不会明文流入插件
+     *
+     * 插件自己的密钥请存放在**插件配置**（getPluginConfig）中。
+     *
      * @param {string} key - 配置路径（如 'adapters.qq.enabled'）
      */
     getConfig(key) {
-        if (!this._configManager) return undefined;
-        return this._configManager.get(key);
+        // 优先用收窄后的视图；无视图时（如单元测试直接构造 ctx）一律拒绝，
+        // 避免因注入缺失而"意外放行"。
+        if (this._gatewayConfig) return this._gatewayConfig.get(key);
+        return undefined;
     }
 
     /**

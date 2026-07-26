@@ -1885,23 +1885,101 @@ async function installPluginFromGitHub() {
     btn.prop('disabled', true).html('<i class="fa-solid fa-spinner fa-spin"></i>');
 
     try {
-        const result = await apiRequest('/api/plugins/install/github', {
+        // 第一阶段：只下载并取回"将获得哪些能力 + 代码扫描结果"，不执行插件代码
+        const probe = await apiRequest('/api/plugins/install/github', {
             method: 'POST',
             body: JSON.stringify({ url }),
         });
 
-        if (result.success) {
-            toastr.success(result.message);
+        if (probe.needConfirm) {
+            const confirmed = await showInstallDisclosure(probe);
+            if (!confirmed) {
+                toastr.info('已取消安装');
+                return;
+            }
+            // 第二阶段：用户确认后才真正落地并加载
+            const result = await apiRequest('/api/plugins/install/github', {
+                method: 'POST',
+                body: JSON.stringify({ url, confirm: true }),
+            });
+            if (result.success) {
+                toastr.success(result.message);
+                $('#gateway_plugin_github_url').val('');
+                loadPluginList();
+            } else {
+                toastr.error(result.error || '安装失败');
+            }
+            return;
+        }
+
+        if (probe.success) {
+            toastr.success(probe.message);
             $('#gateway_plugin_github_url').val('');
             loadPluginList();
         } else {
-            toastr.error(result.error || '安装失败');
+            toastr.error(probe.error || '安装失败');
         }
     } catch (error) {
         toastr.error(`安装失败: ${error.message}`);
     } finally {
         btn.prop('disabled', false).html('<i class="fa-solid fa-download"></i>');
     }
+}
+
+/**
+ * 安装前展示插件申请的能力与代码扫描结果，要求用户确认。
+ *
+ * 插件与网关同进程运行、拥有完整 Node 权限——安装即等于执行其代码。
+ * 扫描只能提示可疑模式，无法阻止刻意为恶的插件，因此必须让用户先看见再决定。
+ *
+ * @param {object} probe - 后端返回的 needConfirm 响应
+ * @returns {Promise<boolean>} 用户是否确认安装
+ */
+async function showInstallDisclosure(probe) {
+    const riskColor = { critical: '#e74c3c', high: '#e67e22', medium: '#f1c40f', low: '#7f8c8d' };
+    const p = probe.plugin || {};
+
+    const permHtml = (probe.permissions || []).map(name => `<li><code>${escapeHtml(name)}</code></li>`).join('');
+    const findings = probe.scan?.findings || [];
+    const scanHtml = findings.length
+        ? findings.map(f => `
+            <div style="margin:2px 0;">
+                <span style="color:${riskColor[f.level] || '#888'};font-weight:600;">[${escapeHtml(f.level)}]</span>
+                ${escapeHtml(f.label)}
+                <code style="opacity:.7;">${escapeHtml(f.file)}:${f.line}</code>
+            </div>`).join('')
+        : '<div style="opacity:.7;">（未发现可疑模式）</div>';
+
+    const dialog = $(`
+        <div class="gateway-plugin-config-popup">
+            <h3><i class="fa-solid fa-shield-halved"></i> 安装前确认</h3>
+            <div class="gateway-field">
+                <b>${escapeHtml(p.displayName || p.name || '未知插件')}</b>
+                <span style="opacity:.7;">v${escapeHtml(p.version || '?')} · ${escapeHtml(p.author || '作者未知')}</span>
+            </div>
+            <div class="gateway-section-subtitle">将获得的能力</div>
+            <ul style="margin:0 0 8px 18px;">${permHtml || '<li>（无）</li>'}</ul>
+            <div class="gateway-section-subtitle">
+                代码扫描（${probe.scan?.filesScanned ?? 0} 个文件，最高风险:
+                <span style="color:${riskColor[probe.scan?.maxLevel] || '#888'};">${escapeHtml(probe.scan?.maxLevel || 'low')}</span>）
+            </div>
+            <div style="max-height:180px;overflow-y:auto;font-size:.85em;">${scanHtml}</div>
+            <div class="gateway-field" style="margin-top:10px;">
+                <span class="gateway-hint">
+                    ⚠️ 插件与网关<b>同进程运行，拥有完整 Node 权限</b>。上述扫描仅供参考，
+                    <b>无法阻止刻意为恶的代码</b>。请只安装你信任其作者的插件。
+                </span>
+            </div>
+        </div>
+    `);
+
+    const result = await callGenericPopup(dialog, POPUP_TYPE.CONFIRM, '', {
+        okButton: '我已了解，继续安装',
+        cancelButton: '取消',
+        wide: true,
+        allowVerticalScrolling: true,
+    });
+    return result === 1 || result === true;
 }
 
 /**

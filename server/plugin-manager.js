@@ -8,6 +8,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { createLogger } from './utils/logger.js';
 import { PluginLoader } from './plugin-loader.js';
+import { buildScopedServices, normalizePermissions, scanPluginRisk, formatInstallDisclosure, highestRisk } from './plugin-permissions.js';
 import { CommandRouter } from './command-router.js';
 import { EventPipeline } from './event-pipeline.js';
 import { execSync } from 'child_process';
@@ -219,23 +220,41 @@ export class PluginManager {
      * @param {import('./adapters/base-adapter.js').InboundMessage} message
      * @returns {Promise<boolean>} 是否被插件处理
      */
+    /**
+     * 为指定插件返回按其权限收窄的网关配置视图（凭据脱敏）。
+     * 供 CommandRouter / EventPipeline 构造 ctx 时注入，
+     * 使 ctx.getConfig() 不再能读出 bot token。
+     * @param {string} pluginName
+     */
+    getGatewayConfigFor(pluginName) {
+        const instance = this.loader.getPlugin(pluginName);
+        const granted = new Set(instance?._grantedPermissions || []);
+        return buildScopedServices(pluginName, granted, {
+            gateway: null,
+            sessionManager: null,
+            configManager: this.configManager,
+        }).gatewayConfig;
+    }
+
+    /** 传给命令路由/事件管线的服务集合 */
+    _dispatchServices() {
+        return {
+            gateway: this.gateway,
+            sessionManager: this.sessionManager,
+            configManager: this.configManager,
+            getGatewayConfigFor: (name) => this.getGatewayConfigFor(name),
+        };
+    }
+
     async handleMessage(message) {
         // 检查是否是命令
         if (message.content && message.content.startsWith('/')) {
-            const handled = await this.commandRouter.handle(message, {
-                gateway: this.gateway,
-                sessionManager: this.sessionManager,
-                configManager: this.configManager,
-            });
+            const handled = await this.commandRouter.handle(message, this._dispatchServices());
             if (handled) return true;
         }
 
         // 通过事件管线分发给监听器
-        const handled = await this.eventPipeline.dispatch(message, {
-            gateway: this.gateway,
-            sessionManager: this.sessionManager,
-            configManager: this.configManager,
-        });
+        const handled = await this.eventPipeline.dispatch(message, this._dispatchServices());
 
         return handled;
     }
@@ -366,6 +385,8 @@ export class PluginManager {
                 // R3: 配置 schema 信息，前端据此决定是否显示"配置"按钮
                 hasConfig: Object.keys(configSchema).length > 0,
                 configUi: meta.configUi || 'auto',
+                // 该插件实际被授予的能力（供面板展示，用户可知道它能做什么）
+                permissions: instance._grantedPermissions || [],
             });
         }
         return plugins;
@@ -618,13 +639,16 @@ export class PluginManager {
 
         // 从 GitHub 安装插件
         app.post('/api/plugins/install/github', async (req, res) => {
-            const { url, subfolder } = req.body;
+            const { url, subfolder, confirm } = req.body;
             if (!url) {
                 return res.status(400).json({ success: false, error: '请提供 GitHub 仓库地址' });
             }
 
             try {
-                const result = await this.installFromGitHub(url, subfolder);
+                // 两阶段安装：首次调用只下载并返回"将获得哪些能力 + 代码扫描结果"，
+                // 由用户确认后带 confirm:true 再次调用才真正落地加载。
+                // 插件与网关同进程运行，安装即等于执行其代码——必须让用户先看见。
+                const result = await this.installFromGitHub(url, subfolder, { confirm: confirm === true });
                 res.json(result);
             } catch (error) {
                 res.status(500).json({ success: false, error: error.message });
@@ -656,7 +680,7 @@ export class PluginManager {
      * @param {string} url - GitHub 地址
      * @param {string} subfolder - 可选子目录
      */
-    async installFromGitHub(url, subfolder = '') {
+    async installFromGitHub(url, subfolder = '', options = {}) {
         // 解析 GitHub URL
         const parsed = this._parseGitHubUrl(url);
         if (!parsed) {
@@ -718,6 +742,30 @@ export class PluginManager {
             // 防止 {"name":"../../server"} 之类删除/覆盖核心文件
             assertValidPluginName(meta.name);
             const targetDir = assertInside(this.loader.pluginsDir, path.join(this.loader.pluginsDir, meta.name));
+
+            // ⭐ 安装前风险披露：扫描源码 + 汇总将授予的能力。
+            // 未确认时到此为止——不复制、不加载、不执行插件任何代码。
+            const risk = scanPluginRisk(pluginSourceDir, { fs, path });
+            const { granted } = normalizePermissions(meta.permissions, meta.name);
+            if (!options.confirm) {
+                logger.info(`插件 ${meta.name} 待确认安装（风险等级 ${risk.maxLevel}）`);
+                return {
+                    success: false,
+                    needConfirm: true,
+                    plugin: {
+                        name: meta.name,
+                        displayName: meta.displayName || meta.name,
+                        version: meta.version || '',
+                        author: meta.author || '',
+                    },
+                    permissions: [...granted],
+                    permissionRisk: highestRisk(granted),
+                    scan: risk,
+                    disclosure: formatInstallDisclosure(meta, risk),
+                    message: '请确认插件申请的能力与代码扫描结果后再安装',
+                };
+            }
+            logger.warn(`用户已确认安装插件 ${meta.name}（风险 ${risk.maxLevel}，权限 ${[...granted].join(',')}）`);
 
             // 如果已存在，先卸载
             if (this.loader.getPlugin(meta.name)) {

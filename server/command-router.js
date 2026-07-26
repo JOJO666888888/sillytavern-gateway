@@ -128,6 +128,7 @@ export class CommandRouter {
             gateway: services.gateway,
             sessionManager: services.sessionManager,
             configManager: services.configManager,
+            gatewayConfig: services.getGatewayConfigFor?.(cmd.pluginName),
             pluginName: cmd.pluginName,
             commandArgs: args,
         });

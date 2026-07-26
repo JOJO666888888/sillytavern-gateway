@@ -86,6 +86,7 @@ export class EventPipeline {
                 gateway: services.gateway,
                 sessionManager: services.sessionManager,
                 configManager: services.configManager,
+                gatewayConfig: services.getGatewayConfigFor?.(listener.pluginName),
                 pluginName: listener.pluginName,
             });
 

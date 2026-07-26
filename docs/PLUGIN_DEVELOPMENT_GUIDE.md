@@ -27,6 +27,32 @@
 
 ---
 
+## ⚠️ 权限模型（v2 起生效）
+
+插件能力按 `plugin.json` 的 `permissions` 声明收窄。**默认授予**：`config`、
+`gateway.filter`、`gateway.send`（覆盖绝大多数插件的需要，老插件无需改动）。
+
+**需显式声明**的危险能力：
+
+```json
+{ "permissions": ["sessions", "gateway.config"] }
+```
+
+| 权限 | 说明 |
+|------|------|
+| `sessions` | 读写会话历史（能看到用户聊天内容） |
+| `gateway.config` | 读取网关全局配置（**凭据字段恒被脱敏**） |
+| `gateway.admin` | 管理适配器与其它插件 |
+
+**重要变化**：插件不再能读取 bot token / 网关鉴权 token。
+`ctx.getConfig('adapters.telegram.botToken')` 现在返回 `undefined`（无权限）或
+脱敏值（有权限）。**插件自己的 API key 请存放在插件配置里**，用
+`this.getConfig()` / `this.setConfig()`。
+
+从 GitHub 安装时会先展示插件申请的能力与代码扫描结果，用户确认后才真正加载。
+
+完整说明与"为什么这不是沙箱"见 [PLUGIN_SECURITY.md](./PLUGIN_SECURITY.md)。
+
 ## 1. 概述
 
 ### 1.1 什么是网关插件

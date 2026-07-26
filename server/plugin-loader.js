@@ -8,6 +8,7 @@ import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { createLogger } from './utils/logger.js';
 import { GatewayPlugin } from './plugin-sdk.js';
+import { normalizePermissions, buildScopedServices } from './plugin-permissions.js';
 
 const logger = createLogger('plugin-loader');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -135,13 +136,15 @@ export class PluginLoader {
             // 使插件无需各自手写 _ensureDefaults
             const mergedConfig = applySchemaDefaults(meta.config, pluginConfig);
 
-            // 每插件代管注册：包装 gateway，使 addOutboundFilter 自动标注 pluginName
-            // 并记录注销函数，禁用/卸载时框架可强制回收（不再依赖插件自觉清理）
+            // 按 plugin.json 声明的 permissions 收窄能力：
+            //   - 出站过滤器自动标注归属并记录注销函数（框架代管回收）
+            //   - 危险能力（会话历史、适配器管理）需显式声明
+            //   - 关键：不再传出原始 configManager，插件无法再读取 bot token
             const managedUnregister = [];
-            const scopedServices = {
-                ...this.services,
-                gateway: this._scopeGateway(this.services.gateway, meta.name, managedUnregister),
-            };
+            const { granted } = normalizePermissions(meta.permissions, meta.name);
+            const scopedServices = buildScopedServices(
+                meta.name, granted, this.services, managedUnregister,
+            );
 
             // 实例化
             const instance = new PluginClass({
@@ -153,6 +156,7 @@ export class PluginLoader {
             instance.meta = { ...instance.meta, ...meta };
             instance._pluginDir = pluginDir;
             instance._managedUnregister = managedUnregister;
+            instance._grantedPermissions = [...granted];
             // logger 命名时机修正：实例化后 meta 已注入，重建带真实名字的 logger
             instance.logger = createLogger(`plugin:${meta.name}`);
 
@@ -178,30 +182,6 @@ export class PluginLoader {
             logger.debug(error.stack);
             return null;
         }
-    }
-
-    /**
-     * 为单个插件包装 gateway：拦截 addOutboundFilter 以自动标注归属插件、
-     * 记录注销函数。其余方法透传（绑定 this 到真实 gateway）。
-     * @param {object} gateway
-     * @param {string} pluginName
-     * @param {Function[]} managed - 收集注销函数的数组
-     */
-    _scopeGateway(gateway, pluginName, managed) {
-        if (!gateway) return gateway;
-        return new Proxy(gateway, {
-            get(target, prop, receiver) {
-                if (prop === 'addOutboundFilter') {
-                    return (filter, opts = {}) => {
-                        const unregister = target.addOutboundFilter(filter, { ...opts, pluginName });
-                        if (typeof unregister === 'function') managed.push(unregister);
-                        return unregister;
-                    };
-                }
-                const val = Reflect.get(target, prop, receiver);
-                return typeof val === 'function' ? val.bind(target) : val;
-            },
-        });
     }
 
     /**
