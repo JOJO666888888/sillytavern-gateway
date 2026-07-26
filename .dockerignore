@@ -1,0 +1,39 @@
+# 构建上下文排除清单
+# 目标：镜像里只保留运行所需的源码，运行时状态一律走挂载卷。
+
+# 依赖：镜像内重新安装（宿主机的 node_modules 可能是不同平台/架构编译的）
+node_modules
+plugins/*/node_modules
+
+# 运行时状态：必须是挂载卷，绝不能烘进镜像
+# config/ 尤其危险——含自动生成的鉴权 token 与各平台 bot token
+config/
+data/
+logs/
+assets/
+plugins/*/cache/
+
+# 版本控制与开发环境
+.git
+.github
+.gitignore
+*.log
+
+# 测试（运行时不需要，也避免把测试临时文件带进去）
+test/
+
+# 文档（保留 docs/ 因为有个 API 会下载插件开发指南，见 server/index.js 的
+# /api/gateway/docs/plugin-guide 端点；其余 md 体积很小，不值得为省几十 KB
+# 冒着漏掉运行时依赖的风险）
+PROJECT_HANDOFF.md
+
+# 编辑器/系统
+.DS_Store
+.vscode
+.idea
+*.swp
+
+# Docker 自身
+Dockerfile*
+docker-compose*.yml
+.dockerignore

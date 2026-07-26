@@ -3,6 +3,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { createLogger } from './logger.js';
+import { applyEnvOverrides, getByPath } from './env-config.js';
 
 const logger = createLogger('config');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -160,9 +161,16 @@ class ConfigManager {
                 this.config = this.deepMerge(structuredClone(DEFAULT_CONFIG), userConfig);
                 logger.info('配置文件加载成功');
             } else {
+                // 先落盘一份纯默认配置（此时尚未叠加 env，故不会把环境变量
+                // 注入的凭据写进挂载卷），随后再应用 env 覆盖。
                 this.save();
                 logger.info('已创建默认配置文件');
             }
+
+            // 环境变量覆盖（容器部署主要入口）：优先级高于配置文件。
+            // 记录被覆盖的路径，save() 时会还原为文件原值，
+            // 确保 env 注入的凭据不会泄漏到 config/gateway.json。
+            this._applyEnv();
         } catch (error) {
             // 关键：配置文件损坏时不要静默清空后又覆写回磁盘，
             // 否则会永久丢失用户的 token / 白名单。备份损坏文件、保留内存默认值、
@@ -184,10 +192,29 @@ class ConfigManager {
     }
 
     /**
+     * 应用环境变量覆盖，并记录哪些路径来自环境变量。
+     * 这些路径在 save() 时会被还原为"文件里原本的值"，从而保证：
+     *   - 用 env 注入的 bot token / API key 不会被写进 config/gateway.json
+     *     （该目录在容器部署中通常是挂载卷，写进去等于凭据落盘）
+     *   - 用户改了 env 后立即生效，不会被文件里的陈旧值干扰
+     */
+    _applyEnv() {
+        // 快照"纯文件+默认值"的状态，供 save() 还原 env 覆盖项
+        this._preEnvConfig = structuredClone(this.config);
+        const { applied } = applyEnvOverrides(this.config);
+        this._envPaths = applied;
+    }
+
+    /**
      * 确保存在鉴权 token（requireAuth 开启且 token 为空时自动生成一次）
      */
     ensureAuthToken() {
         if (this._readonly) return;
+        // 由环境变量提供 token 时不再自动生成，也不写盘
+        if (this._envPaths?.includes('server.authToken')) {
+            logger.info('鉴权 token 由环境变量 GATEWAY_AUTH_TOKEN 提供');
+            return;
+        }
         const requireAuth = this.get('server.requireAuth') !== false;
         const token = this.get('server.authToken');
         if (requireAuth && (!token || typeof token !== 'string')) {
@@ -196,6 +223,35 @@ class ConfigManager {
             logger.warn('已自动生成网关鉴权 token（server.authToken）。请在 SillyTavern 网关面板中填入该 token 才能连接。');
             logger.warn(`当前鉴权 token: ${generated}`);
         }
+    }
+
+    /**
+     * 生成"用于落盘"的配置副本：把所有由环境变量覆盖的路径还原成
+     * 文件/默认值中的原值，使 env 注入的凭据不会被持久化到磁盘。
+     *
+     * 例：用户用 GATEWAY_TELEGRAM_BOT_TOKEN 注入 token，运行时
+     * get('adapters.telegram.botToken') 返回真实 token，但 gateway.json
+     * 里始终保持原来的空字符串。
+     */
+    _configForPersist() {
+        if (!this._envPaths?.length || !this._preEnvConfig) return this.config;
+
+        const clone = structuredClone(this.config);
+        for (const dotted of this._envPaths) {
+            const original = getByPath(this._preEnvConfig, dotted);
+            const keys = dotted.split('.');
+            let cur = clone;
+            let ok = true;
+            for (let i = 0; i < keys.length - 1; i++) {
+                cur = cur?.[keys[i]];
+                if (cur === null || typeof cur !== 'object') { ok = false; break; }
+            }
+            if (!ok) continue;
+            const leaf = keys[keys.length - 1];
+            if (original === undefined) delete cur[leaf];
+            else cur[leaf] = original;
+        }
+        return clone;
     }
 
     /**
@@ -211,7 +267,7 @@ class ConfigManager {
                 fs.mkdirSync(CONFIG_DIR, { recursive: true });
             }
             const tmpFile = `${CONFIG_FILE}.tmp`;
-            fs.writeFileSync(tmpFile, JSON.stringify(this.config, null, 2), { encoding: 'utf-8', mode: 0o600 });
+            fs.writeFileSync(tmpFile, JSON.stringify(this._configForPersist(), null, 2), { encoding: 'utf-8', mode: 0o600 });
             fs.renameSync(tmpFile, CONFIG_FILE);
             try { fs.chmodSync(CONFIG_FILE, 0o600); } catch (_) { /* Windows 忽略 */ }
         } catch (error) {
