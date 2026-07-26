@@ -292,6 +292,95 @@
             </div>
         </div>
 
+        <!-- 自建推理管线（无需挂 ST 前端） -->
+        <div class="gateway-section gateway-collapsible">
+            <div class="gateway-section-title gateway-collapse-toggle" data-toggle="gateway_runtime_body">
+                <i class="fa-solid fa-chevron-right gateway-collapse-arrow"></i>
+                <i class="fa-solid fa-robot"></i> 自建推理管线
+                <span id="gateway_rt_state" class="gateway-adapter-state">-</span>
+            </div>
+            <div id="gateway_runtime_body" class="gateway-collapse-body" style="display:none;">
+
+                <div class="gateway-field">
+                    <span class="gateway-hint">开启后网关自己组装 prompt 并调用 LLM，<b>无需一直开着 SillyTavern 页面</b>；每个会话可独立绑定角色卡/预设/世界书/存档。</span>
+                </div>
+
+                <!-- 开关 + LLM 配置 -->
+                <div class="gateway-field">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="gateway_rt_enabled"> 启用自建推理管线
+                    </label>
+                </div>
+                <div class="gateway-field">
+                    <label>模型服务商</label>
+                    <select id="gateway_rt_provider" class="text_pole">
+                        <option value="openai">OpenAI 兼容（含 DeepSeek/Ollama/vLLM 等）</option>
+                        <option value="claude">Claude (Anthropic)</option>
+                        <option value="gemini">Gemini (Google)</option>
+                    </select>
+                </div>
+                <div class="gateway-field">
+                    <label>Base URL（留空用官方默认）</label>
+                    <input type="text" id="gateway_rt_baseurl" class="text_pole" placeholder="如 http://127.0.0.1:11434/v1">
+                </div>
+                <div class="gateway-field">
+                    <label>API Key</label>
+                    <input type="password" id="gateway_rt_apikey" class="text_pole" placeholder="sk-...">
+                </div>
+                <div class="gateway-field">
+                    <label>模型名</label>
+                    <input type="text" id="gateway_rt_model" class="text_pole" placeholder="如 gpt-4o-mini / claude-sonnet-4-5 / gemini-2.0-flash">
+                </div>
+                <div class="gateway-field">
+                    <label>上下文 token 预算</label>
+                    <input type="number" id="gateway_rt_budget" class="text_pole" min="0" step="500" placeholder="8000">
+                </div>
+                <div class="gateway-field">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="gateway_rt_stream"> 流式生成
+                    </label>
+                </div>
+                <button id="gateway_rt_save" class="menu_button gateway-save-btn">
+                    <i class="fa-solid fa-floppy-disk"></i> 保存管线配置
+                </button>
+                <div class="gateway-field">
+                    <span class="gateway-hint">保存后需<b>重启网关服务</b>才能切换启用状态。</span>
+                </div>
+
+                <!-- 资产列表 -->
+                <div class="gateway-section-subtitle">
+                    📦 资产 <button id="gateway_rt_refresh" class="menu_button" title="刷新"><i class="fa-solid fa-rotate-right"></i></button>
+                </div>
+                <div id="gateway_rt_assets" class="gateway-adapters-status">
+                    <div class="gateway-empty-hint">未加载</div>
+                </div>
+                <div class="gateway-field">
+                    <span class="gateway-hint">把 ST 的角色卡放入 <code>assets/characters/</code>、世界书 <code>assets/worldbooks/</code>、预设 <code>assets/presets/</code>；存档在 <code>data/chats/</code>（与 ST 互通）。</span>
+                </div>
+
+                <!-- 会话 Profile 管理 -->
+                <div class="gateway-section-subtitle">🎭 会话绑定（各会话独立，互不影响）</div>
+                <div id="gateway_rt_profiles">
+                    <div class="gateway-empty-hint">未加载</div>
+                </div>
+
+                <!-- Prompt 预览 -->
+                <div class="gateway-section-subtitle">🔍 Prompt 预览（不消耗额度）</div>
+                <div class="gateway-field">
+                    <label>会话</label>
+                    <input type="text" id="gateway_rt_pv_session" class="text_pole" placeholder="platform:chatId，如 qq:12345">
+                </div>
+                <div class="gateway-field">
+                    <label>模拟输入</label>
+                    <input type="text" id="gateway_rt_pv_input" class="text_pole" placeholder="你好">
+                </div>
+                <button id="gateway_rt_preview" class="menu_button">
+                    <i class="fa-solid fa-eye"></i> 预览最终 Prompt
+                </button>
+                <div id="gateway_rt_pv_result" class="gateway-adapters-status" style="display:none;"></div>
+            </div>
+        </div>
+
         <!-- 插件管理 -->
         <div class="gateway-section gateway-collapsible">
             <div class="gateway-section-title gateway-collapse-toggle" data-toggle="gateway_plugin_body">

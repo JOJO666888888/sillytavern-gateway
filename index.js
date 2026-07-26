@@ -1350,6 +1350,7 @@ async function initGatewayPanel() {
     // 6. 绑定面板内部事件
     bindPanelEvents();
     bindRegexEvents();
+    bindRuntimeEvents();
 
     // 恢复网关地址与鉴权 token 输入
     $('#gateway_panel_url').val(getSettings().serverUrl || 'http://127.0.0.1:3210');
@@ -1526,6 +1527,7 @@ async function refreshPanelData() {
     await loadPluginList();
     await loadPanelConfig();
     await loadRegexConfig();
+    await loadRuntimePanel();
 }
 
 /**
@@ -2472,6 +2474,206 @@ function bindRegexEvents() {
         }
         resetInput();
     });
+}
+
+// ==================== 自建推理管线面板 ====================
+
+/** 缓存最近一次拉到的资产列表，供 Profile 下拉框使用 */
+let rtAssets = { characters: [], worldbooks: [], presets: [], archives: [] };
+
+/**
+ * 加载自建推理管线状态：开关/LLM 配置 + 资产 + 会话绑定
+ */
+async function loadRuntimePanel() {
+    // 1. 从全局配置读取 runtime 段（注意：apiKey 在后端已脱敏，占位显示）
+    try {
+        const config = await apiRequest('/api/gateway/config');
+        const rt = config.runtime || {};
+        $('#gateway_rt_enabled').prop('checked', !!rt.enabled);
+        $('#gateway_rt_provider').val(rt.llm?.provider || 'openai');
+        $('#gateway_rt_baseurl').val(rt.llm?.baseUrl || '');
+        $('#gateway_rt_apikey').val(rt.llm?.apiKey || '');
+        $('#gateway_rt_model').val(rt.llm?.model || '');
+        $('#gateway_rt_budget').val(rt.tokenBudget ?? 8000);
+        $('#gateway_rt_stream').prop('checked', !!rt.stream);
+    } catch (_) { /* 网关未连接 */ }
+
+    // 2. 运行状态与资产
+    const stateEl = $('#gateway_rt_state');
+    try {
+        const st = await apiRequest('/api/runtime/status');
+        if (!st.enabled) {
+            stateEl.text('未启用').attr('class', 'gateway-adapter-state disconnected');
+            $('#gateway_rt_assets').html('<div class="gateway-empty-hint">管线未启用（勾选上方开关并保存后重启网关服务）</div>');
+            $('#gateway_rt_profiles').html('<div class="gateway-empty-hint">管线未启用</div>');
+            return;
+        }
+        stateEl.text('运行中').attr('class', 'gateway-adapter-state connected');
+        rtAssets = st.assets || rtAssets;
+        renderRuntimeAssets(rtAssets);
+        await loadRuntimeProfiles();
+    } catch (_) {
+        stateEl.text('-').attr('class', 'gateway-adapter-state');
+        $('#gateway_rt_assets').html('<div class="gateway-empty-hint">无法连接网关</div>');
+    }
+}
+
+/** 渲染资产列表 */
+function renderRuntimeAssets(assets) {
+    const group = (label, arr, hint) => `
+        <div class="gateway-rt-asset-group">
+            <b>${label}</b>${arr.length
+                ? arr.map(a => escapeHtml(a)).join('、')
+                : `<span class="gateway-empty-hint">${hint}</span>`}
+        </div>`;
+    $('#gateway_rt_assets').html(
+        group('角色卡', assets.characters, '无，请放入 assets/characters/') +
+        group('世界书', assets.worldbooks, '无') +
+        group('预设', assets.presets, '无（用内置默认）') +
+        group('存档', assets.archives, '无（首次对话自动创建）')
+    );
+}
+
+/** 加载并渲染会话绑定（Profile） */
+async function loadRuntimeProfiles() {
+    const el = $('#gateway_rt_profiles');
+    try {
+        const data = await apiRequest('/api/runtime/profiles');
+        const profiles = data.profiles || [];
+        if (profiles.length === 0) {
+            el.html('<div class="gateway-empty-hint">暂无会话（IM 收到第一条消息后自动创建，也可用 /char 等命令绑定）</div>');
+            return;
+        }
+
+        const opts = (list, cur, emptyLabel) =>
+            `<option value="">${emptyLabel}</option>` +
+            list.map(v => `<option value="${escapeHtml(v)}" ${v === cur ? 'selected' : ''}>${escapeHtml(v)}</option>`).join('');
+
+        el.html(profiles.map(p => {
+            const [platform, ...rest] = String(p.session).split(':');
+            const chatId = rest.join(':');
+            const wb = (p.worldbooks || []).join(',');
+            return `
+            <div class="gateway-rt-profile" data-platform="${escapeHtml(platform)}" data-chatid="${escapeHtml(chatId)}">
+                <div class="gateway-rt-profile-head">
+                    <span>${getPlatformIcon(platform)} ${escapeHtml(p.session)}</span>
+                    <button class="menu_button gateway-rt-save-profile" title="保存该会话绑定"><i class="fa-solid fa-check"></i></button>
+                </div>
+                <div class="gateway-rt-profile-row">
+                    <label>角色卡</label>
+                    <select class="text_pole rt-f-character">${opts(rtAssets.characters, p.character, '(未设置)')}</select>
+                </div>
+                <div class="gateway-rt-profile-row">
+                    <label>预设</label>
+                    <select class="text_pole rt-f-preset">${opts(rtAssets.presets, p.preset, '(默认)')}</select>
+                </div>
+                <div class="gateway-rt-profile-row">
+                    <label>世界书</label>
+                    <input type="text" class="text_pole rt-f-worldbooks" value="${escapeHtml(wb)}" placeholder="逗号分隔，可用: ${escapeHtml(rtAssets.worldbooks.join(','))}">
+                </div>
+                <div class="gateway-rt-profile-row">
+                    <label>存档</label>
+                    <input type="text" class="text_pole rt-f-archive" value="${escapeHtml(p.archive || '')}" placeholder="留空=按会话自动命名">
+                </div>
+            </div>`;
+        }).join(''));
+
+        // 绑定保存按钮
+        el.find('.gateway-rt-save-profile').off('click').on('click', async function () {
+            const box = $(this).closest('.gateway-rt-profile');
+            const platform = box.data('platform');
+            const chatId = box.data('chatid');
+            const wbRaw = box.find('.rt-f-worldbooks').val().trim();
+            try {
+                await apiRequest(`/api/runtime/profiles/${encodeURIComponent(platform)}/${encodeURIComponent(chatId)}`, {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        character: box.find('.rt-f-character').val(),
+                        preset: box.find('.rt-f-preset').val(),
+                        worldbooks: wbRaw ? wbRaw.split(/[,，\s]+/).filter(Boolean) : [],
+                        archive: box.find('.rt-f-archive').val().trim(),
+                    }),
+                });
+                toastr.success(`已保存 ${platform}:${chatId} 的绑定`);
+            } catch (error) {
+                toastr.error(`保存失败: ${error.message}`);
+            }
+        });
+    } catch (_) {
+        el.html('<div class="gateway-empty-hint">无法加载会话绑定</div>');
+    }
+}
+
+/** 保存 runtime 配置（写入全局配置的 runtime 段） */
+async function saveRuntimeConfig() {
+    const apiKey = $('#gateway_rt_apikey').val();
+    const llm = {
+        provider: $('#gateway_rt_provider').val(),
+        baseUrl: $('#gateway_rt_baseurl').val().trim(),
+        model: $('#gateway_rt_model').val().trim(),
+    };
+    // 后端返回的是脱敏后的占位串；未改动则不回写，避免把掩码写成真 key
+    if (apiKey && !/^\*+$/.test(apiKey) && !apiKey.includes('***')) {
+        llm.apiKey = apiKey;
+    }
+    try {
+        await apiRequest('/api/gateway/config', {
+            method: 'POST',
+            body: JSON.stringify({
+                runtime: {
+                    enabled: $('#gateway_rt_enabled').is(':checked'),
+                    tokenBudget: parseInt($('#gateway_rt_budget').val()) || 0,
+                    stream: $('#gateway_rt_stream').is(':checked'),
+                    llm,
+                },
+            }),
+        });
+        toastr.success('管线配置已保存，重启网关服务后生效');
+    } catch (error) {
+        toastr.error(`保存失败: ${error.message}`);
+    }
+}
+
+/** 预览最终 prompt */
+async function previewRuntimePrompt() {
+    const session = $('#gateway_rt_pv_session').val().trim();
+    const input = $('#gateway_rt_pv_input').val();
+    const el = $('#gateway_rt_pv_result');
+
+    if (!session.includes(':')) {
+        toastr.warning('会话格式应为 platform:chatId，如 qq:12345');
+        return;
+    }
+    const [platform, ...rest] = session.split(':');
+    const chatId = rest.join(':');
+
+    el.show().html('<div class="gateway-empty-hint">组装中...</div>');
+    try {
+        const data = await apiRequest('/api/runtime/preview', {
+            method: 'POST',
+            body: JSON.stringify({ platform, chatId, input }),
+        });
+        const msgs = (data.messages || []).map(m => {
+            // 多模态消息：content 为数组
+            const body = Array.isArray(m.content)
+                ? m.content.map(p => p.type === 'text' ? p.text : `[图片]`).join('\n')
+                : m.content;
+            return `<div class="gateway-rt-msg"><span class="gateway-rt-msg-role">${escapeHtml(m.role)}</span>\n${escapeHtml(body)}</div>`;
+        }).join('');
+        el.html(`
+            <div class="gateway-rt-asset-group"><b>采样参数</b>${escapeHtml(JSON.stringify(data.sampling))}</div>
+            ${msgs || '<div class="gateway-empty-hint">无内容</div>'}
+        `);
+    } catch (error) {
+        el.html(`<div class="gateway-empty-hint">预览失败: ${escapeHtml(error.message)}</div>`);
+    }
+}
+
+/** 绑定自建管线面板事件 */
+function bindRuntimeEvents() {
+    $('#gateway_rt_save').on('click', saveRuntimeConfig);
+    $('#gateway_rt_refresh').on('click', loadRuntimePanel);
+    $('#gateway_rt_preview').on('click', previewRuntimePrompt);
 }
 
 // ==================== R3: Schema 驱动的插件配置弹窗 ====================

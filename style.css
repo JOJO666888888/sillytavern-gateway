@@ -1243,3 +1243,77 @@
         min-height: 100px;
     }
 }
+
+/* ===== 自建推理管线面板 ===== */
+.gateway-section-subtitle {
+    margin: 12px 0 6px;
+    font-weight: 600;
+    font-size: 0.95em;
+    opacity: 0.9;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.25);
+    padding-bottom: 4px;
+}
+
+.gateway-rt-profile {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px;
+    margin-bottom: 6px;
+    border: 1px solid rgba(128, 128, 128, 0.25);
+    border-radius: 6px;
+}
+
+.gateway-rt-profile-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-weight: 600;
+}
+
+.gateway-rt-profile-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.gateway-rt-profile-row label {
+    min-width: 56px;
+    font-size: 0.85em;
+    opacity: 0.85;
+}
+
+.gateway-rt-profile-row select,
+.gateway-rt-profile-row input {
+    flex: 1;
+    min-width: 0;
+}
+
+.gateway-rt-asset-group {
+    margin-bottom: 4px;
+    font-size: 0.9em;
+}
+
+.gateway-rt-asset-group b {
+    margin-right: 6px;
+}
+
+.gateway-rt-msg {
+    border: 1px solid rgba(128, 128, 128, 0.25);
+    border-radius: 4px;
+    padding: 6px;
+    margin-bottom: 4px;
+    font-size: 0.85em;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 180px;
+    overflow-y: auto;
+}
+
+.gateway-rt-msg-role {
+    display: inline-block;
+    font-weight: 700;
+    margin-bottom: 2px;
+    opacity: 0.8;
+}

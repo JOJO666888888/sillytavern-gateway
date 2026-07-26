@@ -29,6 +29,20 @@ IM 消息 → 网关 → 取本会话 Profile → 加载角色卡/世界书/预�
 
 ## 二、启用
 
+### 方式 A：面板（推荐）
+
+打开 SillyTavern 顶部的网关面板 → **「🤖 自建推理管线」** 区块：
+
+1. 勾选「启用自建推理管线」
+2. 选模型服务商、填 Base URL / API Key / 模型名
+3. 可设上下文 token 预算、是否流式
+4. 点「保存管线配置」→ **重启网关服务**生效
+
+面板同一区块还提供：**资产总览**、**会话绑定可视化管理**（每个会话用下拉框切角色卡/预设，填世界书与存档）、
+**Prompt 预览**（不消耗额度地看到最终发给模型的完整 messages 与采样参数）。
+
+### 方式 B：直接改配置文件
+
 编辑 `config/gateway.json` 的 `runtime` 段：
 
 ```json
@@ -100,7 +114,7 @@ data/chats/          聊天存档 (.jsonl，与 ST 双向互通)
 
 ---
 
-## 六、当前能力与边界（骨架版）
+## 六、当前能力与边界
 
 **已实现**
 - 角色卡 V1/V2/V3（PNG tEXt/zTXt + JSON）解析与 `{{char}}`/`{{user}}` 占位符替换
@@ -109,13 +123,20 @@ data/chats/          聊天存档 (.jsonl，与 ST 双向互通)
 - 聊天存档：`.jsonl` 读写，与 ST 互通，增量追加 + 原子重写
 - LLM：OpenAI 兼容 / Claude / Gemini 三类 provider 的请求构造与响应解析
 - 每会话 Profile 持久化（`data/profiles.json`）
+- **流式输出**：三 provider 统一 SSE 解析（含跨 TCP 分片重组），`runtime.stream` 开启
+- **多模态**：入站图片自动送入模型 —— OpenAI 直接用 URL，Claude/Gemini 下载并 base64 内联，
+  带数量/体积上限，失败安全退回纯文本
+- **token 级截断**：CJK 感知的 token 估算，按预算保留最近历史（含为回复预留 max_tokens），
+  避免少数超长消息撑爆上下文
+- **ST 预设 `prompt_order` 完整还原**：解析 `prompts[]` + `prompt_order[]`，marker 条目
+  （worldInfoBefore / charDescription / chatHistory / personaDescription…）映射到对应段，
+  普通条目（main / jailbreak / 自定义）保留其 role 与位置，尊重 `enabled` 开关
+- **可视化面板**：资产总览、会话绑定管理、Prompt 预览
 
 **尚未实现（后续项）**
-- 流式输出（当前为一次性返回；IM 端多数场景可接受）
-- token 级历史截断（当前按条数 `historyLimit`）
-- 多模态（把入站图片/语音送进模型）——媒体抽象层已就绪，接上即可
-- ST 预设 `prompt_order` 的完整还原（当前用内置顺序 + 可选 `gateway_order`）
+- 语音 STT（入站语音目前仅作占位符，图片已可送入模型）
 - 群聊多用户在同一上下文里的身份区分策略
+- 精确 tokenizer（当前为启发式估算，偏保守）
 
 **注意**：`runtime.enabled=true` 后，入站消息由网关直接处理，ST 前端扩展的自动回复通道不再介入。
 两者是二选一的关系，不会重复回复。
