@@ -18,13 +18,22 @@ export class GatewayCore extends EventEmitter {
             maxRetries: configManager.get('messageQueue.maxRetries'),
             retryDelay: configManager.get('messageQueue.retryDelay'),
             maxLength: configManager.get('messageQueue.maxLength'),
+            sendTimeout: configManager.get('messageQueue.sendTimeout'),
         });
         this.messageHandlers = [];        // 消息处理函数列表
         this.outboundFilters = [];        // 出站消息过滤器列表
-        this.messageLog = [];             // 最近消息日志
+        this.messageLog = [];             // 最近消息日志（仅观测用，会截断）
         this.maxLogSize = 200;
         this.running = false;
         this._commandRouter = null;       // 命令路由器引用（供命令同步使用）
+
+        // 入站待处理队列（供 ST 前端可靠消费）。
+        // 与 messageLog（观测、截断到 100 字符、只留 20 条）彻底分离：
+        // 这里保存需要 ST AI 回复的完整入站消息，带唯一 ID + ack 语义，
+        // 前端拉取处理后回 ack 才移除 → 不再因日志截断/滚动导致消息被截断或丢失。
+        this.inboundQueue = [];
+        this.maxInboundQueue = 500;       // 上限，超出丢弃最旧并告警（不静默）
+        this._inboundSeq = 0;
 
         // 出站去重缓存: 防止消息队列重试时重复发送相同内容
         // key: "platform|chatId|contentHash", value: timestamp
@@ -374,6 +383,55 @@ export class GatewayCore extends EventEmitter {
                 this.messageHandlers.splice(index, 1);
             }
         };
+    }
+
+    /**
+     * 将一条入站消息放入待处理队列（需要 ST AI 回复的消息）。
+     * @param {InboundMessage} message
+     * @returns {string} 分配的队列条目 ID
+     */
+    enqueueInbound(message) {
+        // 上限保护：超出时丢弃最旧并告警（绝不静默）
+        if (this.inboundQueue.length >= this.maxInboundQueue) {
+            const dropped = this.inboundQueue.shift();
+            logger.warn(`入站队列已满 (${this.maxInboundQueue})，丢弃最旧消息 id=${dropped?.id}（前端消费过慢或未连接）`);
+        }
+        const id = `${Date.now()}-${++this._inboundSeq}`;
+        this.inboundQueue.push({
+            id,
+            platform: message.platform,
+            chatId: message.chatId,
+            chatType: message.chatType || 'private',
+            senderId: message.senderId || '',
+            senderName: message.senderName || '',
+            content: message.content || '',      // 完整内容，不截断
+            mediaUrls: message.mediaUrls || [],
+            mentioned: message.mentioned || false,
+            timestamp: message.timestamp || Date.now(),
+        });
+        return id;
+    }
+
+    /**
+     * 获取待处理入站消息（不移除，由前端 ack 后移除）
+     * @param {number} limit - 最多返回条数，0/未传=全部
+     * @returns {Array<object>}
+     */
+    getPendingInbound(limit = 0) {
+        return limit > 0 ? this.inboundQueue.slice(0, limit) : this.inboundQueue.slice();
+    }
+
+    /**
+     * 确认并移除已处理的入站消息
+     * @param {string[]} ids
+     * @returns {number} 实际移除条数
+     */
+    ackInbound(ids) {
+        if (!Array.isArray(ids) || ids.length === 0) return 0;
+        const set = new Set(ids);
+        const before = this.inboundQueue.length;
+        this.inboundQueue = this.inboundQueue.filter(item => !set.has(item.id));
+        return before - this.inboundQueue.length;
     }
 
     /**

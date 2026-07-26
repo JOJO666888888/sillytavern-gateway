@@ -137,7 +137,10 @@ function setupMessageHandling() {
             name: message.senderName,
         });
 
-        // 触发外部处理（SillyTavern 扩展轮询）
+        // 放入入站待处理队列（完整内容 + 唯一 ID + ack 语义），供 ST 前端可靠消费
+        gatewayCore.enqueueInbound(message);
+
+        // 兼容：仍触发事件，供其它监听者使用
         gatewayCore.emit('externalMessage', message);
     });
 }
@@ -211,6 +214,23 @@ app.post('/api/gateway/send', async (req, res) => {
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
     }
+});
+
+/**
+ * 获取待处理入站消息（ST 前端可靠消费通道，替代被截断的 recentMessages）
+ */
+app.get('/api/gateway/inbound/pending', (req, res) => {
+    const limit = parseInt(req.query.limit) || 0;
+    res.json({ success: true, messages: gatewayCore.getPendingInbound(limit) });
+});
+
+/**
+ * 确认已处理的入站消息（前端处理完后回 ack，网关据此移除）
+ */
+app.post('/api/gateway/inbound/ack', (req, res) => {
+    const ids = req.body?.ids;
+    const removed = gatewayCore.ackInbound(ids || []);
+    res.json({ success: true, removed });
 });
 
 /**

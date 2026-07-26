@@ -15,17 +15,24 @@ export class ReconnectStrategy {
      * @param {number} options.maxRetries - 最大重试次数，0=无限，默认 0
      * @param {boolean} options.jitter - 是否添加随机抖动，默认 true
      */
+    /**
+     * @param {object} options
+     * @param {import('winston').Logger} [options.logger] - 注入 logger，使重连日志归属到具体平台
+     */
     constructor(options = {}) {
-        this.initialDelay = options.initialDelay || 1000;
-        this.maxDelay = options.maxDelay || 60000;
-        this.multiplier = options.multiplier || 2;
-        this.maxRetries = options.maxRetries || 0;
+        // 使用 ?? 而非 ||，允许显式配置 0（如 initialDelay:0 / maxRetries:0 无限重试语义）
+        this.initialDelay = options.initialDelay ?? 1000;
+        this.maxDelay = options.maxDelay ?? 60000;
+        this.multiplier = options.multiplier ?? 2;
+        this.maxRetries = options.maxRetries ?? 0;
         this.jitter = options.jitter !== undefined ? options.jitter : true;
+        this.logger = options.logger || logger;
 
         this.currentDelay = this.initialDelay;
         this.retryCount = 0;
         this.timer = null;
         this.active = false;
+        this._callback = null;
     }
 
     /**
@@ -50,8 +57,23 @@ export class ReconnectStrategy {
      * @returns {Promise<boolean>} 是否成功调度（false表示超过最大重试次数）
      */
     scheduleReconnect(callback) {
+        // 记住回调，供失败后自动续接下一次重连使用
+        if (callback) this._callback = callback;
+        const cb = this._callback;
+        if (!cb) {
+            this.logger.error('scheduleReconnect 无可用回调');
+            return false;
+        }
+
+        // 关键：调度前取消可能存在的旧定时器，避免 ws error+close 双事件、
+        // start() catch 与适配器内部事件重复调度导致的“并发重连/重复连接”。
+        if (this.timer) {
+            clearTimeout(this.timer);
+            this.timer = null;
+        }
+
         if (this.maxRetries > 0 && this.retryCount >= this.maxRetries) {
-            logger.warn(`已达到最大重试次数 (${this.maxRetries})，停止重连`);
+            this.logger.warn(`已达到最大重试次数 (${this.maxRetries})，停止重连`);
             this.active = false;
             return false;
         }
@@ -60,15 +82,25 @@ export class ReconnectStrategy {
         this.retryCount++;
         this.active = true;
 
-        logger.info(`第 ${this.retryCount} 次重连，等待 ${delay}ms...`);
+        this.logger.info(`第 ${this.retryCount} 次重连，等待 ${delay}ms...`);
 
         this.timer = setTimeout(async () => {
+            this.timer = null;
             try {
-                await callback();
+                await cb();
+                // 成功与否由 cb 内部通过 setState(CONNECTED)->reset() 决定；
+                // 若 cb 正常返回但连接并未真正建立，稳定判定/后续 disconnect 会再次触发调度。
             } catch (error) {
-                logger.error(`重连回调执行失败: ${error.message}`);
+                // 关键：回调失败时自动续接下一次重连，不再依赖调用方在 connect() 内
+                // 手动再调 handleDisconnect（Telegram/Discord 此前不遵守该隐式契约，
+                // 导致首次重连失败后“静默死亡”）。
+                this.logger.warn(`重连尝试失败: ${error.message}，将继续重试`);
+                if (this.active) {
+                    this.scheduleReconnect();
+                }
             }
         }, delay);
+        if (typeof this.timer?.unref === 'function') this.timer.unref();
 
         // 指数增长当前延迟
         this.currentDelay = Math.min(this.currentDelay * this.multiplier, this.maxDelay);

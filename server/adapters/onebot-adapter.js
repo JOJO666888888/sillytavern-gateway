@@ -112,11 +112,20 @@ export class OneBotAdapter extends PlatformAdapter {
         this.logger.info(`启动反向 WebSocket 服务端，监听端口: ${port}`);
 
         return new Promise((resolve, reject) => {
+            // 复用/重建前先关闭可能残留的旧服务端，避免同端口重复绑定 EADDRINUSE
+            if (this.wss) {
+                try { this.wss.close(); } catch (_) { /* ignore */ }
+                this.wss = null;
+            }
+
             this.wss = new WebSocket.Server({ port });
 
             this.wss.on('listening', () => {
-                this.logger.info(`反向 WebSocket 服务端已启动: ws://0.0.0.0:${port}`);
-                this.setState(ConnectionState.CONNECTED);
+                this.logger.info(`反向 WebSocket 服务端已启动，等待 OneBot 连入: ws://0.0.0.0:${port}`);
+                // 关键：服务端“已监听”不等于“已连接”。用 LISTENING 表达此语义，
+                // 客户端连入后才转 CONNECTED。这样客户端断开时无需重启服务端，
+                // 从根本上避免反向模式重连时的 EADDRINUSE 死亡。
+                this.setState(ConnectionState.LISTENING);
                 resolve();
             });
 
@@ -143,7 +152,12 @@ export class OneBotAdapter extends PlatformAdapter {
                 ws.on('close', (code, reason) => {
                     this.logger.warn(`OneBot 客户端断开: code=${code}`);
                     this.stopHeartbeat();
-                    this.handleDisconnect(`客户端断开 (${code})`);
+                    this.ws = null;
+                    // 反向模式：客户端断开后服务端继续监听、等待重新连入，
+                    // 不触发 handleDisconnect（那会重启服务端导致端口重绑失败）。
+                    if (this.wss && this._shouldReconnect) {
+                        this.setState(ConnectionState.LISTENING);
+                    }
                 });
 
                 ws.on('error', (error) => {

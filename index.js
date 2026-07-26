@@ -357,7 +357,7 @@ async function fetchGatewayStatus() {
 
         // 处理新消息（自动回复管线）
         // 双门控: 仅网关模式(forwardingEnabled)且开启自动回复时才转发
-        if (status.recentMessages && getSettings().forwardingEnabled && getSettings().autoReplyEnabled) {
+        if (getSettings().forwardingEnabled && getSettings().autoReplyEnabled) {
             // 拉取角色绑定表（每 5 秒最多拉取一次，避免频繁请求）
             const now = Date.now();
             if (now - lastBindingsFetch > 5000) {
@@ -371,7 +371,8 @@ async function fetchGatewayStatus() {
                     // 插件未安装或网关未连接，使用空绑定表
                 }
             }
-            await processIncomingMessages(status.recentMessages);
+            // 从入站待处理队列拉取完整消息（不再走被截断的 recentMessages）
+            await processInboundQueue();
         }
 
         return status;
@@ -506,87 +507,100 @@ function waitForCharacterLoad(characterName, timeoutMs = 2000) {
 // ==================== AI 自动回复管线 ====================
 
 /**
- * 处理入站消息：注入 ST 聊天 → 触发 AI 生成 → 回复转发
+ * 确认（ack）已消费的入站消息，网关据此移除
  */
-async function processIncomingMessages(messages) {
-    // 只处理入站、未处理过、且晚于截断时间到达的消息
-    const newMessages = messages.filter(msg => {
-        if (msg.direction !== 'inbound') return false;
-        // 过滤插件命令：以 / 开头的消息由命令路由器处理，不注入 ST
-        if (msg.isCommand) return false;
-        // 时间截断: 只处理进入页面/开启网关模式之后才到达的消息,
-        // 防止刷新/重启后把之前缓存的老消息批量转发进来
-        if (msg.timestamp <= forwardCutoffTs) return false;
-        const msgId = `${msg.platform}|${msg.chatId}|${msg.timestamp}|${msg.content}`;
-        if (processedMessageIds.has(msgId)) return false;
-        return true;
-    });
+async function ackInboundIds(ids) {
+    if (!ids || ids.length === 0) return;
+    try {
+        await apiRequest('/api/gateway/inbound/ack', {
+            method: 'POST',
+            body: JSON.stringify({ ids }),
+        });
+    } catch (_) { /* 下轮重试 */ }
+}
 
-    if (newMessages.length === 0) return;
+/**
+ * 从入站待处理队列拉取完整消息并处理：注入 ST 聊天 → 触发 AI 生成 → 回复转发。
+ *
+ * 相比旧的 recentMessages 通道：
+ *   - 消息内容完整（不再截断到 100 字符）
+ *   - 基于服务端 ack 去重，永不丢消息（不受 20 条日志滚动窗口限制）
+ *   - 单飞处理（一次一条），避免多会话并发时回复目标被覆盖的竞态
+ */
+async function processInboundQueue() {
+    // 单飞：上一条仍在生成时本轮跳过，下次轮询再来（避免 pendingReplyTarget 被覆盖）
+    if (isProcessing) return;
+
+    let pending = [];
+    try {
+        const res = await apiRequest('/api/gateway/inbound/pending?limit=10');
+        pending = res.messages || [];
+    } catch (_) {
+        return;
+    }
+    if (pending.length === 0) return;
+
+    // 时间截断：进入页面/开启网关模式之前的老消息直接 ack 丢弃，防止积压回放
+    const staleIds = [];
+    const fresh = [];
+    for (const msg of pending) {
+        if (msg.timestamp <= forwardCutoffTs) staleIds.push(msg.id);
+        else fresh.push(msg);
+    }
+    if (staleIds.length) await ackInboundIds(staleIds);
+    if (fresh.length === 0) return;
 
     const context = getContext();
-
-    // 如果没有选中角色，无法自动回复
+    // 没有选中角色则不处理，也不 ack —— 待用户选好角色后继续消费
     if (context.characterId === undefined && context.groupId === undefined) {
-        console.warn('[Gateway] 未选中角色，跳过自动回复');
+        console.warn('[Gateway] 未选中角色，跳过自动回复（消息保留在队列中）');
         return;
     }
 
-    // 如果正在处理中，跳过
-    if (isProcessing) {
-        console.warn('[Gateway] 正在处理上一条消息，跳过');
-        return;
-    }
+    // 一次只处理一条，其余留待下轮，从根上避免批内 pendingReplyTarget 覆盖竞态
+    const msg = fresh[0];
+    try {
+        isProcessing = true;
 
-    for (const msg of newMessages) {
-        const msgId = `${msg.platform}|${msg.chatId}|${msg.timestamp}|${msg.content}`;
-        processedMessageIds.add(msgId);
-
-        try {
-            isProcessing = true;
-
-            // === 角色路由：按绑定表切换 ST 角色 ===
-            const sessionKey = `${msg.platform}:${msg.chatId}`;
-            const binding = gatewayBindings[sessionKey];
-            if (binding && binding.characterName) {
-                const ctx = getContext();
-                const currentName = ctx.name2;
-                if (currentName !== binding.characterName) {
-                    console.log(`[Gateway] 角色路由: ${sessionKey} 需要切换 ${currentName} -> ${binding.characterName}`);
-                    const switched = await switchCharacter(binding.characterName);
-                    if (switched) {
-                        await waitForCharacterLoad(binding.characterName, 2000);
-                    }
-                }
-            } else {
-                // 未绑定，保持当前角色（不影响原有行为）
+        // === 角色路由：按绑定表切换 ST 角色 ===
+        const sessionKey = `${msg.platform}:${msg.chatId}`;
+        const binding = gatewayBindings[sessionKey];
+        if (binding && binding.characterName) {
+            const ctx = getContext();
+            if (ctx.name2 !== binding.characterName) {
+                console.log(`[Gateway] 角色路由: ${sessionKey} 切换 ${ctx.name2} -> ${binding.characterName}`);
+                const switched = await switchCharacter(binding.characterName);
+                if (switched) await waitForCharacterLoad(binding.characterName, 2000);
             }
-
-            // 记录回复目标
-            pendingReplyTarget = {
-                platform: msg.platform,
-                chatId: msg.chatId,
-                chatType: msg.chatType || 'private', // 频道消息需传 chatType, 否则 Discord 会用频道ID当用户ID查询导致发送失败
-            };
-
-            // 1. 注入用户消息到 ST 聊天
-            const platformIcon = getPlatformIcon(msg.platform);
-            const displayName = `[${platformIcon} ${msg.platform}] ${msg.content}`;
-            await sendMessageAsUser(displayName, '');
-
-            console.log(`[Gateway] 已注入消息: ${msg.platform}/${msg.chatId} -> ${msg.content}`);
-
-            // 2. 标记下次回复需要转发到网关
-            // 监听 GENERATION_ENDED 事件来捕获 AI 回复
-
-            // 3. 触发 AI 生成
-            await context.generate();
-
-        } catch (error) {
-            console.error(`[Gateway] 处理消息失败: ${error.message}`);
-            isProcessing = false;
-            pendingReplyTarget = null;
         }
+
+        // 记录回复目标
+        pendingReplyTarget = {
+            platform: msg.platform,
+            chatId: msg.chatId,
+            chatType: msg.chatType || 'private', // Discord 频道消息必须带 chatType
+        };
+
+        // 注入用户消息到 ST 聊天（带上发送者名，群聊多用户可区分）
+        const platformIcon = getPlatformIcon(msg.platform);
+        const who = msg.senderName ? `${msg.senderName}: ` : '';
+        const displayName = `[${platformIcon} ${msg.platform}] ${who}${msg.content}`;
+        await sendMessageAsUser(displayName, '');
+
+        // 已消费该消息 → ack 移除（即便随后生成失败也不重复注入）
+        await ackInboundIds([msg.id]);
+
+        console.log(`[Gateway] 已注入消息: ${msg.platform}/${msg.chatId} (${msg.content.length} 字)`);
+
+        // 触发 AI 生成（回复由 GENERATION_ENDED 监听器转发回网关）
+        await context.generate();
+
+    } catch (error) {
+        console.error(`[Gateway] 处理消息失败: ${error.message}`);
+        isProcessing = false;
+        pendingReplyTarget = null;
+        // 出错也 ack，避免同一条消息反复失败卡死队列
+        await ackInboundIds([msg.id]);
     }
 }
 
@@ -782,6 +796,7 @@ function updateStatusUI(status) {
         disconnected: '离线',
         connecting: '连接中',
         reconnecting: '重连中',
+        listening: '监听中',
         error: '错误',
     };
 

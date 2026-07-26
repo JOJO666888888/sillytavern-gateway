@@ -10,8 +10,13 @@ export const ConnectionState = {
     CONNECTING: 'connecting',
     CONNECTED: 'connected',
     RECONNECTING: 'reconnecting',
+    LISTENING: 'listening',   // 反向 WS：服务端已监听、等待 OneBot 实现连入（尚无客户端）
     ERROR: 'error',
 };
+
+// 连接维持多久才认定为“稳定”，之后才重置退避计数。
+// 避免连上即断的 flapping 把退避反复归零形成高频重连热循环。
+const STABLE_CONNECTION_MS = 30000;
 
 /**
  * 标准入站消息
@@ -72,11 +77,13 @@ export class PlatformAdapter extends EventEmitter {
         this.state = ConnectionState.DISCONNECTED;
         this.connectedAt = null;
         this.reconnectStrategy = new ReconnectStrategy({
-            initialDelay: config.reconnectInterval || 5000,
-            maxDelay: config.maxReconnectInterval || 60000,
+            initialDelay: config.reconnectInterval ?? 5000,
+            maxDelay: config.maxReconnectInterval ?? 60000,
             maxRetries: 0, // 无限重试
+            logger: this.logger, // 重连日志归属到具体平台
         });
         this._shouldReconnect = true;
+        this._stableTimer = null;
     }
 
     /**
@@ -115,10 +122,27 @@ export class PlatformAdapter extends EventEmitter {
             this.state = newState;
             if (newState === ConnectionState.CONNECTED) {
                 this.connectedAt = Date.now();
-                this.reconnectStrategy.reset();
+                // 不立即 reset 退避：等连接稳定维持 STABLE_CONNECTION_MS 后再重置，
+                // 避免 flapping（连上即断）把退避反复归零。
+                this._clearStableTimer();
+                this._stableTimer = setTimeout(() => {
+                    this.reconnectStrategy.reset();
+                    this.logger.debug('连接已稳定，重连退避已重置');
+                }, STABLE_CONNECTION_MS);
+                if (typeof this._stableTimer?.unref === 'function') this._stableTimer.unref();
+            } else {
+                this._clearStableTimer();
             }
             this.emit('statusChange', oldState, newState);
             this.logger.info(`状态变更: ${oldState} -> ${newState}`);
+        }
+    }
+
+    /** 清理连接稳定判定定时器 */
+    _clearStableTimer() {
+        if (this._stableTimer) {
+            clearTimeout(this._stableTimer);
+            this._stableTimer = null;
         }
     }
 
@@ -160,12 +184,22 @@ export class PlatformAdapter extends EventEmitter {
      * @param {string} reason - 断开原因
      */
     handleDisconnect(reason) {
+        // 幂等：已在重连中则不重复触发（ws 的 error+close 常成对到达，
+        // start() catch 与适配器内部事件也可能重复调用），
+        // 定时器由 reconnectStrategy 内部 cancel 去重，这里避免重复 emit。
+        if (this.state === ConnectionState.RECONNECTING) {
+            return;
+        }
+
+        const wasConnected = this.state === ConnectionState.CONNECTED;
+        this._clearStableTimer();
         this.setState(ConnectionState.DISCONNECTED);
         this.emit('disconnected', reason);
         this.logger.warn(`连接断开: ${reason}`);
 
         if (this._shouldReconnect && this.config.enabled !== false) {
             this.setState(ConnectionState.RECONNECTING);
+            // 传入回调；失败后由 reconnectStrategy 自动续接下一次重连
             this.reconnectStrategy.scheduleReconnect(() => this.connect());
         }
     }
@@ -189,6 +223,7 @@ export class PlatformAdapter extends EventEmitter {
      */
     async stop() {
         this._shouldReconnect = false;
+        this._clearStableTimer();
         this.reconnectStrategy.cancel();
         try {
             await this.disconnect();
@@ -218,7 +253,9 @@ export class PlatformAdapter extends EventEmitter {
      * @returns {string[]} 分段后的文本数组
      */
     splitMessage(text, maxLength = 4000) {
-        if (!text || text.length <= maxLength) {
+        // 空内容不产生分段，避免向平台发送空消息（Telegram/Discord 会 400）
+        if (!text) return [];
+        if (text.length <= maxLength) {
             return [text];
         }
 

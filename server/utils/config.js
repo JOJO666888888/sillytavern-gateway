@@ -75,6 +75,7 @@ const DEFAULT_CONFIG = {
         maxRetries: 3,                    // 发送失败最大重试次数
         retryDelay: 2000,                 // 重试间隔 (ms)
         maxLength: 100,                   // 队列最大长度
+        sendTimeout: 30000,               // 单条发送超时 (ms)，防止挂起锁死队列
     },
     autoReply: {
         enabled: true,                    // 是否启用自动回复
