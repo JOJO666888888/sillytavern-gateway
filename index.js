@@ -798,40 +798,6 @@ function updateStatusUI(status) {
             panelStateEl.className = `gateway-adapter-state ${adapterStatus.state}`;
         }
     }
-
-    // 更新消息日志
-    if (status.recentMessages) {
-        updateMessageLog(status.recentMessages);
-    }
-}
-
-/**
- * 更新消息日志 UI
- */
-function updateMessageLog(messages) {
-    const logEl = document.getElementById('gateway_message_log');
-    if (!logEl) return;
-
-    if (!messages || messages.length === 0) {
-        logEl.innerHTML = '<div class="gateway-empty-message">暂无消息</div>';
-        return;
-    }
-
-    const html = messages.slice(-50).reverse().map(msg => {
-        const time = new Date(msg.timestamp).toLocaleTimeString();
-        const direction = msg.direction === 'inbound' ? '←' : '→';
-        const platformIcon = getPlatformIcon(msg.platform);
-        return `
-            <div class="gateway-message-item ${msg.direction}">
-                <span class="gateway-msg-time">${time}</span>
-                <span class="gateway-msg-platform">${platformIcon}</span>
-                <span class="gateway-msg-direction">${direction}</span>
-                <span class="gateway-msg-content">${escapeHtml(msg.content || '')}</span>
-            </div>
-        `;
-    }).join('');
-
-    logEl.innerHTML = html;
 }
 
 /**
@@ -1494,9 +1460,6 @@ function bindPanelEvents() {
 
     // 刷新插件列表
     $('#gateway_plugin_refresh').on('click', loadPluginList);
-
-    // 刷新消息日志
-    $('#gateway_panel_refresh_log').on('click', () => fetchGatewayStatus());
 
     // 下载插件开发规范指南（编写参考）
     $('#gateway_docs_download').on('click', downloadPluginGuide);

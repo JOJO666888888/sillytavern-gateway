@@ -197,66 +197,6 @@
     color: var(--SmartThemeBodyColor, #fff);
 }
 
-.gateway-message-log {
-    max-height: 200px;
-    overflow-y: auto;
-    border: 1px solid var(--SmartThemeBorderColor, #333);
-    border-radius: 8px;
-    padding: 10px;
-    background: var(--SmartThemeBlurTintColor, rgba(0, 0, 0, 0.1));
-}
-
-.gateway-message-item {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 8px;
-    border-radius: 4px;
-    font-size: 13px;
-    margin-bottom: 4px;
-}
-
-.gateway-message-item:hover {
-    background: rgba(255, 255, 255, 0.05);
-}
-
-.gateway-message-item.inbound {
-    border-left: 3px solid #4caf50;
-}
-
-.gateway-message-item.outbound {
-    border-left: 3px solid #2196f3;
-}
-
-.gateway-msg-time {
-    color: #888;
-    font-size: 11px;
-    min-width: 60px;
-}
-
-.gateway-msg-platform {
-    font-size: 14px;
-}
-
-.gateway-msg-direction {
-    font-weight: bold;
-    color: #888;
-}
-
-.gateway-msg-content {
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.gateway-empty-message {
-    text-align: center;
-    color: #888;
-    padding: 20px;
-    font-style: italic;
-}
-
 /* 发送表单 */
 .gateway-send-form {
     display: flex;
@@ -850,13 +790,6 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-}
-
-/* 消息日志 */
-.gateway-message-log {
-    max-height: 200px;
-    overflow-y: auto;
-    font-size: 12px;
 }
 
 /* 通用 */
