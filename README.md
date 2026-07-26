@@ -1,6 +1,8 @@
 # SillyTavern Multi-Platform Gateway
 
-一个为 SillyTavern 设计的多平台聊天网关插件，通过统一网关架构连接 QQ（OneBot v11）、Telegram、Discord 三大平台，实现跨平台消息收发与 AI 角色互动。
+一个为 SillyTavern 设计的多平台聊天网关插件，通过统一网关架构连接 QQ（OneBot v11）、Telegram、Discord、飞书、QQ 官方机器人、钉钉等平台，实现跨平台消息收发与 AI 角色互动。
+
+> 新增官方平台（飞书 / QQ 官方 / 钉钉）的接入方式、可行性评估与适配器模板见 [docs/ADDING_PLATFORMS.md](docs/ADDING_PLATFORMS.md)。这些平台的 SDK 为**可选依赖**，未安装不影响网关启动；启用对应平台前按文档执行一次 `npm install`。
 
 ## 功能特性
 

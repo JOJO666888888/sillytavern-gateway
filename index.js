@@ -790,7 +790,7 @@ function updateConnectionStatus(connected) {
 function updateStatusUI(status) {
     if (!status?.adapters) return;
 
-    const platforms = ['qq', 'telegram', 'discord', 'feishu', 'qqofficial'];
+    const platforms = ['qq', 'telegram', 'discord', 'feishu', 'qqofficial', 'dingtalk'];
     const stateTexts = {
         connected: '在线',
         disconnected: '离线',
@@ -831,6 +831,7 @@ function getPlatformIcon(platform) {
         discord: '🎮',
         feishu: '🐦',
         qqofficial: '🐧',
+        dingtalk: '🔔',
     };
     return icons[platform] || '💬';
 }
@@ -842,6 +843,7 @@ const PLATFORM_PREFIX = {
     discord: 'dc',
     feishu: 'fs',
     qqofficial: 'qo',
+    dingtalk: 'dt',
 };
 
 /**
@@ -1600,6 +1602,11 @@ async function savePanelConfig() {
                         token: $('#gateway_panel_qo_token').val(),
                         sandbox: $('#gateway_panel_qo_sandbox').is(':checked'),
                     },
+                    dingtalk: {
+                        enabled: $('#gateway_panel_dt_enabled').is(':checked'),
+                        clientId: $('#gateway_panel_dt_client_id').val().trim(),
+                        clientSecret: $('#gateway_panel_dt_client_secret').val(),
+                    },
                 },
             }),
         });
@@ -1613,6 +1620,7 @@ async function savePanelConfig() {
                 { name: 'discord', prefix: 'dc' },
                 { name: 'feishu', prefix: 'fs' },
                 { name: 'qqofficial', prefix: 'qo' },
+                { name: 'dingtalk', prefix: 'dt' },
             ];
             let anyStarted = false;
             for (const { name, prefix } of adapterChecks) {
@@ -1671,6 +1679,11 @@ async function loadPanelConfig() {
             $('#gateway_panel_qo_secret').val(adapters.qqofficial.secret);
             $('#gateway_panel_qo_token').val(adapters.qqofficial.token);
             $('#gateway_panel_qo_sandbox').prop('checked', !!adapters.qqofficial.sandbox);
+        }
+        if (adapters.dingtalk) {
+            $('#gateway_panel_dt_enabled').prop('checked', adapters.dingtalk.enabled);
+            $('#gateway_panel_dt_client_id').val(adapters.dingtalk.clientId);
+            $('#gateway_panel_dt_client_secret').val(adapters.dingtalk.clientSecret);
         }
     } catch (_) { /* 网关未连接时忽略 */ }
 }

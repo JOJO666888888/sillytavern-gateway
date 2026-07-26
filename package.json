@@ -30,6 +30,7 @@
   },
   "optionalDependencies": {
     "@larksuiteoapi/node-sdk": "^1.30.0",
-    "qq-official-bot": "^2.5.0"
+    "qq-official-bot": "^2.5.0",
+    "dingtalk-stream": "^2.1.6"
   }
 }

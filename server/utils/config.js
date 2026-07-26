@@ -88,6 +88,12 @@ const DEFAULT_CONFIG = {
             enableGuild: true,            // 订阅频道消息
             allowedChats: [],             // 会话白名单，空=允许所有
         },
+        dingtalk: {
+            enabled: false,
+            clientId: '',                 // 钉钉应用 AppKey (ClientId)
+            clientSecret: '',             // 钉钉应用 AppSecret (ClientSecret)
+            allowedChats: [],             // 会话白名单，空=允许所有
+        },
     },
     session: {
         maxHistoryLength: 50,             // 每个会话最大历史消息数
