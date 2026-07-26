@@ -37,6 +37,72 @@ jobs:
       - name: 运行测试
         run: npm test
 
+  docker:
+    name: 镜像构建与容器冒烟
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 校验 compose 文件
+        run: docker compose config > /dev/null
+
+      - name: 构建镜像
+        run: docker build -t stgw:ci .
+
+      # 真容器里跑一遍：验证 0.0.0.0 绑定、鉴权、健康检查、
+      # 以及"env 注入的凭据不落盘"这条关键不变量。
+      - name: 容器冒烟
+        run: |
+          docker run -d --name stgw \
+            -e GATEWAY_AUTH_TOKEN=ci-test-token \
+            -e GATEWAY_TELEGRAM_BOT_TOKEN=ci-secret-token \
+            -p 127.0.0.1:3210:3210 \
+            stgw:ci
+
+          for i in $(seq 1 40); do
+            if curl -sf http://127.0.0.1:3210/api/gateway/health > /dev/null; then break; fi
+            sleep 1
+          done
+
+          if ! curl -sf http://127.0.0.1:3210/api/gateway/health > /dev/null; then
+            echo "❌ 容器未在 40s 内就绪"; docker logs stgw; exit 1
+          fi
+          echo "✅ 健康检查通过"
+
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3210/api/gateway/status)
+          [ "$CODE" = "401" ] || { echo "❌ 未鉴权应返回 401，实际 $CODE"; docker logs stgw; exit 1; }
+          echo "✅ 鉴权生效"
+
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "X-Gateway-Token: ci-test-token" http://127.0.0.1:3210/api/gateway/status)
+          [ "$CODE" = "200" ] || { echo "❌ 带 env token 应返回 200，实际 $CODE"; docker logs stgw; exit 1; }
+          echo "✅ 环境变量注入的 token 生效"
+
+          # 关键不变量：env 注入的凭据绝不能出现在挂载卷的配置文件里
+          if docker exec stgw grep -q "ci-secret-token" /app/config/gateway.json; then
+            echo "❌ 环境变量注入的凭据被写入了配置文件"; exit 1
+          fi
+          echo "✅ 凭据未落盘"
+
+          # HEALTHCHECK 指令本身是否被 Docker 判定为健康
+          for i in $(seq 1 30); do
+            H=$(docker inspect -f '{{.State.Health.Status}}' stgw 2>/dev/null || echo none)
+            [ "$H" = "healthy" ] && break
+            sleep 2
+          done
+          [ "$H" = "healthy" ] || { echo "❌ HEALTHCHECK 未转为 healthy（当前 $H）"; docker logs stgw; exit 1; }
+          echo "✅ HEALTHCHECK 正常"
+
+          # 优雅关闭：docker stop 应在超时前退出（验证 tini 转发 SIGTERM）
+          START=$(date +%s)
+          docker stop stgw > /dev/null
+          ELAPSED=$(( $(date +%s) - START ))
+          [ "$ELAPSED" -lt 8 ] || { echo "❌ 关闭耗时 ${ELAPSED}s，SIGTERM 可能未被处理"; exit 1; }
+          echo "✅ 优雅关闭 (${ELAPSED}s)"
+
+      - name: 失败时输出容器日志
+        if: failure()
+        run: docker logs stgw || true
+
   smoke:
     name: 启动冒烟
     runs-on: ubuntu-latest

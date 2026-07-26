@@ -77,6 +77,20 @@ sillytavern-gateway/
 
 ## 快速开始
 
+### 方式零：Docker（最省事）
+
+```bash
+cp .env.example .env      # 填入 bot token
+docker compose up -d
+```
+
+网关跑在 `http://127.0.0.1:3210`，在 SillyTavern 网关面板填入地址与鉴权 token 即可。
+完整说明（卷/权限/接 NapCat/公网暴露/排障）见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
+
+> 注：Docker 方式跑的是**后端网关服务**。若要用 SillyTavern 里的网关面板，
+> 前端扩展仍需放进 ST 的 `third-party` 目录（见下）；
+> 若启用[自建推理管线](docs/NATIVE_RUNTIME.md)则连 ST 页面都不用开。
+
 ### 环境要求
 
 - Node.js >= 18

@@ -1,0 +1,94 @@
+# SillyTavern Multi-Platform Gateway —— 一键部署
+#
+#   cp .env.example .env   # 填入你的 bot token 等
+#   docker compose up -d
+#
+# 可选组件用 profile 控制，默认不启动：
+#   docker compose --profile napcat up -d    # 额外拉起 NapCat（QQ OneBot 实现）
+
+services:
+  gateway:
+    build: .
+    image: sillytavern-gateway:latest
+    container_name: st-gateway
+    restart: unless-stopped
+
+    # ⚠️ 端口绑定安全
+    # 默认只绑宿主机回环（127.0.0.1），因为网关持有你全部平台的 bot token，
+    # 一旦暴露到公网，即便有鉴权也是不必要的攻击面。
+    # 确需从其它机器访问时，改成 "0.0.0.0:3210:3210" 并确保：
+    #   ① server.requireAuth 保持开启（默认就是）
+    #   ② 前置一层 HTTPS 反代，不要明文传 X-Gateway-Token
+    ports:
+      - "127.0.0.1:${GATEWAY_PORT:-3210}:3210"
+
+    # 配置全部来自环境变量（见 .env.example）。
+    # 敏感项不会被写进 config/gateway.json —— 见 server/utils/env-config.js
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      GATEWAY_HOST: 0.0.0.0
+      GATEWAY_PORT: 3210
+      TZ: ${TZ:-Asia/Shanghai}
+
+    volumes:
+      # 配置与运行时状态（必须持久化，否则重启丢会话/丢存档/token 重新生成）
+      - ./config:/app/config
+      - ./data:/app/data
+      - ./logs:/app/logs
+      # ST 资产：角色卡 / 世界书 / 预设（自建推理管线用）。
+      # 把你在 SillyTavern 里做好的资产拷进宿主机的 ./assets 即可。
+      - ./assets:/app/assets
+      # 插件目录：挂出来便于装第三方插件后持久保留
+      - ./plugins:/app/plugins
+
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3210/api/gateway/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+    # 让容器内可用 host.docker.internal 访问宿主机上的
+    # SillyTavern / NapCat / Ollama 等服务（Linux 上默认没有这个名字）
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ─────────────────────────────────────────────────────────
+  # 可选：NapCat（QQ OneBot v11 实现）
+  #   docker compose --profile napcat up -d
+  # 首次启动需要看日志扫码登录：docker compose logs -f napcat
+  # ─────────────────────────────────────────────────────────
+  napcat:
+    profiles: ["napcat"]
+    image: mlikiowa/napcat-docker:latest
+    container_name: st-napcat
+    restart: unless-stopped
+    environment:
+      # 填你的 QQ 号；留空则每次启动都要扫码
+      ACCOUNT: ${NAPCAT_ACCOUNT:-}
+      WS_ENABLE: "true"
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      # NapCat WebUI（仅回环，不对外）
+      - "127.0.0.1:6099:6099"
+    volumes:
+      - ./napcat/config:/app/napcat/config
+      - ./napcat/qq:/root/.config/QQ
+    # 与网关同网络，网关侧用 ws://napcat:3001 连接
+    # （对应 GATEWAY_QQ_WS_URL=ws://napcat:3001）
+
+networks:
+  default:
+    name: st-gateway-net
