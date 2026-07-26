@@ -160,6 +160,7 @@ function setupMessageHandling() {
             try {
                 const reply = await nativeRuntime.generate(message.platform, message.chatId, message.content, {
                     now: Date.now(),
+                    media: message.media,   // 多模态：入站图片一并送入模型
                 });
                 gatewayCore.sendMessage(new OutboundMessage({
                     platform: message.platform,
@@ -306,11 +307,11 @@ app.post('/api/runtime/profiles/:platform/:chatId', (req, res) => {
 });
 
 /** 预览 prompt 组装结果（不调用 LLM，便于调试） */
-app.post('/api/runtime/preview', (req, res) => {
+app.post('/api/runtime/preview', async (req, res) => {
     if (!nativeRuntime) return res.status(400).json({ success: false, error: '自建推理管线未启用' });
     const { platform, chatId, input } = req.body || {};
     try {
-        const { messages, sampling } = nativeRuntime.prepare(platform, chatId, input || '');
+        const { messages, sampling } = await nativeRuntime.prepare(platform, chatId, input || '');
         res.json({ success: true, messages, sampling });
     } catch (error) {
         res.status(400).json({ success: false, error: error.message });

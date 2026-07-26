@@ -118,7 +118,10 @@ const DEFAULT_CONFIG = {
         worldbooksDir: 'assets/worldbooks',
         presetsDir: 'assets/presets',
         chatsDir: 'data/chats',
-        historyLimit: 30,                 // 注入 prompt 的历史条数
+        historyLimit: 30,                 // 注入 prompt 的历史条数（粗筛）
+        tokenBudget: 8000,                // 上下文 token 预算(0=不按token截断，仅按条数)
+        stream: false,                    // 是否使用流式生成
+        maxImages: 4,                     // 单条消息最多送入模型的图片数
         worldScanDepth: 5,                // 世界书扫描最近几条消息
         worldMaxRecursion: 2,             // 世界书递归激活轮数
         llm: {

@@ -13,6 +13,63 @@ const logger = createLogger('runtime');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..', '..');
 
+/** 需要 base64 内联图片的 provider（不接受任意外链 URL） */
+const NEEDS_BASE64 = new Set(['claude', 'gemini']);
+
+/**
+ * 把入站媒体（MediaAsset）转成统一的多模态 parts。
+ * 仅处理图片；语音/文件暂以文本占位符体现（STT 为后续项）。
+ *
+ * @param {string} text - 用户文本
+ * @param {Array} media - MediaAsset[]
+ * @param {string} provider
+ * @param {object} opts - { maxImages, maxBytes }
+ * @returns {Promise<string|Array>} 纯文本 或 多模态 parts 数组
+ */
+export async function buildUserContent(text, media = [], provider = 'openai', opts = {}) {
+    const images = (media || []).filter(m => m && m.type === 'image' && (m.url || m.localPath));
+    if (images.length === 0) return text;
+
+    const maxImages = opts.maxImages ?? 4;
+    const maxBytes = opts.maxBytes ?? 8 * 1024 * 1024;
+    const needBase64 = NEEDS_BASE64.has((provider || 'openai').toLowerCase());
+
+    const parts = [];
+    if (text) parts.push({ type: 'text', text });
+
+    for (const img of images.slice(0, maxImages)) {
+        try {
+            if (!needBase64 && img.url && /^https?:/i.test(img.url)) {
+                // OpenAI 兼容后端可直接吃 http URL
+                parts.push({ type: 'image', url: img.url, mimeType: img.mimeType });
+                continue;
+            }
+            // 需要内联：下载/读盘 → base64
+            let buf, mime = img.mimeType || '';
+            if (img.localPath && fs.existsSync(img.localPath)) {
+                buf = fs.readFileSync(img.localPath);
+            } else if (img.url) {
+                const resp = await fetch(img.url, { signal: AbortSignal.timeout(20000) });
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                mime = mime || resp.headers.get('content-type') || 'image/jpeg';
+                buf = Buffer.from(await resp.arrayBuffer());
+            }
+            if (!buf) continue;
+            if (buf.length > maxBytes) {
+                logger.warn(`图片过大(${buf.length})，跳过多模态注入`);
+                continue;
+            }
+            parts.push({ type: 'image', base64: buf.toString('base64'), mimeType: (mime || 'image/jpeg').split(';')[0] });
+        } catch (e) {
+            logger.warn(`多模态图片处理失败: ${e.message}`);
+        }
+    }
+
+    // 只有文本部分（图片全失败）→ 退回纯文本，避免构造无意义的 parts
+    if (parts.filter(p => p.type === 'image').length === 0) return text;
+    return parts;
+}
+
 /**
  * 自建推理管线（Native Runtime）
  *
@@ -111,9 +168,13 @@ export class NativeRuntime {
 
     /**
      * 组装某会话对某条输入的 prompt（不调用 LLM）——便于测试与 /preview
-     * @returns {{messages, sampling, card, archive}}
+     * @param {string} platform
+     * @param {string} chatId
+     * @param {string} userInput
+     * @param {object} [opts] - { media: MediaAsset[] } 入站媒体，用于多模态
+     * @returns {Promise<{messages, sampling, card, archive}>}
      */
-    prepare(platform, chatId, userInput) {
+    async prepare(platform, chatId, userInput, opts = {}) {
         const profile = this.profiles.get(platform, chatId);
         const card = this.getCard(profile.character);
         if (!card) throw new Error(`会话未绑定角色卡或角色卡不存在: "${profile.character || '(未设置)'}"`);
@@ -137,14 +198,25 @@ export class NativeRuntime {
         });
 
         const preset = this.getPreset(profile.preset);
+
+        // 多模态：把入站图片并入用户消息（provider 决定用 URL 还是 base64 内联）
+        const llmCfg = { ...(this.config.llm || {}), ...(profile.llm || {}) };
+        const userContent = await buildUserContent(
+            userInput,
+            opts.media || [],
+            llmCfg.provider,
+            { maxImages: this.config.maxImages ?? 4 },
+        );
+
         const { messages, sampling } = buildPrompt({
             card,
             preset,
             persona: profile.persona,
             world,
             history,
-            userInput,
+            userInput: userContent,
             userName: profile.persona?.name || 'User',
+            tokenBudget: this.config.tokenBudget ?? 0,
         });
 
         return { messages, sampling, card, archive, profile, world };
@@ -155,16 +227,25 @@ export class NativeRuntime {
      * @returns {Promise<string>} AI 回复
      */
     async generate(platform, chatId, userInput, options = {}) {
-        const { messages, sampling, card, archive, profile } = this.prepare(platform, chatId, userInput);
+        const { messages, sampling, card, archive, profile } = await this.prepare(
+            platform, chatId, userInput, { media: options.media },
+        );
 
         // LLM 配置：会话覆盖 > 全局
         const llmCfg = { ...(this.config.llm || {}), ...(profile.llm || {}) };
         const client = options.client || new LLMClient(llmCfg);
 
-        // 先落用户消息（即便生成失败，用户输入也不丢）
-        archive.append({ isUser: true, mes: userInput, name: profile.persona?.name || 'User', sendDate: options.now || 0 });
+        // 先落用户消息（即便生成失败，用户输入也不丢）；媒体在存档里记为占位符
+        const archivedInput = (options.media?.length)
+            ? `${userInput}${userInput ? ' ' : ''}${options.media.map(m => m.placeholder?.() || '[媒体]').join(' ')}`
+            : userInput;
+        archive.append({ isUser: true, mes: archivedInput, name: profile.persona?.name || 'User', sendDate: options.now || 0 });
 
-        const reply = await client.generate(messages, sampling);
+        // 流式（config.runtime.stream 或调用方指定）：边收边回调，便于渐进发送
+        const useStream = options.stream ?? this.config.stream ?? false;
+        const reply = (useStream && typeof client.generateStream === 'function')
+            ? await client.generateStream(messages, sampling, options.onDelta)
+            : await client.generate(messages, sampling);
 
         archive.append({ isUser: false, mes: reply, name: card.name, sendDate: options.now || 0 });
         return reply;
