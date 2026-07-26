@@ -184,6 +184,45 @@
                 </div>
             </div>
 
+            <!-- 飞书 / Lark -->
+            <div class="gateway-adapter-config">
+                <div class="gateway-adapter-header" data-toggle="gateway_fs_config">
+                    <span class="gateway-adapter-title">🐦 飞书 <span id="gateway_panel_fs_state" class="gateway-adapter-state">-</span></span>
+                    <span class="gateway-adapter-controls">
+                        <button class="menu_button gateway-adapter-verify" data-platform="feishu" title="验证连接"><i class="fa-solid fa-plug-circle-check"></i></button>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="gateway_panel_fs_enabled">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </span>
+                </div>
+                <div id="gateway_fs_config" class="gateway-adapter-body" style="display:none;">
+                    <div class="gateway-field">
+                        <label>App ID</label>
+                        <input type="text" id="gateway_panel_fs_app_id" class="text_pole" placeholder="cli_xxxxxxxx">
+                    </div>
+                    <div class="gateway-field">
+                        <label>App Secret</label>
+                        <input type="password" id="gateway_panel_fs_app_secret" class="text_pole" placeholder="App Secret...">
+                    </div>
+                    <div class="gateway-field">
+                        <label>区域</label>
+                        <select id="gateway_panel_fs_domain" class="text_pole">
+                            <option value="feishu">飞书（国内）</option>
+                            <option value="lark">Lark（海外）</option>
+                        </select>
+                    </div>
+                    <div class="gateway-field">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="gateway_panel_fs_mention"> 群聊需要 @机器人
+                        </label>
+                    </div>
+                    <div class="gateway-field">
+                        <span class="gateway-hint">长连接模式，无需公网 IP。需先在项目根执行 <code>npm install @larksuiteoapi/node-sdk</code>。详见 docs/ADDING_PLATFORMS.md</span>
+                    </div>
+                </div>
+            </div>
+
             <button id="gateway_panel_save_config" class="menu_button gateway-save-btn">
                 <i class="fa-solid fa-floppy-disk"></i> 保存配置
             </button>

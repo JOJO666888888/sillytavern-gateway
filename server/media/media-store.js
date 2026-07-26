@@ -56,6 +56,21 @@ export class MediaStore {
         return id;
     }
 
+    /** 把内存 Buffer 落地到缓存并返回可对外访问的 id */
+    registerBuffer(buf, mimeType = 'application/octet-stream') {
+        const id = crypto.randomBytes(12).toString('hex');
+        const ext = this._extFromMime(mimeType);
+        const filePath = path.join(this.cacheDir, `${id}${ext}`);
+        try {
+            fs.writeFileSync(filePath, buf);
+        } catch (e) {
+            logger.error(`写入媒体缓存失败: ${e.message}`);
+            return null;
+        }
+        this._entries.set(id, { path: filePath, mimeType, createdAt: Date.now() });
+        return id;
+    }
+
     /**
      * 下载远程 URL 到缓存并返回 id（带大小上限与超时）。
      * @param {string} url

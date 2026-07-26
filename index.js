@@ -790,7 +790,7 @@ function updateConnectionStatus(connected) {
 function updateStatusUI(status) {
     if (!status?.adapters) return;
 
-    const platforms = ['qq', 'telegram', 'discord'];
+    const platforms = ['qq', 'telegram', 'discord', 'feishu'];
     const stateTexts = {
         connected: '在线',
         disconnected: '离线',
@@ -829,15 +829,17 @@ function getPlatformIcon(platform) {
         qq: '🐧',
         telegram: '✈️',
         discord: '🎮',
+        feishu: '🐦',
     };
     return icons[platform] || '💬';
 }
 
-/** 平台名 -> 面板元素 ID 前缀映射 (telegram->tg, discord->dc) */
+/** 平台名 -> 面板元素 ID 前缀映射 (telegram->tg, discord->dc, feishu->fs) */
 const PLATFORM_PREFIX = {
     qq: 'qq',
     telegram: 'tg',
     discord: 'dc',
+    feishu: 'fs',
 };
 
 /**
@@ -1582,6 +1584,13 @@ async function savePanelConfig() {
                         botToken: $('#gateway_panel_dc_token').val(),
                         requireMention: $('#gateway_panel_dc_mention').is(':checked'),
                     },
+                    feishu: {
+                        enabled: $('#gateway_panel_fs_enabled').is(':checked'),
+                        appId: $('#gateway_panel_fs_app_id').val().trim(),
+                        appSecret: $('#gateway_panel_fs_app_secret').val(),
+                        domain: $('#gateway_panel_fs_domain').val(),
+                        requireMention: $('#gateway_panel_fs_mention').is(':checked'),
+                    },
                 },
             }),
         });
@@ -1593,6 +1602,7 @@ async function savePanelConfig() {
                 { name: 'qq', prefix: 'qq' },
                 { name: 'telegram', prefix: 'tg' },
                 { name: 'discord', prefix: 'dc' },
+                { name: 'feishu', prefix: 'fs' },
             ];
             let anyStarted = false;
             for (const { name, prefix } of adapterChecks) {
@@ -1637,6 +1647,13 @@ async function loadPanelConfig() {
             $('#gateway_panel_dc_enabled').prop('checked', adapters.discord.enabled);
             $('#gateway_panel_dc_token').val(adapters.discord.botToken);
             $('#gateway_panel_dc_mention').prop('checked', adapters.discord.requireMention);
+        }
+        if (adapters.feishu) {
+            $('#gateway_panel_fs_enabled').prop('checked', adapters.feishu.enabled);
+            $('#gateway_panel_fs_app_id').val(adapters.feishu.appId);
+            $('#gateway_panel_fs_app_secret').val(adapters.feishu.appSecret);
+            $('#gateway_panel_fs_domain').val(adapters.feishu.domain || 'feishu');
+            $('#gateway_panel_fs_mention').prop('checked', adapters.feishu.requireMention !== false);
         }
     } catch (_) { /* 网关未连接时忽略 */ }
 }

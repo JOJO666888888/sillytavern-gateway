@@ -65,6 +65,18 @@ const DEFAULT_CONFIG = {
             allowedUsers: [],             // 白名单用户ID
             requireMention: true,         // 频道中是否需要@才响应
         },
+        feishu: {
+            enabled: false,
+            mode: 'websocket',            // 'websocket'(长连接,免公网IP) —— 目前仅支持长连接
+            appId: '',                    // 飞书开放平台 App ID
+            appSecret: '',                // 飞书开放平台 App Secret
+            domain: 'feishu',             // 'feishu'(国内) | 'lark'(海外)
+            encryptKey: '',               // 事件加密 key（可选）
+            verificationToken: '',        // 事件校验 token（可选）
+            allowedChats: [],             // 会话白名单(chat_id)，空=允许所有
+            requireMention: true,         // 群聊中是否需要@机器人才响应
+            mediaBaseUrl: '',             // 网关对外可访问基址(如 http://公网:3210)，用于媒体转发
+        },
     },
     session: {
         maxHistoryLength: 50,             // 每个会话最大历史消息数

@@ -1,7 +1,7 @@
 {
   "name": "sillytavern-gateway",
   "version": "1.0.0",
-  "description": "SillyTavern 多平台聊天网关插件 - 支持 QQ/Telegram/Discord",
+  "description": "SillyTavern 多平台聊天网关插件 - 支持 QQ/Telegram/Discord/飞书",
   "main": "server/index.js",
   "type": "module",
   "scripts": {
@@ -27,5 +27,8 @@
     "eventemitter3": "^5.0.0",
     "winston": "^3.11.0",
     "uuid": "^9.0.0"
+  },
+  "optionalDependencies": {
+    "@larksuiteoapi/node-sdk": "^1.30.0"
   }
 }
