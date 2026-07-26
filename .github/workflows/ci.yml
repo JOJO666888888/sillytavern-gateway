@@ -53,9 +53,20 @@ jobs:
       # 以及"env 注入的凭据不落盘"这条关键不变量。
       - name: 容器冒烟
         run: |
+          # 用**空的、root 属主**的宿主目录挂载，复现最容易出问题的场景：
+          # bind mount 覆盖镜像目录 + 属主不是 uid1000。
+          # entrypoint 必须能把内置插件补回来并修正属主。
+          mkdir -p /tmp/vol/config /tmp/vol/data /tmp/vol/logs /tmp/vol/assets /tmp/vol/plugins
+
           docker run -d --name stgw \
             -e GATEWAY_AUTH_TOKEN=ci-test-token \
             -e GATEWAY_TELEGRAM_BOT_TOKEN=ci-secret-token \
+            -e TZ=Asia/Shanghai \
+            -v /tmp/vol/config:/app/config \
+            -v /tmp/vol/data:/app/data \
+            -v /tmp/vol/logs:/app/logs \
+            -v /tmp/vol/assets:/app/assets \
+            -v /tmp/vol/plugins:/app/plugins \
             -p 127.0.0.1:3210:3210 \
             stgw:ci
 
@@ -82,6 +93,31 @@ jobs:
             echo "❌ 环境变量注入的凭据被写入了配置文件"; exit 1
           fi
           echo "✅ 凭据未落盘"
+
+          # bind mount 覆盖陷阱：空挂载卷不能让内置插件消失
+          COUNT=$(docker exec stgw sh -c 'ls /app/plugins | wc -l')
+          [ "$COUNT" -ge 5 ] || {
+            echo "❌ 内置插件未被补入挂载卷（当前 $COUNT 个）"; docker logs stgw; exit 1; }
+          docker exec stgw test -d /app/plugins/regex-filter || {
+            echo "❌ 内置插件 regex-filter 缺失"; exit 1; }
+          echo "✅ 内置插件已补入空挂载卷 ($COUNT 个)"
+
+          # 卷权限：以 root 属主的宿主目录挂进来后，容器内必须仍能写
+          docker exec stgw sh -c 'test -w /app/data && test -w /app/config' || {
+            echo "❌ 挂载卷不可写（entrypoint 的属主修正失效）"; docker logs stgw; exit 1; }
+          echo "✅ 挂载卷可写"
+
+          # 最终运行身份必须是非 root（entrypoint 以 root 起，但要降权）
+          WHO=$(docker exec stgw sh -c 'ps -o user= -p 1 2>/dev/null | head -1' || true)
+          RUNAS=$(docker exec stgw sh -c 'ps -o user= -C node 2>/dev/null | head -1' || true)
+          echo "PID1=$WHO node进程=$RUNAS"
+          [ "$RUNAS" = "node" ] || {
+            echo "❌ node 进程应以 node 用户运行，实际 '$RUNAS'"; exit 1; }
+          echo "✅ 已降权到非 root 运行"
+
+          # TZ 生效（装了 tzdata 才行）
+          TZOUT=$(docker exec stgw date +%Z)
+          echo "容器时区: $TZOUT"
 
           # HEALTHCHECK 指令本身是否被 Docker 判定为健康
           for i in $(seq 1 30); do

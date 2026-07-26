@@ -42,8 +42,13 @@ FROM node:22-slim AS runtime
 # ca-certificates：出站 HTTPS（各平台 API、LLM API）需要根证书。
 # 中文字体：message-to-image 插件渲染中文，缺字体会得到一堆豆腐块。
 #   仅装 fonts-wqy-zenhei（~15MB），够用且比 noto-cjk 全量小很多。
+# gosu：entrypoint 以 root 修正挂载卷属主后，用它干净地降权到 node
+#   （不用 su/sudo，它们会引入额外的信号转发与 TTY 问题）
+# tzdata：让 TZ 环境变量真正生效，否则日志时间戳恒为 UTC
 RUN apt-get update && apt-get install -y --no-install-recommends \
         tini \
+        gosu \
+        tzdata \
         ca-certificates \
         fonts-wqy-zenhei \
     && rm -rf /var/lib/apt/lists/*
@@ -62,14 +67,25 @@ COPY --from=deps /app/node_modules ./node_modules
 # 拷贝源码（.dockerignore 已排除 node_modules 与 config/data/logs/assets）
 COPY . .
 
-# 运行时状态目录：先建好并交给 node 用户，避免挂载卷时因属主不符而无法写入。
-# 注：若宿主机挂载的目录属主不是 uid 1000，容器内仍会写失败——
-#     这是 Docker 卷权限的固有问题，部署文档里给了处理方法。
-RUN mkdir -p config data logs assets data/media-cache data/chats data/plugins \
-    && chown -R node:node /app
+# 内置插件另存一份"原始副本"到挂载点之外。
+# 因为 compose 会把宿主机 ./plugins 挂到 /app/plugins 上，直接盖住镜像里的内容；
+# entrypoint 启动时据此把缺失的内置插件补回挂载卷（见 docker-entrypoint.sh）。
+# 注意这里**不做** `chown -R node:node /app`：
+# 那会改写 node_modules 里每个文件的元数据，使该层被完整复制一份，
+# 镜像凭空大出一倍的依赖体积。运行期需要写的目录只有下面这几个状态目录，
+# 而它们又都是挂载卷、属主由 entrypoint 在启动时修正。
+# 应用代码本身只需可读，默认权限已满足。
+RUN mkdir -p /opt/gateway \
+    && cp -a plugins /opt/gateway/plugins-default \
+    && mkdir -p config data logs assets data/media-cache data/chats data/plugins \
+    && chown -R node:node config data logs assets plugins /opt/gateway
 
-# 非 root 运行。node 镜像自带 uid/gid 1000 的 node 用户。
-USER node
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# 注意：这里**不写 USER node**。
+# 容器需以 root 启动，让 entrypoint 先修正挂载卷属主、补齐内置插件，
+# 再用 gosu 降权到 node 执行真正的进程。最终运行身份仍是非 root。
 
 EXPOSE 3210
 
@@ -78,6 +94,6 @@ EXPOSE 3210
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD node -e "fetch('http://127.0.0.1:'+(process.env.GATEWAY_PORT||3210)+'/api/gateway/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-# tini 作为 init，确保 SIGTERM 能传到 node 触发优雅关闭
-ENTRYPOINT ["/usr/bin/tini", "--"]
+# tini 作为 init 转发信号 → entrypoint 修卷/播种/降权 → node 进程
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
 CMD ["node", "server/index.js"]

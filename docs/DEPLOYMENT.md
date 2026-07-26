@@ -48,14 +48,24 @@ compose 会在项目目录下创建这些挂载卷：
 
 **备份就是打包这几个目录**（尤其 `config/` 和 `data/`）。
 
-### 卷权限问题
+### 卷权限（一般无需手动处理）
 
-容器内以 uid 1000（`node` 用户）运行。若宿主机目录属主不同会写入失败：
+容器以 root 启动 entrypoint，**自动**把挂载目录的属主修正为 uid 1000，然后降权到
+`node` 用户运行。所以宿主机目录是 root 属主也没关系。
+
+仅当你用 `--user` 覆盖了运行身份、或挂了只读卷时才需要手动处理：
 
 ```bash
-# 症状：日志里 EACCES / permission denied
 sudo chown -R 1000:1000 config data logs assets plugins
 ```
+
+### 内置插件与挂载
+
+`./plugins` 被挂载后会**覆盖**镜像里的插件目录。entrypoint 会在启动时把缺失的
+内置插件（regex-filter / option-splitter / message-to-image 等）补进去，
+同时**不动**你已装的第三方插件和你对内置插件的修改。
+
+想恢复某个被改坏的内置插件：删掉 `plugins/<名字>/` 再重启容器，它会被重新补入。
 
 ---
 
@@ -161,7 +171,9 @@ docker compose ps                     # 看健康状态（healthy/unhealthy）
 - **中文字体 `fonts-wqy-zenhei`**：`message-to-image` 插件渲染中文用，
   缺字体会得到一堆豆腐块。
 - **可选平台 SDK 默认已装**（飞书 / QQ官方 / 钉钉），启用对应平台不需要再进容器装东西。
-- **非 root 运行**（uid 1000）。
+- **非 root 运行**：以 root 启动 entrypoint（修卷属主、补内置插件）后，
+  用 gosu 降权到 uid 1000 的 `node` 用户执行 node 进程。
+- **tzdata**：使 `TZ` 环境变量真正生效，否则日志时间戳恒为 UTC。
 - `puppeteer-core` 与 Chromium **未安装** —— `message-to-image` 插件需要它，
   但会让镜像大三四百 MB。需要该插件时自建镜像加装，或改用宿主机部署。
 
@@ -181,7 +193,8 @@ docker compose logs gateway  # 看有没有报错
 多半是 token 不对。`docker compose logs gateway | grep "鉴权 token"` 取出来重填。
 
 **日志里 EACCES / permission denied**
-卷权限问题，见上面"卷权限问题"。
+见上面"卷权限"一节。正常情况下 entrypoint 会自动处理；
+若你用 `--user` 覆盖了运行身份则需手动 chown。
 
 **改了 .env 没生效**
 用 `docker compose up -d`（重建容器），不是 `restart`。
