@@ -30,10 +30,18 @@ export class ChatArchive {
         if (fs.existsSync(filePath)) this.load();
     }
 
-    /** 从文件加载 */
+    /**
+     * 从文件加载（可重复调用）。
+     *
+     * 必须先清空再读：以前是直接 push，构造函数已经 load 过一次，
+     * 外部再调一次就把整份历史又追加一遍（3 条变 6 条、再调变 9 条）。
+     * 而"ST 在外部改了存档、网关重新载入"正是这套互通功能的正常用法，
+     * 一旦触发就是历史凭空翻倍——喂给模型的上下文全是重复内容。
+     */
     load() {
         try {
             const lines = fs.readFileSync(this.filePath, 'utf-8').split('\n').filter(Boolean);
+            this.messages = [];
             if (lines.length === 0) return;
             // 首行：元数据（若可解析且含 user_name/character_name）
             let start = 0;

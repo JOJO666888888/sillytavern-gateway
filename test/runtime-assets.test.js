@@ -180,6 +180,48 @@ describe('聊天存档（.jsonl 与 ST 互通）', () => {
         assert.strictEqual(a2.messages[0].is_user, true);
     });
 
+    test('重复 load() 不会把历史追加两遍', () => {
+        // 以前 load() 直接 push，而构造函数已经 load 过一次，
+        // 外部再调一次历史就翻倍（3→6→9）。而"ST 在外部改了存档、
+        // 网关重新载入"正是这套互通功能的正常用法，一旦触发，
+        // 喂给模型的上下文就全是重复内容。
+        const dir = makeTmp();
+        const file = path.join(dir, 'reload.jsonl');
+        const a = new ChatArchive(file, { userName: 'U', characterName: 'C' });
+        a.append({ isUser: true, mes: '一' });
+        a.append({ isUser: false, mes: '二' });
+        a.append({ isUser: true, mes: '三' });
+
+        const b = new ChatArchive(file);
+        assert.strictEqual(b.messages.length, 3);
+        b.load();
+        assert.strictEqual(b.messages.length, 3, '重复 load 后条数应不变');
+        b.load();
+        assert.strictEqual(b.messages.length, 3, '第三次 load 后条数仍应不变');
+        assert.deepStrictEqual(b.messages.map(m => m.mes), ['一', '二', '三']);
+    });
+
+    test('load() 会反映磁盘上的最新内容（ST 改档后重载）', () => {
+        // 清空再读的另一面：外部把存档改短了，重载后应该跟着变短，
+        // 而不是保留内存里的旧条目
+        const dir = makeTmp();
+        const file = path.join(dir, 'external.jsonl');
+        const a = new ChatArchive(file, { userName: 'U', characterName: 'C' });
+        a.append({ isUser: true, mes: 'A' });
+        a.append({ isUser: false, mes: 'B' });
+
+        const reader = new ChatArchive(file);
+        assert.strictEqual(reader.messages.length, 2);
+
+        // 模拟 ST 在外部重写了这个文件，只留一条
+        const lines = fs.readFileSync(file, 'utf-8').split('\n').filter(Boolean);
+        fs.writeFileSync(file, lines.slice(0, 2).join('\n') + '\n', 'utf-8');
+
+        reader.load();
+        assert.strictEqual(reader.messages.length, 1);
+        assert.strictEqual(reader.messages[0].mes, 'A');
+    });
+
     test('首行写入 ST 兼容的元数据', () => {
         const dir = makeTmp();
         const file = path.join(dir, 'meta.jsonl');
