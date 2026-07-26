@@ -76,8 +76,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # env_file 用的是短语法（兼容 Compose < 2.24），它要求 .env 必须存在。
+      # 部署第一步就是 cp .env.example .env，CI 里照做。
       - name: 校验 compose 文件
-        run: docker compose config > /dev/null
+        run: |
+          cp .env.example .env
+          docker compose config > /dev/null
+          docker compose --profile napcat config > /dev/null
+          rm -f .env
 
       - name: 构建镜像
         run: docker build -t stgw:ci .
@@ -121,11 +127,26 @@ jobs:
           [ "$CODE" = "200" ] || { echo "❌ 带 env token 应返回 200，实际 $CODE"; docker logs stgw; exit 1; }
           echo "✅ 环境变量注入的 token 生效"
 
-          # 关键不变量：env 注入的凭据绝不能出现在挂载卷的配置文件里
+          # 关键不变量：env 注入的凭据绝不能出现在挂载卷的配置文件里。
+          #
+          # 光 grep 是**空断言**：config.js 的 load() 里 save() 发生在 _applyEnv()
+          # 之前，而冒烟流程只做 GET，之后再没有任何东西触发过 save()。
+          # 也就是说容器里的 gateway.json 物理上就是一份纯默认配置，
+          # 把 _configForPersist() 那套还原逻辑整个删掉，这条也照样打勾。
+          # 所以必须先强制触发一次「env 生效之后」的写盘，再验。
+          curl -sf -X POST http://127.0.0.1:3210/api/gateway/config \
+            -H "X-Gateway-Token: ci-test-token" -H 'Content-Type: application/json' \
+            -d '{"session":{"maxHistoryLength":77}}' > /dev/null || {
+              echo "❌ 触发写盘的请求失败"; docker logs stgw; exit 1; }
+
+          # 正断言：文件确实被重写过（否则下面的 grep 又退化成空断言）
+          docker exec stgw grep -q '"maxHistoryLength": 77' /app/config/gateway.json || {
+            echo "❌ 配置文件未被重写，凭据断言无意义"; exit 1; }
+          # 负断言：env 注入的凭据不在其中
           if docker exec stgw grep -q "ci-secret-token" /app/config/gateway.json; then
             echo "❌ 环境变量注入的凭据被写入了配置文件"; exit 1
           fi
-          echo "✅ 凭据未落盘"
+          echo "✅ env 生效后写盘，凭据仍未落盘"
 
           # bind mount 覆盖陷阱：空挂载卷不能让内置插件消失
           COUNT=$(docker exec stgw sh -c 'ls /app/plugins | wc -l')
@@ -156,13 +177,21 @@ jobs:
             echo "❌ npm run token 输出与注入的 token 不符: $(cat /tmp/tok.txt)"; exit 1; }
           echo "✅ npm run token 可取回环境变量注入的 token"
 
-          # 最终运行身份必须是非 root（entrypoint 以 root 起，但要降权）
-          WHO=$(docker exec stgw sh -c 'ps -o user= -p 1 2>/dev/null | head -1' || true)
-          RUNAS=$(docker exec stgw sh -c 'ps -o user= -C node 2>/dev/null | head -1' || true)
-          echo "PID1=$WHO node进程=$RUNAS"
-          [ "$RUNAS" = "node" ] || {
-            echo "❌ node 进程应以 node 用户运行，实际 '$RUNAS'"; exit 1; }
-          echo "✅ 已降权到非 root 运行"
+          # 最终运行身份必须是非 root（entrypoint 以 root 起，但要降权）。
+          # 不用 ps：node:22-slim 不含 procps，`ps` 根本不存在，
+          # 原来的 `2>/dev/null || true` 会把 "ps: not found" 吞掉，
+          # 断言恒失败且报错指向 gosu，排查方向完全错。改成读 /proc，零依赖。
+          RUNAS=$(docker exec stgw sh -c '
+            for p in /proc/[0-9]*; do
+              [ "$(cat $p/comm)" = node ] || continue
+              stat -c %u "$p"; exit 0
+            done
+            echo NOTFOUND; exit 1
+          ')
+          echo "node 进程 uid=$RUNAS"
+          [ "$RUNAS" != "0" ] && [ "$RUNAS" != "NOTFOUND" ] || {
+            echo "❌ node 进程应以非 root 运行，实际 uid='$RUNAS'"; docker logs stgw; exit 1; }
+          echo "✅ 已降权到非 root 运行 (uid=$RUNAS)"
 
           # TZ 生效（装了 tzdata 才行）
           TZOUT=$(docker exec stgw date +%Z)

@@ -13,6 +13,19 @@ logs/
 assets/
 plugins/*/cache/
 
+# 凭据：.env 里是全部平台的 bot token + LLM API key。
+# 部署第一步就是 cp .env.example .env，所以构建时它**一定存在**；
+# .gitignore 挡住了 git，这里不挡住就会被 COPY . . 原样烘进镜像层——
+# 之后任何人 docker save / push / `docker run --rm 镜像 cat /app/.env`
+# 都能拿到全部凭据，而且事后删文件也删不掉历史层。
+# 镜像里也根本不需要它：compose 是通过 env_file 在运行时注入的。
+.env
+.env.*
+!.env.example
+
+# NapCat 的 QQ 登录态（--profile napcat 时由 compose 创建在项目根）
+napcat/
+
 # 版本控制与开发环境
 .git
 .github
@@ -21,6 +34,10 @@ plugins/*/cache/
 
 # 测试（运行时不需要，也避免把测试临时文件带进去）
 test/
+test-loader.js
+
+# 开发环境痕迹：本地 agent 配置里嵌着开发机的绝对路径，对运行时毫无用处
+.claude/
 
 # 文档（保留 docs/ 因为有个 API 会下载插件开发指南，见 server/index.js 的
 # /api/gateway/docs/plugin-guide 端点；其余 md 体积很小，不值得为省几十 KB

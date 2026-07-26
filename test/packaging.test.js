@@ -80,3 +80,157 @@ describe('Docker 构建上下文', () => {
         assert.equal(pkg.scripts.token, 'node scripts/show-token.js');
     });
 });
+
+describe('部署清单不能泄露凭据', () => {
+    const dockerignore = fs.readFileSync(path.join(ROOT, '.dockerignore'), 'utf-8')
+        .split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+    const gitignore = fs.readFileSync(path.join(ROOT, '.gitignore'), 'utf-8')
+        .split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+
+    test('.env 被 .dockerignore 排除', () => {
+        // 部署第一步就是 cp .env.example .env，所以构建时它一定存在。
+        // 不排除的话 COPY . . 会把全部 bot token / API key 烘进镜像层，
+        // 之后 docker save / push / `docker run --rm 镜像 cat /app/.env` 都能拿到。
+        assert.ok(dockerignore.includes('.env'), '.env 必须在 .dockerignore 里');
+        assert.ok(dockerignore.includes('.env.*'), '.env.local 之类也要排除');
+        assert.ok(dockerignore.includes('!.env.example'), '模板文件应保留在构建上下文');
+    });
+
+    test('NapCat 的 QQ 登录态两边都被忽略', () => {
+        assert.ok(dockerignore.includes('napcat/'), 'napcat/ 含登录凭据，不能进镜像');
+        assert.ok(gitignore.includes('napcat/'), 'napcat/ 不能被提交');
+    });
+
+    test('开发环境痕迹不进镜像', () => {
+        for (const p of ['.claude/', 'test-loader.js', 'test/', '.git']) {
+            assert.ok(dockerignore.includes(p), `${p} 应被 .dockerignore 排除`);
+        }
+    });
+
+    test('运行时状态目录一律不进镜像', () => {
+        for (const p of ['config/', 'data/', 'logs/', 'assets/']) {
+            assert.ok(dockerignore.includes(p), `${p} 是挂载卷，不能烘进镜像`);
+        }
+    });
+});
+
+describe('compose 与镜像的兼容性约束', () => {
+    const composeRaw = fs.readFileSync(path.join(ROOT, 'docker-compose.yml'), 'utf-8');
+    const dockerfile = fs.readFileSync(path.join(ROOT, 'Dockerfile'), 'utf-8');
+    const envExample = fs.readFileSync(path.join(ROOT, '.env.example'), 'utf-8');
+
+    // 断言的是**配置**，不是注释。文件里有大段注释在解释"为什么某个写法是错的"，
+    // 直接对原文 grep 会被自己的说明文字绊倒。
+    const compose = composeRaw.split('\n')
+        .filter(l => !/^\s*#/.test(l))
+        .join('\n');
+
+    /** 取出 services 下每个服务的配置块（按缩进切，不会误伤顶层 x-* 锚点） */
+    function serviceBlocks(text) {
+        const lines = text.split('\n');
+        const start = lines.findIndex(l => /^services:\s*$/.test(l));
+        assert.notEqual(start, -1, 'compose 里找不到 services:');
+        const out = {};
+        let name = null;
+        for (const line of lines.slice(start + 1)) {
+            if (/^\S/.test(line)) break;                    // 回到顶层，services 段结束
+            const m = line.match(/^  ([A-Za-z0-9_.-]+):\s*$/);
+            if (m) { name = m[1]; out[name] = []; continue; }
+            if (name) out[name].push(line);
+        }
+        return Object.fromEntries(Object.entries(out).map(([k, v]) => [k, v.join('\n')]));
+    }
+
+    test('env_file 用字符串短语法', () => {
+        // `path:/required:` 长语法是 Compose v2.24(2024-01) 才有的，
+        // 老版本不是降级而是 schema 直接报错，up/config 全部起不来。
+        // 目标人群大量在 NAS / 老 Debian 上，那里的 compose 普遍更旧。
+        assert.doesNotMatch(compose, /env_file:\s*\n\s*-\s*path:/,
+            'env_file 不能用长语法，会让 Compose < 2.24 直接报错');
+        assert.match(compose, /env_file:\s*\n\s*-\s*\.env\s*$/m);
+    });
+
+    test('NapCat 的 QQ 数据挂在镜像真正会写的路径', () => {
+        // 官方镜像里 napcat 用户 HOME=/app，QQ 写 /app/.config/QQ。
+        // 挂到 root 家目录是错的：没有任何进程写那里，
+        // 登录态不持久化，每次重建都要重新扫码。
+        assert.match(compose, /:\/app\/\.config\/QQ/, 'QQ 登录态应挂到 /app/.config/QQ');
+        assert.doesNotMatch(compose, /\/root\/\.config\/QQ/, 'root 家目录下那个路径是错的');
+    });
+
+    test('NapCat 用 MODE 而不是失效的旧开关变量开正向 WS', () => {
+        // 现行镜像 entrypoint 只认 MODE（cp templates/$MODE.json → onebot11.json）。
+        // 旧的 WS 开关是老接口，设了没用，3001 上不会有东西监听。
+        assert.match(compose, /MODE:\s*ws/, '应用 MODE: ws 套用官方 ws 模板');
+        assert.doesNotMatch(compose, /WS_ENABLE/, '旧开关变量现行镜像已不识别');
+    });
+
+    test('每个服务都有日志轮转', () => {
+        // napcat 很吵且 restart 常开，不限制会把宿主机磁盘写满
+        const services = serviceBlocks(compose);
+        assert.deepEqual(Object.keys(services).sort(), ['gateway', 'napcat']);
+        for (const [name, body] of Object.entries(services)) {
+            assert.match(body, /logging:/, `服务 ${name} 缺少日志轮转配置`);
+        }
+    });
+
+    test('网关有资源上限', () => {
+        // 插件是主进程内 import() 执行的，没配额时坏插件撑爆的是宿主机
+        assert.match(compose, /mem_limit:/);
+        assert.match(compose, /pids_limit:/);
+        assert.match(compose, /no-new-privileges:true/);
+    });
+
+    test('端口绑定地址可通过 .env 覆盖，不必改受 git 跟踪的 compose', () => {
+        assert.match(compose, /\$\{GATEWAY_BIND_ADDR:-127\.0\.0\.1\}/);
+        assert.match(envExample, /GATEWAY_BIND_ADDR/);
+    });
+
+    test('镜像装了 unzip —— 从 GitHub 装插件要用', () => {
+        // plugin-manager 的 _extractZip() 会 execSync `unzip`，
+        // bookworm-slim 不自带，缺了的话插件市场里每一个都装不上
+        const pm = fs.readFileSync(path.join(ROOT, 'server', 'plugin-manager.js'), 'utf-8');
+        if (/execSync\(`unzip/.test(pm)) {
+            assert.match(dockerfile, /^\s+unzip \\$/m, 'plugin-manager 依赖 unzip，Dockerfile 必须装');
+        }
+    });
+
+    test('compose 里引用的每个变量都在 .env.example 里有说明', () => {
+        const referenced = new Set(
+            [...compose.matchAll(/\$\{([A-Z_][A-Z0-9_]*)(?::-[^}]*)?\}/g)].map(m => m[1])
+        );
+        const missing = [...referenced].filter(v => !envExample.includes(v));
+        assert.deepEqual(missing, [], `这些变量 compose 用了但 .env.example 没提: ${missing}`);
+    });
+});
+
+describe('容器里不该做的事要被拦住', () => {
+    test('git 自更新端点在容器内直接给出正确指引', () => {
+        // .dockerignore 排除了 .git、镜像里也没装 git，runGit 必然失败。
+        // 前端把「检查更新」挂在 ST 启动流程上，不拦的话每开一次 ST
+        // 就弹一次看不懂的 git 报错。
+        const src = fs.readFileSync(path.join(ROOT, 'server', 'index.js'), 'utf-8');
+        assert.match(src, /IN_DOCKER/, '应有容器环境判定');
+        assert.match(src, /GATEWAY_IN_DOCKER|\/\.dockerenv/, '判定应基于环境变量或 /.dockerenv');
+        const dockerfile = fs.readFileSync(path.join(ROOT, 'Dockerfile'), 'utf-8');
+        assert.match(dockerfile, /GATEWAY_IN_DOCKER=1/, '镜像应打上容器标记');
+    });
+
+    test('插件数据目录创建失败不会让整个网关起不来', () => {
+        // 裸 mkdirSync 抛出会冒到 startServer().catch() → process.exit(1)，
+        // 配合 restart 策略变成无限崩溃重启循环
+        const src = fs.readFileSync(path.join(ROOT, 'server', 'plugin-manager.js'), 'utf-8');
+        assert.match(src, /dataDirWritable/, '应记录目录是否可写并降级');
+    });
+});
+
+describe('落盘一律走原子写', () => {
+    // 直接覆盖写的话，运行中 tar 备份或进程被 kill 时正好撞上写入，
+    // 拿到的是半个文件。config.js 有"损坏就改名备份"的兜底，另两个没有。
+    for (const rel of ['server/utils/config.js', 'server/runtime/chat-archive.js', 'server/session-manager.js']) {
+        test(`${rel} 用 tmp + rename`, () => {
+            const src = fs.readFileSync(path.join(ROOT, rel), 'utf-8');
+            assert.match(src, /renameSync/, `${rel} 应先写 tmp 再 rename`);
+        });
+    }
+});

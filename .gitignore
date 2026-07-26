@@ -6,3 +6,6 @@ config/
 .env
 .DS_Store
 assets/
+
+# NapCat 的 QQ 登录态与配置（--profile napcat 时由 compose 创建）
+napcat/

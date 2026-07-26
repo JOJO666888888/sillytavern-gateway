@@ -68,8 +68,22 @@ export class PluginManager {
 
         // 插件数据目录（存放各插件配置）
         this.dataDir = path.resolve(__dirname, '..', 'data', 'plugins');
-        if (!fs.existsSync(this.dataDir)) {
-            fs.mkdirSync(this.dataDir, { recursive: true });
+        // 不能让这里抛：异常会一路冒到 startServer().catch() → process.exit(1)，
+        // 配合 compose 的 restart: unless-stopped 就变成无限崩溃重启，
+        // 日志里只有孤零零一行 EACCES。data/ 是挂载卷，只读挂载 / --user 覆盖 /
+        // SELinux 未加 :z / NFS root_squash 都可能让它不可写。
+        // 降级代价只是插件配置不能持久化，网关照常收发消息，远好过整个容器起不来。
+        // （同一批目录里 media-store 与 logger 都是这么做的，此处原本是漏网的。）
+        this.dataDirWritable = true;
+        try {
+            if (!fs.existsSync(this.dataDir)) {
+                fs.mkdirSync(this.dataDir, { recursive: true });
+            }
+        } catch (error) {
+            this.dataDirWritable = false;
+            logger.error(`插件数据目录不可用: ${this.dataDir} (${error.message})`);
+            logger.error(`当前 uid=${typeof process.getuid === 'function' ? process.getuid() : 'n/a'}；`
+                + '插件配置本次将无法持久化。修复：在宿主机执行 chown -R $(id -u):$(id -g) data');
         }
 
         // 插件加载器

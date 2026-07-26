@@ -1,5 +1,6 @@
 import express from 'express';
 import http from 'http';
+import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { exec } from 'child_process';
@@ -454,9 +455,28 @@ function runGit(args) {
 }
 
 /**
+ * 是否跑在容器里。
+ *
+ * 容器部署下 git 自更新那一整套不成立：.dockerignore 排除了 .git，镜像里也没装
+ * git，所以 runGit 必然失败。而前端把「检查更新」挂在 SillyTavern 启动流程上，
+ * 用户每开一次 ST 就吃一次看不懂的 git 报错。
+ * 即便硬把 .git 和 git 塞进镜像也是错的——容器里 git pull 改的是镜像层里的源码，
+ * 重建容器即丢；正确姿势是宿主机 git pull 后 docker compose up -d --build。
+ */
+const IN_DOCKER = process.env.GATEWAY_IN_DOCKER === '1' || fs.existsSync('/.dockerenv');
+
+const DOCKER_UPDATE_HINT = '容器部署不支持在线更新。请在宿主机的仓库目录执行：'
+    + 'git pull && docker compose up -d --build';
+
+/**
  * 检查更新: 对比本地 HEAD 与 origin/main 的差异
  */
 app.get('/api/gateway/update/check', async (req, res) => {
+    if (IN_DOCKER) {
+        // 用 hasUpdate:false + supported:false 而不是 success:false，
+        // 让前端能安静地隐藏更新入口，而不是每次都弹一个错误提示
+        return res.json({ success: true, supported: false, hasUpdate: false, message: DOCKER_UPDATE_HINT });
+    }
     try {
         await runGit('fetch origin main');
         const currentCommit = (await runGit('rev-parse HEAD')).substring(0, 7);
@@ -479,6 +499,9 @@ app.get('/api/gateway/update/check', async (req, res) => {
  * 应用更新: git pull --ff-only, 若 package.json 变动则自动 npm install
  */
 app.post('/api/gateway/update/apply', async (req, res) => {
+    if (IN_DOCKER) {
+        return res.status(400).json({ success: false, supported: false, error: DOCKER_UPDATE_HINT });
+    }
     try {
         // 1. 检查工作目录是否干净
         const status = await runGit('status --porcelain');

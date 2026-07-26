@@ -215,7 +215,14 @@ export class SessionManager {
                 sessions: Array.from(this.sessions.values()).map(s => s.toJSON()),
             };
 
-            fs.writeFileSync(this.persistFile, JSON.stringify(data, null, 2), 'utf-8');
+            // 原子写：先落 tmp 再 rename。直接覆盖写的话，如果在运行中备份
+            // （tar 打包 data/）或进程被 kill 时正好撞上这次写入，
+            // 拿到的就是被截断的半个 JSON —— 而 config.js 那套"损坏就改名备份"
+            // 的保护只覆盖 gateway.json，会话文件没有对应的兜底，直接全丢。
+            // config.js:save() 与 chat-archive.js 都已是 tmp+rename，这里原本是漏网的。
+            const tmpFile = `${this.persistFile}.tmp`;
+            fs.writeFileSync(tmpFile, JSON.stringify(data, null, 2), 'utf-8');
+            fs.renameSync(tmpFile, this.persistFile);
             this.dirty = false;
             logger.debug('会话数据已保存');
         } catch (error) {

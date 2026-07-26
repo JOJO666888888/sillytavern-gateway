@@ -45,14 +45,21 @@ FROM node:22-slim AS runtime
 # gosu：entrypoint 以 root 修正挂载卷属主后，用它干净地降权到 node
 #   （不用 su/sudo，它们会引入额外的信号转发与 TTY 问题）
 # tzdata：让 TZ 环境变量真正生效，否则日志时间戳恒为 UTC
+# unzip：从 GitHub 装插件时 plugin-manager 的 _extractZip() 会 execSync `unzip`。
+#   bookworm-slim 不含它，缺了的话插件市场能搜到、每一个都装不上，
+#   报的是 `/bin/sh: 1: unzip: not found`，用户会以为是网络或仓库的问题。
 RUN apt-get update && apt-get install -y --no-install-recommends \
         tini \
         gosu \
         tzdata \
         ca-certificates \
         fonts-wqy-zenhei \
+        unzip \
     && rm -rf /var/lib/apt/lists/*
 
+# 让运行期能识别"我在容器里"：git 自动更新那套在容器里不适用
+# （.dockerignore 排除了 .git，镜像里也没装 git），端点据此给出正确指引。
+ENV GATEWAY_IN_DOCKER=1
 ENV NODE_ENV=production \
     # 容器内必须绑 0.0.0.0，否则端口映射进来也访问不到。
     # 安全性由两层保证：① 鉴权默认开启（server.requireAuth）
