@@ -18,7 +18,7 @@
 | **KOOK(开黑啦)** | ✅ 官方 | WebSocket + API | 图片/卡片 | 中 | 低 | 可选，游戏社群 |
 | **企业微信** | ✅ 官方 | 回调 + API | 图片/文件 | 中 | 低 | 可选，企业内部 |
 | **WhatsApp** | ✅ 官方 Cloud API | Webhook + API | 图片/语音/文件 | 中 | 低（需 Meta 审核） | 可选，海外 |
-| **个人微信** | ❌ 无官方开放 | 第三方(wechaty/gewechat/hook) | 依实现 | 高 | ⚠️ **高（封号风险，违反微信协议）** | 不建议生产使用；如需，明确告知用户风险 |
+| **个人微信** | ❌ 无官方开放 | 第三方中间件 iPad 协议(WeChatPadPro/Gewechat) | 文本/图片/语音/文件 | 高 | ⚠️ **高（封号风险，违反微信协议）** | 不建议生产使用；接入方式见「一·八」 |
 
 **关键说明**
 
@@ -102,6 +102,64 @@
 - ⚠️ **回复窗口**：钉钉每条上行消息带一个临时 `sessionWebhook`（约 **1.5 小时**时效）。
   适配器缓存它做被动回复；窗口过期需用户再次发言。主动推送需另配自定义机器人 webhook（未实现）。
 - ⚠️ 入站图片/语音的 `downloadCode` 换取真实内容需二次 API（暂记为占位/fileId），为后续项。
+
+---
+
+## 一·八、个人微信（方案说明，⚠️ 高风险，未内置）
+
+个人微信**没有任何官方开放接口**，无法像飞书/钉钉那样合规接入。所有能收发个人微信消息的方案
+都依赖第三方「iPad 协议中间件」——用一个独立服务模拟 iPad 微信客户端登录你的号，再把消息通过
+HTTP/WebSocket 暴露出来。AstrBot、LangBot 等框架走的都是这条路。
+
+### 主流中间件
+
+| 中间件 | 说明 | 现状 |
+|--------|------|------|
+| **WeChatPadPro** | iPad 协议，Docker 部署，提供 HTTP API + WebSocket 消息推送 | ✅ 目前主流（AstrBot v3.5.10+ 支持） |
+| Gewechat | 同为 iPad 协议 | ❌ 已停止维护 |
+| Wechaty + 各种 puppet | 抽象层，puppet 后端多为付费/受限 | 可选 |
+
+### WeChatPadPro 接入架构
+
+```
+个人微信手机 ── 扫码登录 ──> WeChatPadPro(Docker, iPad协议中间件)
+                                    │  WebSocket 推送入站消息
+                                    │  HTTP API 发送出站消息
+                                    ▼
+                              网关 wechat 适配器 ──> GatewayCore ──> ...
+```
+
+**部署与鉴权（以 WeChatPadPro 为例，具体以你部署的版本文档为准）**
+
+1. Docker 部署 WeChatPadPro（含 mysql/redis），设置 `ADMIN_KEY` 环境变量。
+2. 用 `ADMIN_KEY` 调管理端点生成一个授权 key（形如 `/login/GenAuthKey2?key=<ADMIN_KEY>&...`）。
+3. 用该 key 发起扫码登录（`/login/...`），手机微信扫码，登录成功后拿到该号的会话 **token/key**。
+4. 网关侧配置：中间件 `baseUrl`(http)、`wsUrl`、`token`。
+5. 入站：连 WebSocket `ws://<host>:<port>/ws/GetSyncMsg?key=<token>`，SDK 持续推送消息 JSON。
+6. 出站：HTTP POST 到发送端点（如 `/message/SendTextMessage`，字段含 `ToUserName`/`Content` 等），
+   群聊 `ToUserName` 为 `xxx@chatroom`，单聊为对方 wxid。
+
+> ⚠️ **各版本/分支的确切端点路径与字段名不一致**（WeChatPadPro 有多个 fork）。实现适配器时
+> 必须对照**你实际部署的那个版本**的接口文档核对，或把端点路径做成可配置项。
+
+### 风险与限制（务必知悉）
+
+- **封号风险高**：iPad 协议属非官方登录，微信风控可能导致**限制登录 / 封号**，尤其新号、异地登录。
+- **违反微信用户协议**：属灰色地带，**不建议用于生产 / 商业**。
+- **需同省登录**：中间件服务器与手机常态所在地最好同省，异地极易触发安全验证。
+- **需额外部署**：不像其它平台“填个 token 就行”，必须自己跑一套 WeChatPadPro（含数据库）。
+- **稳定性**：中间件本身可能因微信版本升级而失效。
+
+### 若要接入（适配器设计要点）
+
+与飞书/钉钉同构：新建 `server/adapters/wechat-adapter.js` 继承 `PlatformAdapter`；
+- `connect()`：建立到 WeChatPadPro 的 WebSocket（入站），HTTP 客户端就绪（出站）；断线走基类自愈重连。
+- 入站：解析中间件推送的消息 JSON → `InboundMessage`（`chatId` 用 wxid / `@chatroom`；群聊按 @ 或前缀判定）。
+- 出站：`send()` 调中间件 HTTP 发送端点；图片/语音按其 API 上传或传 URL。
+- 端点路径、字段名建议全部**可配置**（`config.adapters.wechat.endpoints.*`），以适配不同版本。
+
+**因封号风险与“需自建中间件 + 版本差异大”，本网关默认不内置该适配器**；如确需，建议作为
+「实验性 / 自担风险」选项单独启用。
 
 ---
 
