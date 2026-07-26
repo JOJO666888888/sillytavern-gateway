@@ -88,6 +88,34 @@ export class PluginManager {
 
         // 插件状态（启用/禁用）
         this.pluginStates = new Map(); // name -> { enabled: boolean }
+        // 状态持久化文件（重启后保留用户的启用/禁用选择）
+        this.statesFile = path.join(this.dataDir, '_states.json');
+        this._persistedStates = this._loadStates();
+    }
+
+    /** 从磁盘读取已持久化的插件启用/禁用状态 */
+    _loadStates() {
+        try {
+            if (fs.existsSync(this.statesFile)) {
+                return JSON.parse(fs.readFileSync(this.statesFile, 'utf-8')) || {};
+            }
+        } catch (e) {
+            logger.warn(`读取插件状态失败: ${e.message}`);
+        }
+        return {};
+    }
+
+    /** 持久化插件启用/禁用状态（原子写） */
+    _saveStates() {
+        const obj = {};
+        for (const [name, st] of this.pluginStates) obj[name] = { enabled: st.enabled };
+        try {
+            const tmp = this.statesFile + '.tmp';
+            fs.writeFileSync(tmp, JSON.stringify(obj, null, 2), { mode: 0o600 });
+            fs.renameSync(tmp, this.statesFile);
+        } catch (e) {
+            logger.warn(`保存插件状态失败: ${e.message}`);
+        }
     }
 
     /**
@@ -96,19 +124,27 @@ export class PluginManager {
     async init() {
         logger.info('正在初始化插件系统...');
 
-        // 加载所有插件
-        await this.loader.loadAll((name) => this.loadPluginConfig(name));
+        // 是否启用：持久化状态优先于 plugin.json 的 enabled 字段
+        const isEnabled = (name, meta) => {
+            const persisted = this._persistedStates[name];
+            if (persisted && typeof persisted.enabled === 'boolean') return persisted.enabled;
+            return meta.enabled !== false;
+        };
 
-        // 注册所有已加载插件的命令和监听器
+        // 加载所有插件（禁用的只加载不启动，不执行 onLoad）
+        await this.loader.loadAll((name) => this.loadPluginConfig(name), isEnabled);
+
+        // 注册所有已启用插件的命令和监听器
         for (const [name, loaded] of this.loader.getAllPlugins()) {
             const { instance, meta } = loaded;
-            const enabled = meta.enabled !== false;
+            const enabled = isEnabled(name, meta);
             this.pluginStates.set(name, { enabled });
 
             if (enabled) {
                 this.registerPlugin(instance);
             }
         }
+        this._saveStates();
 
         // 注入 CommandRouter 到 GatewayCore，用于连接时自动同步命令
         this.gateway.setCommandRouter(this.commandRouter);
@@ -172,6 +208,10 @@ export class PluginManager {
     unregisterPlugin(pluginName) {
         this.commandRouter.unregisterByPlugin(pluginName);
         this.eventPipeline.unregisterByPlugin(pluginName);
+        // 框架代管回收：强制移除该插件注册的出站过滤器（安全网，即便插件 onUnload 有 bug）
+        if (this.gateway.removeOutboundFiltersByPlugin) {
+            this.gateway.removeOutboundFiltersByPlugin(pluginName);
+        }
     }
 
     /**
@@ -208,12 +248,24 @@ export class PluginManager {
     async enablePlugin(name) {
         const state = this.pluginStates.get(name);
         if (!state) return { success: false, error: `插件 ${name} 不存在` };
+        if (state.enabled) return { success: true, message: `插件 ${name} 已是启用状态` }; // 幂等
 
-        state.enabled = true;
         const instance = this.loader.getPlugin(name);
         if (instance) {
+            // 对称生命周期：启用时执行 onLoad（重新注册出站过滤器/定时器等资源）
+            if (!instance._loaded) {
+                try {
+                    await instance.onLoad();
+                    instance._loaded = true;
+                } catch (e) {
+                    logger.error(`插件 ${name} onLoad 失败: ${e.message}`);
+                    return { success: false, error: `启用失败: ${e.message}` };
+                }
+            }
             this.registerPlugin(instance);
         }
+        state.enabled = true;
+        this._saveStates();
 
         // 重新同步命令到所有平台
         const commands = this.commandRouter.getCommandsForSync();
@@ -229,9 +281,27 @@ export class PluginManager {
     async disablePlugin(name) {
         const state = this.pluginStates.get(name);
         if (!state) return { success: false, error: `插件 ${name} 不存在` };
+        if (!state.enabled) return { success: true, message: `插件 ${name} 已是禁用状态` }; // 幂等
 
-        state.enabled = false;
+        const instance = this.loader.getPlugin(name);
+        if (instance) {
+            // 对称生命周期：禁用时执行 onUnload，让插件释放自有资源（定时器/连接等）
+            if (instance._loaded && typeof instance.onUnload === 'function') {
+                try { await instance.onUnload(); } catch (e) { logger.warn(`插件 ${name} onUnload 出错: ${e.message}`); }
+            }
+            // 框架代管回收：强制注销该插件的出站过滤器（安全网）
+            if (instance._managedUnregister) {
+                for (const fn of instance._managedUnregister) {
+                    try { fn(); } catch (_) { /* ignore */ }
+                }
+                instance._managedUnregister.length = 0;
+            }
+            instance._loaded = false;
+        }
+        // 注销命令/监听器 + 强制移除出站过滤器
         this.unregisterPlugin(name);
+        state.enabled = false;
+        this._saveStates();
 
         // 重新同步命令到所有平台（移除已禁用插件的命令）
         const commands = this.commandRouter.getCommandsForSync();
@@ -248,10 +318,12 @@ export class PluginManager {
         const config = this.loadPluginConfig(name);
         this.unregisterPlugin(name);
 
-        const instance = await this.loader.reloadPlugin(name, config);
+        const state = this.pluginStates.get(name);
+        const enabled = state?.enabled !== false;
+        // 禁用的插件重载时不启动（不执行 onLoad）
+        const instance = await this.loader.reloadPlugin(name, config, { autoStart: enabled });
         if (instance) {
-            const state = this.pluginStates.get(name);
-            if (state?.enabled !== false) {
+            if (enabled) {
                 this.registerPlugin(instance);
             }
             // 重新同步命令到所有平台
@@ -269,6 +341,7 @@ export class PluginManager {
         this.unregisterPlugin(name);
         await this.loader.unloadPlugin(name);
         this.pluginStates.delete(name);
+        this._saveStates();
         return { success: true, message: `插件 ${name} 已卸载` };
     }
 

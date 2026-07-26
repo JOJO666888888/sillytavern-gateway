@@ -240,10 +240,11 @@ export class GatewayCore extends EventEmitter {
             filter,
             name: options.name || 'anonymous',
             priority: options.priority ?? 100,
+            pluginName: options.pluginName || null, // 归属插件（供禁用/卸载时框架强制回收）
         };
         this.outboundFilters.push(entry);
         this.outboundFilters.sort((a, b) => a.priority - b.priority);
-        logger.info(`出站过滤器已注册: ${entry.name} (priority: ${entry.priority})`);
+        logger.info(`出站过滤器已注册: ${entry.name} (priority: ${entry.priority}${entry.pluginName ? `, plugin: ${entry.pluginName}` : ''})`);
         return () => {
             const idx = this.outboundFilters.indexOf(entry);
             if (idx > -1) this.outboundFilters.splice(idx, 1);
@@ -256,6 +257,20 @@ export class GatewayCore extends EventEmitter {
      */
     removeOutboundFilter(name) {
         this.outboundFilters = this.outboundFilters.filter(f => f.name !== name);
+    }
+
+    /**
+     * 移除某插件注册的所有出站过滤器（框架代管回收的安全网）
+     * @param {string} pluginName
+     * @returns {number} 移除数量
+     */
+    removeOutboundFiltersByPlugin(pluginName) {
+        if (!pluginName) return 0;
+        const before = this.outboundFilters.length;
+        this.outboundFilters = this.outboundFilters.filter(f => f.pluginName !== pluginName);
+        const removed = before - this.outboundFilters.length;
+        if (removed > 0) logger.info(`已回收插件 ${pluginName} 的 ${removed} 个出站过滤器`);
+        return removed;
     }
 
     /**

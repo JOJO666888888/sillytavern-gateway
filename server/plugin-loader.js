@@ -13,6 +13,27 @@ const logger = createLogger('plugin-loader');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
+ * 用 plugin.json 的 config schema 默认值补全缺失配置项。
+ * 让插件无需各自手写 _ensureDefaults —— schema 声明的 default 加载期即生效。
+ * @param {object} schema - plugin.json 的 config 字段 { key: { type, default, ... } }
+ * @param {object} config - 已持久化的插件配置
+ * @returns {object} 补全后的配置
+ */
+export function applySchemaDefaults(schema, config = {}) {
+    if (!schema || typeof schema !== 'object') return { ...config };
+    const merged = { ...config };
+    for (const [key, def] of Object.entries(schema)) {
+        if (merged[key] === undefined && def && Object.prototype.hasOwnProperty.call(def, 'default')) {
+            // 深拷贝默认值，避免多个插件实例共享同一引用
+            merged[key] = def.default !== null && typeof def.default === 'object'
+                ? structuredClone(def.default)
+                : def.default;
+        }
+    }
+    return merged;
+}
+
+/**
  * 插件加载器
  */
 export class PluginLoader {
@@ -82,7 +103,8 @@ export class PluginLoader {
      * @param {object} pluginConfig - 插件私有配置
      * @returns {Promise<GatewayPlugin|null>}
      */
-    async loadPlugin(pluginDir, meta, pluginConfig = {}) {
+    async loadPlugin(pluginDir, meta, pluginConfig = {}, options = {}) {
+        const { autoStart = true } = options;
         const mainFile = meta.main || 'index.js';
         const mainPath = path.join(pluginDir, mainFile);
 
@@ -109,19 +131,39 @@ export class PluginLoader {
                 return null;
             }
 
+            // schema default 注入：用 plugin.json 的 config schema 默认值补全缺失项，
+            // 使插件无需各自手写 _ensureDefaults
+            const mergedConfig = applySchemaDefaults(meta.config, pluginConfig);
+
+            // 每插件代管注册：包装 gateway，使 addOutboundFilter 自动标注 pluginName
+            // 并记录注销函数，禁用/卸载时框架可强制回收（不再依赖插件自觉清理）
+            const managedUnregister = [];
+            const scopedServices = {
+                ...this.services,
+                gateway: this._scopeGateway(this.services.gateway, meta.name, managedUnregister),
+            };
+
             // 实例化
             const instance = new PluginClass({
-                pluginConfig,
-                services: this.services,
+                pluginConfig: mergedConfig,
+                services: scopedServices,
             });
 
             // 注入 plugin.json 元数据
             instance.meta = { ...instance.meta, ...meta };
             instance._pluginDir = pluginDir;
+            instance._managedUnregister = managedUnregister;
+            // logger 命名时机修正：实例化后 meta 已注入，重建带真实名字的 logger
+            instance.logger = createLogger(`plugin:${meta.name}`);
 
-            // 调用 onLoad 生命周期
-            await instance.onLoad();
-            instance._loaded = true;
+            // 调用 onLoad 生命周期（禁用的插件不启动，避免拉起资源如 Chrome/定时器）
+            if (autoStart) {
+                await instance.onLoad();
+                instance._loaded = true;
+            } else {
+                instance._loaded = false;
+                logger.info(`插件 ${meta.name} 已加载但未启动（禁用状态）`);
+            }
 
             this.loadedPlugins.set(meta.name, {
                 instance,
@@ -139,6 +181,30 @@ export class PluginLoader {
     }
 
     /**
+     * 为单个插件包装 gateway：拦截 addOutboundFilter 以自动标注归属插件、
+     * 记录注销函数。其余方法透传（绑定 this 到真实 gateway）。
+     * @param {object} gateway
+     * @param {string} pluginName
+     * @param {Function[]} managed - 收集注销函数的数组
+     */
+    _scopeGateway(gateway, pluginName, managed) {
+        if (!gateway) return gateway;
+        return new Proxy(gateway, {
+            get(target, prop, receiver) {
+                if (prop === 'addOutboundFilter') {
+                    return (filter, opts = {}) => {
+                        const unregister = target.addOutboundFilter(filter, { ...opts, pluginName });
+                        if (typeof unregister === 'function') managed.push(unregister);
+                        return unregister;
+                    };
+                }
+                const val = Reflect.get(target, prop, receiver);
+                return typeof val === 'function' ? val.bind(target) : val;
+            },
+        });
+    }
+
+    /**
      * 卸载单个插件
      * @param {string} name - 插件名称
      */
@@ -150,17 +216,30 @@ export class PluginLoader {
         }
 
         try {
-            await loaded.instance.onUnload();
+            if (loaded.instance._loaded) {
+                await loaded.instance.onUnload();
+            }
+            this._runManagedUnregister(loaded.instance);
             loaded.instance._loaded = false;
             this.loadedPlugins.delete(name);
             logger.info(`插件已卸载: ${name}`);
             return true;
         } catch (error) {
             logger.error(`卸载插件 ${name} 时出错: ${error.message}`);
-            // 即使 onUnload 出错也强制移除
+            // 即使 onUnload 出错也强制回收代管注册并移除
+            this._runManagedUnregister(loaded.instance);
             this.loadedPlugins.delete(name);
             return true;
         }
+    }
+
+    /** 执行并清空某插件的代管注销函数（出站过滤器等） */
+    _runManagedUnregister(instance) {
+        if (!instance?._managedUnregister) return;
+        for (const fn of instance._managedUnregister) {
+            try { fn(); } catch (e) { logger.warn(`代管注销执行失败: ${e.message}`); }
+        }
+        instance._managedUnregister.length = 0;
     }
 
     /**
@@ -168,7 +247,7 @@ export class PluginLoader {
      * @param {string} name - 插件名称
      * @param {object} pluginConfig - 插件配置
      */
-    async reloadPlugin(name, pluginConfig = {}) {
+    async reloadPlugin(name, pluginConfig = {}, options = {}) {
         const loaded = this.loadedPlugins.get(name);
         if (!loaded) {
             logger.warn(`插件 ${name} 未加载，无法重载`);
@@ -177,7 +256,7 @@ export class PluginLoader {
 
         const { meta, path: pluginDir } = loaded;
         await this.unloadPlugin(name);
-        return await this.loadPlugin(pluginDir, meta, pluginConfig);
+        return await this.loadPlugin(pluginDir, meta, pluginConfig, options);
     }
 
     /**
@@ -185,13 +264,15 @@ export class PluginLoader {
      * @param {Function} getConfig - 获取插件配置的函数 (name) => config
      * @returns {Map<string, GatewayPlugin>}
      */
-    async loadAll(getConfig = () => ({})) {
+    async loadAll(getConfig = () => ({}), isEnabled = () => true) {
         const discovered = this.discoverPlugins();
         logger.info(`发现 ${discovered.length} 个插件`);
 
         for (const plugin of discovered) {
             const config = getConfig(plugin.name);
-            await this.loadPlugin(plugin.dir, plugin.meta, config);
+            // 禁用的插件只加载不启动（不执行 onLoad，避免拉起 Chrome/定时器等资源）
+            const autoStart = isEnabled(plugin.name, plugin.meta) !== false;
+            await this.loadPlugin(plugin.dir, plugin.meta, config, { autoStart });
         }
 
         return this.loadedPlugins;
