@@ -219,13 +219,19 @@ class ConfigManager {
         const token = this.get('server.authToken');
         if (requireAuth && (!token || typeof token !== 'string')) {
             const generated = crypto.randomBytes(24).toString('hex');
-            this.set('server.authToken', generated);
+            const persisted = this.set('server.authToken', generated);
             // 这里**不打印 token 本身**：日志管道会把长十六进制串脱敏成
             // <redacted-hex>（防止用户贴日志求助时泄露凭据），打了也看不见。
-            // token 已随 set() 落盘，指路让用户自己取。
+            // token 随 set() 落盘后，指路让用户自己取。
             logger.warn('已自动生成网关鉴权 token 并写入配置文件，需填进 SillyTavern 网关面板才能连接。');
             logger.warn('取用方式：npm run token（容器内 docker compose exec gateway npm run token）');
             logger.warn('或自行指定：设置环境变量 GATEWAY_AUTH_TOKEN，此时 token 不会落盘。');
+            if (!persisted) {
+                // 没落盘意味着 npm run token 读不到它，而且下次重启会换一个新的
+                // ——用户会陷入"每次重启都要重填 token"的怪圈却不知道为什么。
+                logger.error(`但配置写盘失败（${this.lastSaveError}）：npm run token 取不到它，` +
+                    '且重启后会重新生成。请修复配置目录写权限，或改用 GATEWAY_AUTH_TOKEN 环境变量。');
+            }
         }
     }
 
@@ -260,11 +266,18 @@ class ConfigManager {
 
     /**
      * 保存配置到文件（原子写：tmp + rename，权限 0600 防止同机他人读取凭据）
+     *
+     * 返回是否真的写成功，失败原因记在 this.lastSaveError。
+     * 调用方**必须**看返回值：以前这里吞掉异常直接返回，于是只读挂载/磁盘满时
+     * 面板照样弹"配置已更新"，用户重启后才发现改动没了。
+     *
+     * @returns {boolean}
      */
     save() {
         if (this._readonly) {
-            logger.warn('配置处于只读保护状态（加载时检测到损坏），本次保存已跳过');
-            return;
+            this.lastSaveError = '配置处于只读保护状态（加载时检测到配置文件损坏）';
+            logger.warn(`${this.lastSaveError}，本次保存已跳过`);
+            return false;
         }
         try {
             if (!fs.existsSync(CONFIG_DIR)) {
@@ -274,8 +287,12 @@ class ConfigManager {
             fs.writeFileSync(tmpFile, JSON.stringify(this._configForPersist(), null, 2), { encoding: 'utf-8', mode: 0o600 });
             fs.renameSync(tmpFile, CONFIG_FILE);
             try { fs.chmodSync(CONFIG_FILE, 0o600); } catch (_) { /* Windows 忽略 */ }
+            this.lastSaveError = null;
+            return true;
         } catch (error) {
+            this.lastSaveError = error.message;
             logger.error(`配置保存失败: ${error.message}`);
+            return false;
         }
     }
 
@@ -308,7 +325,7 @@ class ConfigManager {
             obj = obj[keys[i]];
         }
         obj[keys[keys.length - 1]] = value;
-        this.save();
+        return this.save();
     }
 
     /**
@@ -352,7 +369,7 @@ class ConfigManager {
      */
     update(partial) {
         this.config = this.deepMerge(this.config, partial);
-        this.save();
+        return this.save();
     }
 
     /**

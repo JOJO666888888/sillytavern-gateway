@@ -126,3 +126,50 @@ describe('默认配置完整性', () => {
         assert.strictEqual(configManager.get('不存在.的.路径'), undefined);
     });
 });
+
+describe('配置写盘失败必须能被上层感知', () => {
+    /**
+     * 这条防的是"静默降级"：save() 以前吞掉异常直接返回，
+     * 于是只读挂载 / 磁盘满时面板照样弹"配置已更新"，
+     * 用户重启后才发现改动没了，而且完全不知道发生过什么。
+     */
+    test('save() 返回布尔，成功时为 true 且清空 lastSaveError', () => {
+        const ok = configManager.save();
+        assert.strictEqual(ok, true);
+        assert.strictEqual(configManager.lastSaveError, null);
+    });
+
+    test('写盘抛异常时 save() 返回 false 并记录原因', (t) => {
+        t.mock.method(fs, 'writeFileSync', () => {
+            const e = new Error('EROFS: read-only file system');
+            e.code = 'EROFS';
+            throw e;
+        });
+        assert.strictEqual(configManager.save(), false);
+        assert.match(configManager.lastSaveError, /read-only/);
+    });
+
+    test('只读保护状态下 save() 返回 false 而非静默跳过', () => {
+        const prev = configManager._readonly;
+        configManager._readonly = true;
+        try {
+            assert.strictEqual(configManager.save(), false);
+            assert.match(configManager.lastSaveError, /只读/);
+        } finally {
+            configManager._readonly = prev;
+        }
+    });
+
+    test('update() / set() 把写盘结果透传给调用方', (t) => {
+        assert.strictEqual(configManager.update({ autoReply: { responseDelay: 501 } }), true);
+        assert.strictEqual(configManager.set('autoReply.responseDelay', 502), true);
+
+        t.mock.method(fs, 'writeFileSync', () => { throw new Error('ENOSPC: no space left on device'); });
+        assert.strictEqual(configManager.update({ autoReply: { responseDelay: 503 } }), false);
+        assert.strictEqual(configManager.set('autoReply.responseDelay', 504), false);
+
+        // 内存里仍然改掉了——这正是"报成功"最误导人的地方：读回来是新值，
+        // 磁盘上还是旧值。所以必须靠返回值区分，不能靠再 get 一次。
+        assert.strictEqual(configManager.get('autoReply.responseDelay'), 504);
+    });
+});

@@ -335,7 +335,15 @@ async function apiRequest(endpoint, options = {}) {
             throw new Error('鉴权失败（401）：请在面板填入正确的网关 Token');
         }
         if (!response.ok) {
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            // 后端出错时会在 body 里给出具体原因（如"配置写入磁盘失败：只读挂载"）。
+            // 只报 statusText 的话用户只能看到"Internal Server Error"，
+            // 等于把唯一有用的信息扔了。
+            let detail = '';
+            try {
+                const body = await response.json();
+                if (body?.error) detail = body.error;
+            } catch (_) { /* 非 JSON 响应，退回 statusText */ }
+            throw new Error(detail || `HTTP ${response.status}: ${response.statusText}`);
         }
 
         return await response.json();

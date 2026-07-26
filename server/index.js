@@ -231,7 +231,15 @@ app.get('/api/gateway/config', (req, res) => {
  */
 app.post('/api/gateway/config', (req, res) => {
     try {
-        configManager.update(req.body);
+        // 内存里改成了，但没落盘就不算成功——只读挂载 / 磁盘满的时候，
+        // 报 success 会让用户以为存好了，直到重启才发现改动全没了。
+        const persisted = configManager.update(req.body);
+        if (!persisted) {
+            return res.status(500).json({
+                success: false,
+                error: `配置已在内存中生效，但写入磁盘失败：${configManager.lastSaveError || '未知原因'}。重启后改动会丢失。`,
+            });
+        }
         res.json({ success: true, message: '配置已更新' });
     } catch (error) {
         res.status(400).json({ success: false, error: error.message });
