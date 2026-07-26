@@ -223,6 +223,42 @@
                 </div>
             </div>
 
+            <!-- QQ 官方机器人 -->
+            <div class="gateway-adapter-config">
+                <div class="gateway-adapter-header" data-toggle="gateway_qo_config">
+                    <span class="gateway-adapter-title">🐧 QQ官方 <span id="gateway_panel_qo_state" class="gateway-adapter-state">-</span></span>
+                    <span class="gateway-adapter-controls">
+                        <button class="menu_button gateway-adapter-verify" data-platform="qqofficial" title="验证连接"><i class="fa-solid fa-plug-circle-check"></i></button>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="gateway_panel_qo_enabled">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </span>
+                </div>
+                <div id="gateway_qo_config" class="gateway-adapter-body" style="display:none;">
+                    <div class="gateway-field">
+                        <label>AppID</label>
+                        <input type="text" id="gateway_panel_qo_app_id" class="text_pole" placeholder="开放平台 AppID">
+                    </div>
+                    <div class="gateway-field">
+                        <label>AppSecret</label>
+                        <input type="password" id="gateway_panel_qo_secret" class="text_pole" placeholder="AppSecret...">
+                    </div>
+                    <div class="gateway-field">
+                        <label>Token（可选）</label>
+                        <input type="password" id="gateway_panel_qo_token" class="text_pole" placeholder="机器人 Token（部分接口需要）">
+                    </div>
+                    <div class="gateway-field">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="gateway_panel_qo_sandbox"> 沙箱环境
+                        </label>
+                    </div>
+                    <div class="gateway-field">
+                        <span class="gateway-hint">腾讯官方机器人（≠ OneBot）。需先执行 <code>npm install qq-official-bot</code>。群/频道消息由 @ 触发；回复有 5 分钟被动窗口。详见 docs/ADDING_PLATFORMS.md</span>
+                    </div>
+                </div>
+            </div>
+
             <button id="gateway_panel_save_config" class="menu_button gateway-save-btn">
                 <i class="fa-solid fa-floppy-disk"></i> 保存配置
             </button>

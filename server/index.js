@@ -12,6 +12,7 @@ import { OneBotAdapter } from './adapters/onebot-adapter.js';
 import { TelegramAdapter } from './adapters/telegram-adapter.js';
 import { DiscordAdapter } from './adapters/discord-adapter.js';
 import { FeishuAdapter } from './adapters/feishu-adapter.js';
+import { QQOfficialAdapter } from './adapters/qqofficial-adapter.js';
 import { OutboundMessage } from './adapters/base-adapter.js';
 import { PluginManager } from './plugin-manager.js';
 import { mediaStore } from './media/media-store.js';
@@ -107,6 +108,7 @@ const ADAPTER_REGISTRY = {
     telegram: TelegramAdapter,
     discord: DiscordAdapter,
     feishu: FeishuAdapter,
+    qqofficial: QQOfficialAdapter,
 };
 
 /**

@@ -29,6 +29,7 @@
     "uuid": "^9.0.0"
   },
   "optionalDependencies": {
-    "@larksuiteoapi/node-sdk": "^1.30.0"
+    "@larksuiteoapi/node-sdk": "^1.30.0",
+    "qq-official-bot": "^2.5.0"
   }
 }

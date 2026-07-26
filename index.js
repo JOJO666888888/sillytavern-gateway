@@ -790,7 +790,7 @@ function updateConnectionStatus(connected) {
 function updateStatusUI(status) {
     if (!status?.adapters) return;
 
-    const platforms = ['qq', 'telegram', 'discord', 'feishu'];
+    const platforms = ['qq', 'telegram', 'discord', 'feishu', 'qqofficial'];
     const stateTexts = {
         connected: '在线',
         disconnected: '离线',
@@ -830,6 +830,7 @@ function getPlatformIcon(platform) {
         telegram: '✈️',
         discord: '🎮',
         feishu: '🐦',
+        qqofficial: '🐧',
     };
     return icons[platform] || '💬';
 }
@@ -840,6 +841,7 @@ const PLATFORM_PREFIX = {
     telegram: 'tg',
     discord: 'dc',
     feishu: 'fs',
+    qqofficial: 'qo',
 };
 
 /**
@@ -1591,6 +1593,13 @@ async function savePanelConfig() {
                         domain: $('#gateway_panel_fs_domain').val(),
                         requireMention: $('#gateway_panel_fs_mention').is(':checked'),
                     },
+                    qqofficial: {
+                        enabled: $('#gateway_panel_qo_enabled').is(':checked'),
+                        appId: $('#gateway_panel_qo_app_id').val().trim(),
+                        secret: $('#gateway_panel_qo_secret').val(),
+                        token: $('#gateway_panel_qo_token').val(),
+                        sandbox: $('#gateway_panel_qo_sandbox').is(':checked'),
+                    },
                 },
             }),
         });
@@ -1603,6 +1612,7 @@ async function savePanelConfig() {
                 { name: 'telegram', prefix: 'tg' },
                 { name: 'discord', prefix: 'dc' },
                 { name: 'feishu', prefix: 'fs' },
+                { name: 'qqofficial', prefix: 'qo' },
             ];
             let anyStarted = false;
             for (const { name, prefix } of adapterChecks) {
@@ -1654,6 +1664,13 @@ async function loadPanelConfig() {
             $('#gateway_panel_fs_app_secret').val(adapters.feishu.appSecret);
             $('#gateway_panel_fs_domain').val(adapters.feishu.domain || 'feishu');
             $('#gateway_panel_fs_mention').prop('checked', adapters.feishu.requireMention !== false);
+        }
+        if (adapters.qqofficial) {
+            $('#gateway_panel_qo_enabled').prop('checked', adapters.qqofficial.enabled);
+            $('#gateway_panel_qo_app_id').val(adapters.qqofficial.appId);
+            $('#gateway_panel_qo_secret').val(adapters.qqofficial.secret);
+            $('#gateway_panel_qo_token').val(adapters.qqofficial.token);
+            $('#gateway_panel_qo_sandbox').prop('checked', !!adapters.qqofficial.sandbox);
         }
     } catch (_) { /* 网关未连接时忽略 */ }
 }

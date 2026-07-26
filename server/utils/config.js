@@ -77,6 +77,17 @@ const DEFAULT_CONFIG = {
             requireMention: true,         // 群聊中是否需要@机器人才响应
             mediaBaseUrl: '',             // 网关对外可访问基址(如 http://公网:3210)，用于媒体转发
         },
+        qqofficial: {
+            enabled: false,
+            appId: '',                    // QQ 开放平台 AppID
+            secret: '',                   // QQ 开放平台 AppSecret
+            token: '',                    // 机器人 Token（部分接口需要，可选）
+            sandbox: false,               // 是否沙箱环境
+            enableGroup: true,            // 订阅群 @ 消息
+            enableC2C: true,              // 订阅单聊(C2C)消息
+            enableGuild: true,            // 订阅频道消息
+            allowedChats: [],             // 会话白名单，空=允许所有
+        },
     },
     session: {
         maxHistoryLength: 50,             // 每个会话最大历史消息数
