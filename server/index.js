@@ -13,6 +13,7 @@ import { TelegramAdapter } from './adapters/telegram-adapter.js';
 import { DiscordAdapter } from './adapters/discord-adapter.js';
 import { OutboundMessage } from './adapters/base-adapter.js';
 import { PluginManager } from './plugin-manager.js';
+import { mediaStore } from './media/media-store.js';
 
 const logger = createLogger('server');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -92,26 +93,33 @@ app.use((req, res, next) => {
 });
 
 /**
- * 初始化适配器
+ * 适配器注册表 —— 新增平台只需在此加一行（配置驱动）。
+ * key = 平台名（与 config.adapters.<key> 对应），value = 适配器类。
+ * 新平台步骤：
+ *   1. 在 server/adapters/ 实现继承 PlatformAdapter 的适配器类
+ *   2. 在 config.js DEFAULT_CONFIG.adapters 加默认配置
+ *   3. 在此表加一行
+ * 详见 docs/ADDING_PLATFORMS.md
+ */
+const ADAPTER_REGISTRY = {
+    qq: OneBotAdapter,
+    telegram: TelegramAdapter,
+    discord: DiscordAdapter,
+};
+
+/**
+ * 初始化适配器（遍历注册表，配置驱动）
  */
 function initAdapters() {
-    const qqConfig = configManager.get('adapters.qq');
-    const telegramConfig = configManager.get('adapters.telegram');
-    const discordConfig = configManager.get('adapters.discord');
-
-    // QQ OneBot 适配器
-    const qqAdapter = new OneBotAdapter(qqConfig);
-    gatewayCore.registerAdapter('qq', qqAdapter);
-
-    // Telegram 适配器
-    const telegramAdapter = new TelegramAdapter(telegramConfig);
-    gatewayCore.registerAdapter('telegram', telegramAdapter);
-
-    // Discord 适配器
-    const discordAdapter = new DiscordAdapter(discordConfig);
-    gatewayCore.registerAdapter('discord', discordAdapter);
-
-    logger.info('所有适配器已初始化');
+    for (const [name, AdapterClass] of Object.entries(ADAPTER_REGISTRY)) {
+        try {
+            const cfg = configManager.get(`adapters.${name}`) || {};
+            gatewayCore.registerAdapter(name, new AdapterClass(cfg));
+        } catch (error) {
+            logger.error(`适配器 ${name} 初始化失败: ${error.message}`);
+        }
+    }
+    logger.info(`适配器已初始化: ${Object.keys(ADAPTER_REGISTRY).join(', ')}`);
 }
 
 /**
@@ -146,6 +154,11 @@ function setupMessageHandling() {
 }
 
 // 命令处理已由插件系统的 CommandRouter 接管（内置 /help, /status, /clear）
+
+// ==================== 媒体缓存对外服务 ====================
+// 提供稳定 URL 供各平台拉取媒体（QQ 时效URL/本地渲染图/跨平台转发）。
+// 不在 /api/* 下，故不需要鉴权（平台服务端需匿名拉取）；id 为不可猜的随机值。
+app.get('/media/:id', mediaStore.handler());
 
 // ==================== API 路由 ====================
 

@@ -279,7 +279,8 @@ export class OneBotAdapter extends PlatformAdapter {
             throw new Error('OneBot 未连接');
         }
 
-        const segments = contentToSegments(message.content, message.mediaUrls, message.replyToId);
+        // 使用带类型的 media（语音/视频/文件可正确出站，不再一律当图片）
+        const segments = contentToSegments(message.content, message.media || message.mediaUrls, message.replyToId);
 
         let apiRequest;
         if (message.chatType === 'private') {
@@ -410,9 +411,10 @@ export class OneBotAdapter extends PlatformAdapter {
             senderId: String(event.userId),
             senderName: event.sender?.card || event.sender?.nickname || String(event.userId),
             content: content,
-            mediaUrls: event.mediaUrls,
+            media: event.media,               // 带类型的媒体资产
             timestamp: (event.time || 0) * 1000 || Date.now(),
             mentioned: event.mentioned,
+            replyToId: event.replyToId || '',  // QQ 引用回复此前被丢弃，现已保留
             raw: event.raw,
         });
 

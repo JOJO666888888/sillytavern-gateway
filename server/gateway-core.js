@@ -315,7 +315,9 @@ export class GatewayCore extends EventEmitter {
             // 长文本分段发送
             const segments = adapter.splitMessage(message.content, this.getMaxLength(message.platform));
 
-            for (const segment of segments) {
+            for (let i = 0; i < segments.length; i++) {
+                const segment = segments[i];
+                const isLast = i === segments.length - 1;
                 // 出站去重: 防止消息队列重试时重复发送相同内容到同一目标
                 // R2: skipDedup 标记的消息跳过此检查
                 let dedupKey = null;
@@ -331,6 +333,8 @@ export class GatewayCore extends EventEmitter {
                 const segMsg = new OutboundMessage({
                     ...message,
                     content: segment,
+                    // 媒体只随最后一段发送，避免长文本分段时媒体被重复发送
+                    media: isLast ? (message.media || message.mediaUrls) : [],
                 });
                 await adapter.send(segMsg);
 

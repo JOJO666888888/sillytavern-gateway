@@ -19,18 +19,77 @@ export const ConnectionState = {
 const STABLE_CONNECTION_MS = 30000;
 
 /**
+ * 媒体类型枚举
+ */
+export const MediaType = {
+    IMAGE: 'image',
+    VOICE: 'voice',     // 语音消息（可转写 STT）
+    AUDIO: 'audio',     // 音频文件
+    VIDEO: 'video',
+    FILE: 'file',
+    STICKER: 'sticker',
+};
+
+/**
+ * 统一媒体资产抽象。
+ * 取代原先扁平的 mediaUrls: string[]（丢失类型信息、无法跨平台再上传）。
+ * 一个资产可能通过 url（可直接访问的 http URL）、fileId（平台内文件ID，需二次解析）、
+ * 或 localPath（已缓存到本地的文件）三者之一定位。
+ */
+export class MediaAsset {
+    constructor(data = {}) {
+        this.type = data.type || MediaType.FILE;
+        this.url = data.url || '';           // 直接可访问的 http(s) URL（可能带时效）
+        this.fileId = data.fileId || '';     // 平台文件ID（如 Telegram file_id），需适配器二次解析
+        this.localPath = data.localPath || ''; // 已缓存到本地的文件路径
+        this.mimeType = data.mimeType || '';
+        this.size = data.size || 0;          // 字节
+        this.duration = data.duration || 0;  // 秒（语音/视频）
+        this.name = data.name || '';         // 文件名
+        this.platform = data.platform || ''; // 来源平台
+    }
+
+    static image(url, extra = {}) { return new MediaAsset({ ...extra, type: MediaType.IMAGE, url }); }
+    static voice(url, extra = {}) { return new MediaAsset({ ...extra, type: MediaType.VOICE, url }); }
+    static video(url, extra = {}) { return new MediaAsset({ ...extra, type: MediaType.VIDEO, url }); }
+    static file(url, extra = {}) { return new MediaAsset({ ...extra, type: MediaType.FILE, url }); }
+
+    /** 是否已有可用的直接 URL */
+    hasUrl() { return !!this.url; }
+
+    /** 简短占位文本，用于注入文本上下文 */
+    placeholder() {
+        const label = { image: '图片', voice: '语音', audio: '音频', video: '视频', file: '文件', sticker: '表情' }[this.type] || '媒体';
+        return this.name ? `[${label}:${this.name}]` : `[${label}]`;
+    }
+}
+
+/** 把混合输入（字符串 URL / MediaAsset / 普通对象）规整为 MediaAsset 数组 */
+function normalizeMedia(media, fallbackType = MediaType.IMAGE) {
+    if (!Array.isArray(media)) return [];
+    return media.map(m => {
+        if (m instanceof MediaAsset) return m;
+        if (typeof m === 'string') return new MediaAsset({ type: fallbackType, url: m });
+        return new MediaAsset(m);
+    });
+}
+
+/**
  * 标准入站消息
  */
 export class InboundMessage {
     constructor(data = {}) {
-        this.platform = data.platform || 'unknown';   // 'qq' | 'telegram' | 'discord'
+        this.platform = data.platform || 'unknown';   // 'qq' | 'telegram' | 'discord' | ...
         this.messageId = data.messageId || '';        // 平台原始消息ID
         this.chatId = data.chatId || '';              // 会话标识
         this.chatType = data.chatType || 'private';   // 'private' | 'group' | 'channel'
         this.senderId = data.senderId || '';          // 发送者ID
         this.senderName = data.senderName || '';      // 发送者昵称
         this.content = data.content || '';            // 文本内容
-        this.mediaUrls = data.mediaUrls || [];        // 媒体附件URL列表
+        // 统一媒体资产（带类型）。若仅提供 mediaUrls（旧格式），按 image 规整。
+        this.media = data.media ? normalizeMedia(data.media) : normalizeMedia(data.mediaUrls);
+        // 向后兼容：mediaUrls 始终从 media 派生，保证旧代码可用
+        this.mediaUrls = this.media.map(m => m.url || m.localPath).filter(Boolean);
         this.timestamp = data.timestamp || Date.now();// 时间戳
         this.raw = data.raw || null;                  // 原始平台数据
         this.mentioned = data.mentioned || false;     // 是否@了机器人
@@ -47,7 +106,8 @@ export class OutboundMessage {
         this.chatId = data.chatId || '';
         this.chatType = data.chatType || 'private';
         this.content = data.content || '';
-        this.mediaUrls = data.mediaUrls || [];
+        this.media = data.media ? normalizeMedia(data.media) : normalizeMedia(data.mediaUrls);
+        this.mediaUrls = this.media.map(m => m.url || m.localPath).filter(Boolean);
         this.replyToId = data.replyToId || '';
         this.metadata = data.metadata || {};          // 平台特定元数据
     }

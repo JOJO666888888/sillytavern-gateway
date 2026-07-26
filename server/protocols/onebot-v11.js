@@ -5,6 +5,8 @@
  * 处理 CQ 码解析、消息段转换、API 调用封装
  */
 
+import { MediaAsset, MediaType } from '../adapters/base-adapter.js';
+
 /**
  * 解析 CQ 码消息为结构化消息段
  * @param {string} rawMessage - 包含 CQ 码的原始消息
@@ -80,8 +82,9 @@ function parseCQParams(paramsStr) {
  */
 export function segmentsToContent(segments) {
     let text = '';
-    const mediaUrls = [];
+    const media = [];
     let mentioned = false;
+    let replyToId = '';
 
     for (const seg of segments) {
         switch (seg.type) {
@@ -96,38 +99,45 @@ export function segmentsToContent(segments) {
                 }
                 mentioned = true;
                 break;
-            case 'image':
-                if (seg.data.url) {
-                    mediaUrls.push(seg.data.url);
-                } else if (seg.data.file) {
-                    mediaUrls.push(seg.data.file);
-                }
+            case 'image': {
+                const url = seg.data.url || seg.data.file || '';
+                media.push(new MediaAsset({ type: MediaType.IMAGE, url, platform: 'qq', name: seg.data.file || '' }));
                 text += '[图片] ';
                 break;
-            case 'record':
-                if (seg.data.url) {
-                    mediaUrls.push(seg.data.url);
-                }
+            }
+            case 'record': {
+                const url = seg.data.url || seg.data.file || '';
+                media.push(new MediaAsset({ type: MediaType.VOICE, url, platform: 'qq' }));
                 text += '[语音] ';
                 break;
-            case 'video':
-                if (seg.data.url) {
-                    mediaUrls.push(seg.data.url);
-                }
+            }
+            case 'video': {
+                const url = seg.data.url || seg.data.file || '';
+                media.push(new MediaAsset({ type: MediaType.VIDEO, url, platform: 'qq' }));
                 text += '[视频] ';
                 break;
+            }
+            case 'file': {
+                const url = seg.data.url || seg.data.file || '';
+                media.push(new MediaAsset({ type: MediaType.FILE, url, platform: 'qq', name: seg.data.name || seg.data.file || '' }));
+                text += '[文件] ';
+                break;
+            }
             case 'face':
                 text += `[表情${seg.data.id}] `;
                 break;
             case 'reply':
-                // 回复消息，不添加到文本
+                // 记录引用的消息ID，供上下文关联（此前被完全丢弃）
+                if (seg.data.id) replyToId = String(seg.data.id);
                 break;
             default:
                 text += `[${seg.type}] `;
         }
     }
 
-    return { text: text.trim(), mediaUrls, mentioned };
+    // 向后兼容：从 media 派生 mediaUrls
+    const mediaUrls = media.map(m => m.url).filter(Boolean);
+    return { text: text.trim(), mediaUrls, media, mentioned, replyToId };
 }
 
 /**
@@ -137,7 +147,7 @@ export function segmentsToContent(segments) {
  * @param {string} replyToId - 回复的消息ID
  * @returns {Array} OneBot 消息段数组
  */
-export function contentToSegments(text, mediaUrls = [], replyToId = '') {
+export function contentToSegments(text, media = [], replyToId = '') {
     const segments = [];
 
     // 添加回复
@@ -146,13 +156,37 @@ export function contentToSegments(text, mediaUrls = [], replyToId = '') {
     }
 
     // 添加文本
+    // 关键修复：数组格式消息段的 data.text 不应做 CQ 转义——OneBot 实现不会对
+    // 数组段文本反转义，转义后 [ ] & 会在 QQ 端显示为 &#91; &#93; &amp;，
+    // 导致 Markdown 链接/代码块/角色扮演标记乱码。转义仅适用于字符串格式消息。
     if (text) {
-        segments.push({ type: 'text', data: { text: escapeCQ(text) } });
+        segments.push({ type: 'text', data: { text } });
     }
 
-    // 添加图片
-    for (const url of mediaUrls) {
-        segments.push({ type: 'image', data: { file: url } });
+    // 添加媒体：按类型映射到对应的 OneBot 段（此前一律当图片，语音/视频/文件无法出站）
+    for (const item of media) {
+        // 兼容旧调用：传入字符串数组时按图片处理
+        if (typeof item === 'string') {
+            segments.push({ type: 'image', data: { file: item } });
+            continue;
+        }
+        const file = item.url || item.localPath || '';
+        if (!file) continue;
+        switch (item.type) {
+            case MediaType.VOICE:
+            case MediaType.AUDIO:
+                segments.push({ type: 'record', data: { file } });
+                break;
+            case MediaType.VIDEO:
+                segments.push({ type: 'video', data: { file } });
+                break;
+            case MediaType.FILE:
+                segments.push({ type: 'file', data: { file, name: item.name || '' } });
+                break;
+            case MediaType.IMAGE:
+            default:
+                segments.push({ type: 'image', data: { file } });
+        }
     }
 
     return segments;
@@ -275,11 +309,15 @@ function escapeCQ(text) {
 
 /**
  * CQ 码反转义
+ * 注意 &amp; 必须最后处理，避免把 &#91; 中的 & 提前还原。
+ * 逗号 &#44; 必须还原：CQ 参数值内的逗号按规范转义，不还原会导致
+ * 含逗号的图片URL/文件名残留 &#44; → 媒体下载失效。
  */
 function unescapeCQ(text) {
     return text
         .replace(/&#91;/g, '[')
         .replace(/&#93;/g, ']')
+        .replace(/&#44;/g, ',')
         .replace(/&amp;/g, '&');
 }
 
@@ -350,7 +388,7 @@ export function parseEvent(data) {
 function parseMessageEvent(data) {
     const messageType = data.message_type; // 'private' | 'group'
     const segments = Array.isArray(data.message) ? data.message : parseCQCode(data.raw_message || data.message);
-    const { text, mediaUrls, mentioned } = segmentsToContent(segments);
+    const { text, mediaUrls, media, mentioned, replyToId } = segmentsToContent(segments);
 
     return {
         type: 'message',
@@ -361,7 +399,9 @@ function parseMessageEvent(data) {
         sender: data.sender || {},
         content: text,
         mediaUrls,
+        media,
         mentioned,
+        replyToId,
         segments,
         rawMessage: data.raw_message,
         time: data.time,
