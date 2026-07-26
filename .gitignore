@@ -5,3 +5,4 @@ config/
 *.log
 .env
 .DS_Store
+assets/

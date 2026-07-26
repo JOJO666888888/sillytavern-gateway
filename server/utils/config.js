@@ -110,6 +110,30 @@ const DEFAULT_CONFIG = {
         enabled: true,                    // 是否启用自动回复
         responseDelay: 500,               // 回复延迟 (ms)，模拟打字
     },
+    // 自建推理管线（P2）：网关自己组装 prompt 并调用 LLM，无需挂 SillyTavern 前端。
+    // 默认关闭；开启后入站消息由 native runtime 处理，不再依赖 ST 浏览器页面。
+    runtime: {
+        enabled: false,
+        charactersDir: 'assets/characters',
+        worldbooksDir: 'assets/worldbooks',
+        presetsDir: 'assets/presets',
+        chatsDir: 'data/chats',
+        historyLimit: 30,                 // 注入 prompt 的历史条数
+        worldScanDepth: 5,                // 世界书扫描最近几条消息
+        worldMaxRecursion: 2,             // 世界书递归激活轮数
+        llm: {
+            provider: 'openai',           // 'openai'(含兼容后端) | 'claude' | 'gemini'
+            baseUrl: '',                  // 留空用各 provider 默认；本地后端填如 http://127.0.0.1:11434/v1
+            apiKey: '',
+            model: '',
+            timeout: 120000,
+        },
+        defaults: {                       // 新会话的默认 Profile
+            character: '',
+            preset: '',
+            worldbooks: [],
+        },
+    },
 };
 
 class ConfigManager {

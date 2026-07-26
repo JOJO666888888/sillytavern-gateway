@@ -17,6 +17,8 @@ import { DingTalkAdapter } from './adapters/dingtalk-adapter.js';
 import { OutboundMessage } from './adapters/base-adapter.js';
 import { PluginManager } from './plugin-manager.js';
 import { mediaStore } from './media/media-store.js';
+import { NativeRuntime } from './runtime/pipeline.js';
+import { registerRuntimeCommands } from './runtime/runtime-commands.js';
 
 const logger = createLogger('server');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -27,6 +29,8 @@ app.use(express.json());
 
 // 插件管理器
 let pluginManager = null;
+// 自建推理管线（P2）：启用后网关自己组装 prompt 调 LLM，无需挂 ST 前端
+let nativeRuntime = null;
 
 /**
  * 判断请求 Origin 是否允许跨域。
@@ -151,6 +155,31 @@ function setupMessageHandling() {
             name: message.senderName,
         });
 
+        // ⭐ 自建推理管线（P2）：启用后由网关自己生成回复，不再依赖 ST 浏览器前端
+        if (nativeRuntime) {
+            try {
+                const reply = await nativeRuntime.generate(message.platform, message.chatId, message.content, {
+                    now: Date.now(),
+                });
+                gatewayCore.sendMessage(new OutboundMessage({
+                    platform: message.platform,
+                    chatId: message.chatId,
+                    chatType: message.chatType,
+                    content: reply,
+                }));
+            } catch (error) {
+                logger.error(`[runtime] 生成失败: ${error.message}`);
+                // 明确告知用户，而不是静默无响应
+                gatewayCore.sendMessage(new OutboundMessage({
+                    platform: message.platform,
+                    chatId: message.chatId,
+                    chatType: message.chatType,
+                    content: `⚠️ 生成失败：${error.message}`,
+                }));
+            }
+            return; // 已由自建管线处理，不再走 ST 前端通道
+        }
+
         // 放入入站待处理队列（完整内容 + 唯一 ID + ack 语义），供 ST 前端可靠消费
         gatewayCore.enqueueInbound(message);
 
@@ -250,6 +279,42 @@ app.post('/api/gateway/inbound/ack', (req, res) => {
     const ids = req.body?.ids;
     const removed = gatewayCore.ackInbound(ids || []);
     res.json({ success: true, removed });
+});
+
+// ==================== 自建推理管线 API ====================
+
+/** 运行时状态与资产列表 */
+app.get('/api/runtime/status', (req, res) => {
+    if (!nativeRuntime) {
+        return res.json({ success: true, enabled: false, message: '自建推理管线未启用（config.runtime.enabled=false）' });
+    }
+    res.json({ success: true, enabled: true, assets: nativeRuntime.listAssets(), profiles: nativeRuntime.profiles.list().length });
+});
+
+/** 会话 Profile 列表 */
+app.get('/api/runtime/profiles', (req, res) => {
+    if (!nativeRuntime) return res.status(400).json({ success: false, error: '自建推理管线未启用' });
+    res.json({ success: true, profiles: nativeRuntime.profiles.list() });
+});
+
+/** 更新某会话 Profile（切换角色/预设/世界书/存档） */
+app.post('/api/runtime/profiles/:platform/:chatId', (req, res) => {
+    if (!nativeRuntime) return res.status(400).json({ success: false, error: '自建推理管线未启用' });
+    const { platform, chatId } = req.params;
+    const p = nativeRuntime.profiles.update(platform, chatId, req.body || {});
+    res.json({ success: true, profile: p });
+});
+
+/** 预览 prompt 组装结果（不调用 LLM，便于调试） */
+app.post('/api/runtime/preview', (req, res) => {
+    if (!nativeRuntime) return res.status(400).json({ success: false, error: '自建推理管线未启用' });
+    const { platform, chatId, input } = req.body || {};
+    try {
+        const { messages, sampling } = nativeRuntime.prepare(platform, chatId, input || '');
+        res.json({ success: true, messages, sampling });
+    } catch (error) {
+        res.status(400).json({ success: false, error: error.message });
+    }
 });
 
 /**
@@ -469,6 +534,26 @@ async function startServer() {
     });
     await pluginManager.init();
     pluginManager.registerRoutes(app);
+
+    // 初始化自建推理管线（默认关闭；开启后无需挂 SillyTavern 前端）
+    const runtimeCfg = configManager.get('runtime') || {};
+    if (runtimeCfg.enabled) {
+        try {
+            nativeRuntime = new NativeRuntime({ config: runtimeCfg });
+            registerRuntimeCommands(pluginManager.commandRouter, nativeRuntime);
+            const assets = nativeRuntime.listAssets();
+            logger.info(`🚀 自建推理管线已启用（无需 ST 前端）。资产: 角色卡 ${assets.characters.length} / 世界书 ${assets.worldbooks.length} / 预设 ${assets.presets.length} / 存档 ${assets.archives.length}`);
+            if (!runtimeCfg.llm?.model) {
+                logger.warn('⚠️ runtime.llm.model 未配置，生成会失败。请在 config/gateway.json 的 runtime.llm 中设置 provider/apiKey/model');
+            }
+            if (assets.characters.length === 0) {
+                logger.warn('⚠️ 未发现角色卡。请把 ST 角色卡(.png/.json)放入 assets/characters/');
+            }
+        } catch (error) {
+            logger.error(`自建推理管线初始化失败: ${error.message}`);
+            nativeRuntime = null;
+        }
+    }
 
     // 设置消息处理
     setupMessageHandling();
