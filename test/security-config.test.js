@@ -10,13 +10,32 @@
 import { test, describe, after } from 'node:test';
 import assert from 'node:assert';
 import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import configManager from '../server/utils/config.js';
 
-// 导入 configManager 会在仓库根创建 config/ 目录，测试后清理
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * 导入 configManager 会在仓库根创建 config/ 目录，测试后清理。
+ *
+ * ⚠️ 这里必须用**绝对路径**并且只删仓库自己的，绝不能用相对路径。
+ * 曾经写成 `fs.rmSync('config', {recursive:true})`，那是相对 CWD 的——
+ * 谁在自己的部署目录里跑一次 `npm test`，config/（全部 bot token）、
+ * data/（会话历史、聊天存档、插件配置与数据）就被整个删掉，
+ * 而且测试还是全绿的，没有任何提示。真机上踩过一次。
+ *
+ * 只删本次测试确实由 configManager 创建出来的那份，且路径必须落在仓库内。
+ */
 after(() => {
-    for (const d of ['config', 'data', 'logs']) {
-        try { fs.rmSync(d, { recursive: true, force: true }); } catch (_) { /* ignore */ }
+    for (const name of ['config', 'logs']) {
+        const dir = path.join(REPO_ROOT, name);
+        // 双保险：解析后必须仍在仓库根之下，且不能就是仓库根本身
+        const resolved = path.resolve(dir);
+        if (!resolved.startsWith(REPO_ROOT + path.sep) || resolved === REPO_ROOT) continue;
+        try { fs.rmSync(resolved, { recursive: true, force: true }); } catch (_) { /* ignore */ }
     }
+    // data/ 不删：里面可能有聊天存档等真实数据，而这些测试也并不往里写东西
 });
 
 describe('deepMerge 原型污染防护', () => {

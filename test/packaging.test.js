@@ -234,3 +234,44 @@ describe('落盘一律走原子写', () => {
         });
     }
 });
+
+describe('测试自身不能破坏别人的数据', () => {
+    /**
+     * 真机事故：security-config.test.js 的 after() 钩子写成
+     *   fs.rmSync('config', { recursive: true, force: true })
+     * 这是**相对 CWD** 的路径。在仓库里跑没问题，但谁在自己的部署目录跑一次
+     * `npm test`，config/（全部 bot token）和 data/（会话历史、聊天存档、
+     * 插件配置与积累的数据）就被整个删掉——而且测试全绿，毫无提示。
+     */
+    const testFiles = fs.readdirSync(path.join(ROOT, 'test'))
+        .filter(f => f.endsWith('.test.js') || f === 'helpers.js');
+
+    /** 去掉注释再扫，否则会被"解释这个坑"的说明文字本身绊倒 */
+    function stripComments(src) {
+        return src
+            .replace(/\/\*[\s\S]*?\*\//g, '')
+            .split('\n').map(l => l.replace(/\/\/.*$/, '')).join('\n');
+    }
+
+    test('测试代码里不存在相对路径的递归删除', () => {
+        const offenders = [];
+        for (const f of testFiles) {
+            const src = stripComments(fs.readFileSync(path.join(ROOT, 'test', f), 'utf-8'));
+            // rm/rmSync 第一个参数是字符串字面量 = 相对 CWD，危险
+            const re = /\b(?:fs\.)?rm(?:Sync)?\s*\(\s*(['"`])([^'"`$]+)\1/g;
+            let m;
+            while ((m = re.exec(src))) {
+                offenders.push(f + ' → ' + m[2]);
+            }
+        }
+        assert.deepEqual(offenders, [],
+            '递归删除必须用基于 __dirname 的绝对路径，否则会删掉运行者当前目录下的同名目录');
+    });
+
+    test('清理钩子不碰 data/（可能含真实聊天存档）', () => {
+        const src = fs.readFileSync(path.join(ROOT, 'test', 'security-config.test.js'), 'utf-8');
+        const hook = src.slice(src.indexOf('after('), src.indexOf('describe('));
+        assert.doesNotMatch(hook, /['"`]data['"`]/,
+            'data/ 里可能有用户的聊天存档与插件数据，清理钩子不应包含它');
+    });
+});
