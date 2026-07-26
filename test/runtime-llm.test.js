@@ -7,9 +7,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 import http from 'http';
-import {
-    LLMClient, buildRequest, extractText, extractDelta, buildMultimodalContent,
-} from '../server/runtime/llm-client.js';
+import { LLMClient, buildRequest, extractText, extractDelta, buildMultimodalContent, describeEmptyCompletion } from '../server/runtime/llm-client.js';
 
 /** 起一个返回固定 SSE 流的本地服务器 */
 function sseServer(chunks, { splitAt } = {}) {
@@ -177,5 +175,76 @@ describe('流式生成（真实 SSE 服务器）', () => {
             const client = new LLMClient({ provider: 'openai', baseUrl: `http://127.0.0.1:${srv.address().port}`, model: 'm' });
             await assert.rejects(() => client.generateStream([{ role: 'user', content: 'x' }], {}), /401/);
         } finally { srv.close(); }
+    });
+});
+
+describe('空回复的诊断（推理模型 max_tokens 被思维链吃光）', () => {
+    /**
+     * 真机复现：deepseek 系推理模型把思维链和正文算在同一个 max_tokens 预算里。
+     * 用 max_tokens=60 连打 5 次，3 次正文为空、finish_reason=length、
+     * reasoning_tokens 正好等于 completion_tokens。
+     * 而 ST 预设常把 max_tokens 设成 300 —— 对推理模型就是抛硬币。
+     * 只报"LLM 返回空内容"的话，用户不可能猜到要去调大 max_tokens。
+     */
+    test('思维链吃光预算时给出可操作提示', () => {
+        const msg = describeEmptyCompletion('openai', {
+            choices: [{ finish_reason: 'length', message: { content: '', reasoning_content: '嗯…' } }],
+            usage: { completion_tokens: 60, completion_tokens_details: { reasoning_tokens: 60 } },
+        });
+        assert.match(msg, /max_tokens/);
+        assert.match(msg, /思维链/);
+        assert.match(msg, /60/, '应带上实际用掉的 token 数');
+    });
+
+    test('普通截断（非推理模型）也给提示，但不提思维链', () => {
+        const msg = describeEmptyCompletion('openai', {
+            choices: [{ finish_reason: 'length', message: { content: '' } }],
+            usage: { completion_tokens: 100 },
+        });
+        assert.match(msg, /max_tokens/);
+        assert.doesNotMatch(msg, /思维链/);
+    });
+
+    test('内容过滤单独识别', () => {
+        const msg = describeEmptyCompletion('openai', {
+            choices: [{ finish_reason: 'content_filter', message: { content: '' } }],
+        });
+        assert.match(msg, /过滤/);
+    });
+
+    test('说不出所以然时返回空串，不硬编造原因', () => {
+        assert.strictEqual(describeEmptyCompletion('openai', { choices: [{ finish_reason: 'stop', message: { content: '' } }] }), '');
+        assert.strictEqual(describeEmptyCompletion('openai', {}), '');
+        assert.strictEqual(describeEmptyCompletion('claude', { choices: [{ finish_reason: 'length' }] }), '');
+    });
+
+    test('流式路径传入的精简结构也能判断', () => {
+        // generateStream 只留得下 finish_reason 与 usage，没有 message
+        const msg = describeEmptyCompletion('openai', {
+            choices: [{ finish_reason: 'length' }],
+            usage: { completion_tokens: 60, completion_tokens_details: { reasoning_tokens: 60 } },
+        });
+        assert.match(msg, /思维链/);
+    });
+});
+
+describe('思维链不会漏进正文', () => {
+    test('delta 里只有 reasoning_content 时提取到空串', () => {
+        // 实测流式响应：推理阶段 delta 是 { content: null, reasoning_content: "我们" }
+        assert.strictEqual(extractDelta('openai', {
+            choices: [{ delta: { content: null, reasoning_content: '我们' } }],
+        }), '');
+    });
+
+    test('正文阶段正常提取', () => {
+        assert.strictEqual(extractDelta('openai', {
+            choices: [{ delta: { content: '你好', reasoning_content: null } }],
+        }), '你好');
+    });
+
+    test('非流式：只取 content，不把 reasoning_content 当回复', () => {
+        assert.strictEqual(extractText('openai', {
+            choices: [{ message: { content: '', reasoning_content: '思考过程不该被当成回复' } }],
+        }), '');
     });
 });

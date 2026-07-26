@@ -185,6 +185,49 @@ export function extractText(provider, data) {
 }
 
 /**
+ * 解释"为什么回复是空的"，给出可操作的提示。
+ *
+ * 推理模型（DeepSeek-R1 系、o1/o3、QwQ、GLM-Zero…）把思维链和正文算在同一个
+ * max_tokens 预算里。ST 预设常把 max_tokens 设成 300~1000，对普通模型够用，
+ * 但推理模型可能把预算**全部**花在思维链上，正文一个字都没输出——
+ * 服务端返回 200、finish_reason=length、content 为空字符串。
+ * 实测同一请求连打 5 次，3 次正文为空，是不稳定复现的。
+ *
+ * 这时候只报"LLM 返回空内容"等于什么都没说，用户不可能猜到要去调大 max_tokens。
+ *
+ * @param {string} provider
+ * @param {object} data - 非流式响应体；流式则传 { choices:[{finish_reason}], usage }
+ * @returns {string} 附加说明（无法判断时返回空串）
+ */
+export function describeEmptyCompletion(provider, data) {
+    const p = (provider || 'openai').toLowerCase();
+    if (p === 'claude' || p === 'gemini') return '';
+
+    const choice = data?.choices?.[0] || {};
+    const usage = data?.usage || {};
+    const reasoningTokens = usage.completion_tokens_details?.reasoning_tokens ?? 0;
+    const reasoningText = choice.message?.reasoning_content || '';
+    const isReasoning = reasoningTokens > 0 || reasoningText.length > 0;
+
+    if (choice.finish_reason === 'length' && isReasoning) {
+        const used = usage.completion_tokens ?? '?';
+        return `：模型把 max_tokens 预算(${used})全用在思维链上了，正文没输出。`
+            + '这是推理模型的典型表现——请调大预设里的 max_tokens（建议 ≥1500），'
+            + '或换非推理模型。';
+    }
+    if (choice.finish_reason === 'length') {
+        return '：max_tokens 太小，正文还没开始就被截断了，请调大。';
+    }
+    if (choice.finish_reason === 'content_filter') {
+        return '：被服务端内容过滤拦截了。';
+    }
+    if (isReasoning) {
+        return '：只返回了思维链、没有正文，通常是 max_tokens 不够，请调大。';
+    }
+    return '';
+}
+
+/**
  * 从一条 SSE data 事件中提取增量文本
  * @param {string} provider
  * @param {object} evt - 已 JSON.parse 的事件对象
@@ -272,7 +315,7 @@ export class LLMClient {
             }
             const data = await resp.json();
             const text = extractText(cfg.provider, data);
-            if (!text) throw new Error('LLM 返回空内容');
+            if (!text) throw new Error(`LLM 返回空内容${describeEmptyCompletion(cfg.provider, data)}`);
             return text;
         } finally {
             clearTimeout(timer);
@@ -306,7 +349,14 @@ export class LLMClient {
                 throw new Error(`LLM 流式请求失败 HTTP ${resp.status}: ${errText.slice(0, 300)}`);
             }
             let full = '';
+            // 流式下同样要能解释空回复：把最后一次出现的 finish_reason / usage 留下来，
+            // 供 describeEmptyCompletion 判断是不是"思维链吃光了 max_tokens"
+            let lastFinish = null;
+            let lastUsage = null;
             await parseSSEStream(resp.body, (evt) => {
+                const ch = evt?.choices?.[0];
+                if (ch?.finish_reason) lastFinish = ch.finish_reason;
+                if (evt?.usage) lastUsage = evt.usage;
                 const delta = extractDelta(cfg.provider, evt);
                 if (delta) {
                     full += delta;
@@ -315,7 +365,12 @@ export class LLMClient {
                     }
                 }
             });
-            if (!full) throw new Error('LLM 流式返回空内容');
+            if (!full) {
+                const why = describeEmptyCompletion(cfg.provider, {
+                    choices: [{ finish_reason: lastFinish }], usage: lastUsage,
+                });
+                throw new Error(`LLM 流式返回空内容${why}`);
+            }
             return full;
         } finally {
             clearTimeout(timer);
@@ -333,4 +388,4 @@ export class LLMClient {
     }
 }
 
-export default { LLMClient, buildRequest, extractText, extractDelta, parseSSEStream, buildMultimodalContent };
+export default { LLMClient, buildRequest, extractText, extractDelta, parseSSEStream, buildMultimodalContent, describeEmptyCompletion };
