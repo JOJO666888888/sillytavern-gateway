@@ -275,3 +275,33 @@ describe('测试自身不能破坏别人的数据', () => {
             'data/ 里可能有用户的聊天存档与插件数据，清理钩子不应包含它');
     });
 });
+
+describe('message-to-image 渲染不能依赖 networkidle0', () => {
+    const renderer = fs.readFileSync(
+        path.join(ROOT, 'plugins', 'message-to-image', 'renderer.js'), 'utf-8');
+
+    /**
+     * 真机事故：setContent 用 waitUntil:'networkidle0'。
+     * 我们喂的 HTML 是全内联的，页面不发任何网络请求，所以 networkidle0
+     * 要么立刻满足、要么被浏览器自身的后台连接（组件更新、扩展、Debian 的
+     * chromium 包装脚本注入的 --enable-remote-extensions 等）拖到超时。
+     * 同一份 HTML、同一个 chromium：独立进程 1.8s 渲染完，
+     * systemd 起的服务里 100% 卡满 15s 超时 → 用户只看到"渲染失败，回退为原文本"。
+     * 换 domcontentloaded 后 190ms 完成。
+     */
+    test('setContent 不使用 networkidle0', () => {
+        assert.doesNotMatch(renderer, /waitUntil:\s*['"]networkidle/,
+            'networkidle0 会被浏览器后台连接拖到超时，全内联 HTML 不该用它');
+    });
+
+    test('setContent 用 domcontentloaded', () => {
+        assert.match(renderer, /setContent\([^)]*waitUntil:\s*['"]domcontentloaded['"]/s);
+    });
+
+    test('仍然显式等待字体与图片就绪', () => {
+        // 放弃 networkidle0 之后，外链资源要靠显式等待兜住，否则自定义模板里
+        // 的图片会在加载完成前就被截图
+        assert.match(renderer, /document\.fonts\.ready/);
+        assert.match(renderer, /document\.images/, '应显式等待 <img> 加载完成');
+    });
+});

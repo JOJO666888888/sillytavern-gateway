@@ -446,13 +446,42 @@ ${html}
         const filePath = path.join(this.cacheDir, fileName);
 
         try {
+            // 用 domcontentloaded 而不是 networkidle0。
+            //
+            // 我们喂进去的 HTML 是**全内联**的（模板 + CSS 都是字符串，没有外链
+            // 资源），页面根本不发网络请求。而 networkidle0 的语义是"500ms 内网络
+            // 连接数为 0"——对一个不发请求的页面，它要么立刻满足，要么因为浏览器
+            // 自己的某个后台连接（组件更新、扩展、Debian 的 chromium 包装脚本注入的
+            // --enable-remote-extensions 等）一直不满足，然后卡满 timeout。
+            //
+            // 真机踩过：同一份 HTML、同一个 /usr/bin/chromium，在独立进程里
+            // 1.8 秒渲染完，在 systemd 起的网关服务里 100% 卡满 15 秒超时，
+            // 报 "Navigation timeout of 15000 ms exceeded"，用户只会看到
+            // "渲染失败，回退为原文本"。换成 domcontentloaded 后 190ms 完成。
+            //
+            // 外链资源（用户自定义 baseHtml 里引用图片）由下面显式等待 <img> 兜住，
+            // 比 networkidle0 精确、也不会被无关的后台连接拖死。
             this.logger.debug(`[${renderId}] 步骤2: 设置页面内容 (setContent)`);
-            await page.setContent(fullHtml, { waitUntil: 'networkidle0', timeout: 15000 });
+            await page.setContent(fullHtml, { waitUntil: 'domcontentloaded', timeout: 15000 });
             this.logger.debug(`[${renderId}] 步骤2 完成: 页面内容已加载`);
 
-            this.logger.debug(`[${renderId}] 步骤3: 等待字体渲染 (document.fonts.ready)`);
+            this.logger.debug(`[${renderId}] 步骤3: 等待字体与图片就绪`);
             await page.evaluateHandle('document.fonts.ready');
-            this.logger.debug(`[${renderId}] 步骤3 完成: 字体已就绪`);
+            // 自定义模板可能引用图片（外链或 data:）。逐个等待其 load/error，
+            // 单张最多等 5 秒，避免一张挂掉的图拖垮整次渲染。
+            await page.evaluate(async () => {
+                const imgs = Array.from(document.images || []);
+                await Promise.all(imgs.map((img) => {
+                    if (img.complete) return null;
+                    return new Promise((resolve) => {
+                        const done = () => resolve(null);
+                        img.addEventListener('load', done, { once: true });
+                        img.addEventListener('error', done, { once: true });
+                        setTimeout(done, 5000);
+                    });
+                }));
+            });
+            this.logger.debug(`[${renderId}] 步骤3 完成: 字体与图片已就绪`);
 
             this.logger.debug(`[${renderId}] 步骤4: 查询 .render-root 元素`);
             const element = await page.$('.render-root');
