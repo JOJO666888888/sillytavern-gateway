@@ -348,7 +348,23 @@ async function apiRequest(endpoint, options = {}) {
 
         return await response.json();
     } catch (error) {
-        console.error(`[Gateway] API 请求失败: ${error.message}`);
+        // 区分网络层失败（请求根本没到网关）与业务层失败，给用户可操作的指引。
+        // 典型场景：网关未启动 / 地址端口错 / 网关绑了 127.0.0.1 而浏览器跨机访问 /
+        // CORS 被拦 / token 错（401 已在上面单独处理）。
+        const msg = error?.message || String(error);
+        if (msg === 'Failed to fetch' || /Failed to fetch|NetworkError|Load failed/i.test(msg)) {
+            const url = settings.serverUrl;
+            const friendly = new Error(
+                `无法连接到网关 (${url})。常见原因：\n` +
+                `  1) 网关未启动——先在本机运行 npm start；\n` +
+                `  2) 地址/端口不对——确认 serverUrl 与网关 server.port 一致；\n` +
+                `  3) 跨机访问被拒——若网关绑定 127.0.0.1，外部设备连不上，需把 server.host 改成 0.0.0.0；\n` +
+                `  4) 浏览器跨域被拦——把 ST 页面地址加入网关 server.allowedOrigins。`
+            );
+            console.error(`[Gateway] 网络请求失败: ${msg} -> ${url}`);
+            throw friendly;
+        }
+        console.error(`[Gateway] API 请求失败: ${msg}`);
         throw error;
     }
 }
@@ -1401,8 +1417,27 @@ function bindPanelEvents() {
         saveSettingsDebounced();
     });
 
+    // 启用鉴权开关：立即同步到后端（deepMerge 只改 requireAuth，不动 token）
+    $('#gateway_panel_require_auth').on('change', async function () {
+        const requireAuth = this.checked;
+        try {
+            await apiRequest('/api/gateway/config', {
+                method: 'POST',
+                body: JSON.stringify({ server: { requireAuth } }),
+            });
+            toastr.success(requireAuth ? '已启用鉴权，连接需填入 Token' : '已关闭鉴权：同网络内任何设备均可访问，仅限可信网络使用');
+            // 重新拉取状态，让连接徽标反映最新鉴权要求
+            await fetchGatewayStatus();
+        } catch (error) {
+            // 回滚 UI 到失败前的状态
+            $('#gateway_panel_require_auth').prop('checked', !requireAuth);
+            toastr.error(`切换鉴权失败: ${error.message}`);
+        }
+    });
+
     // 连接按钮
     $('#gateway_panel_connect').on('click', async () => {
+        const btn = $('#gateway_panel_connect');
         const url = $('#gateway_panel_url').val().trim();
         if (url) {
             getSettings().serverUrl = url;
@@ -1410,9 +1445,29 @@ function bindPanelEvents() {
         const token = $('#gateway_panel_auth_token').val().trim();
         getSettings().authToken = token;
         saveSettingsDebounced();
-        await fetchGatewayStatus();
-        startPolling();
-        refreshPanelData();
+
+        const originalHtml = btn.html();
+        btn.prop('disabled', true).html('<i class="fa-solid fa-spinner fa-spin"></i>');
+        try {
+            // 用一次显式探测拿到具体错误（fetchGatewayStatus 会吞掉异常）
+            try {
+                await apiRequest('/api/gateway/status');
+            } catch (e) {
+                toastr.error(`连接失败：${e.message}`);
+                updateConnectionStatus(false);
+                return;
+            }
+            await fetchGatewayStatus();
+            startPolling();
+            refreshPanelData();
+            if (gatewayConnected) {
+                toastr.success(`已连接到网关 ${getSettings().serverUrl}`);
+            } else {
+                toastr.warning('连接状态未知，请查看面板');
+            }
+        } finally {
+            btn.prop('disabled', false).html(originalHtml);
+        }
     });
 
     // 本地服务控制
@@ -1580,6 +1635,10 @@ async function savePanelConfig() {
         await apiRequest('/api/gateway/config', {
             method: 'POST',
             body: JSON.stringify({
+                // 鉴权开关：deepMerge 会保留 server.authToken/host/port 不变
+                server: {
+                    requireAuth: $('#gateway_panel_require_auth').is(':checked'),
+                },
                 adapters: {
                     qq: {
                         enabled: $('#gateway_panel_qq_enabled').is(':checked'),
@@ -1658,6 +1717,10 @@ async function loadPanelConfig() {
     try {
         const config = await apiRequest('/api/gateway/config');
         const adapters = config.adapters || {};
+
+        // 鉴权开关：从后端 server.requireAuth 同步（默认开）
+        const requireAuth = config.server?.requireAuth !== false;
+        $('#gateway_panel_require_auth').prop('checked', requireAuth);
 
         if (adapters.qq) {
             $('#gateway_panel_qq_enabled').prop('checked', adapters.qq.enabled);

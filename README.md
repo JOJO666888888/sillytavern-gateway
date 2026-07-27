@@ -160,7 +160,9 @@ npm install
 npm start
 ```
 
-服务默认运行在 `http://127.0.0.1:3210`，首次启动会自动生成默认配置文件 `config/gateway.json`。
+服务默认监听 `0.0.0.0:3210`（全网卡，便于服务器/远程部署时从浏览器直连；如只在本机使用想限缩到回环，可改 `config/gateway.json` 的 `server.host` 为 `127.0.0.1`）。首次启动会自动生成默认配置文件 `config/gateway.json` 与一个鉴权 token。
+
+> **🔑 token 在哪看？** 首次启动时，控制台会用框线明文打印网关鉴权 Token，直接复制即可；也可在 `config/gateway.json` 的 `server.authToken` 查看，或运行 `npm run token`。网关默认开启鉴权--若想首次连接更省事，可在 SillyTavern 网关面板用「启用网关鉴权」开关关闭（仅限可信网络）。
 
 ### 方式二：已克隆到其它目录 → 链接到扩展目录
 
@@ -191,7 +193,9 @@ ln -s /path/to/sillytavern-gateway ~/SillyTavern/public/scripts/extensions/third
 1. **重启 SillyTavern**（或在浏览器按 `Ctrl + F5` 强制刷新页面）
 2. 打开 SillyTavern 的 **扩展** 面板（拼图图标 🧩），找到 **Multi-Platform Gateway**，勾选启用
 3. 启用后顶部设置栏会出现网关图标，点击打开面板
-4. 在面板中确认网关地址为 `http://127.0.0.1:3210`，点击 **连接**，可用 **验证全部** 检查各平台连接状态
+4. 在面板中填入网关地址。**本机部署**填 `http://127.0.0.1:3210`；**网关在服务器、你在本机浏览器访问**则填 `http://<服务器IP>:3210`（网关默认绑定 `0.0.0.0` 允许外部访问）。填入控制台打印的鉴权 Token，点击 **连接**，可用 **验证全部** 检查各平台连接状态
+
+> **❓ 连接失败 / "Failed to fetch"？** 浏览器里的请求到不了网关，常见原因：①网关没启动；②地址或端口不对；③网关绑定了 `127.0.0.1` 导致跨机访问被拒（改成 `0.0.0.0`）；④Token 没填或填错（会返回 401 鉴权失败）。面板报错会给出具体原因。
 
 > **❓ 重启后顶级面板仍不显示？**
 > - 确认扩展目录名为 `sillytavern-gateway`，且位于 `public/scripts/extensions/third-party/` 之下

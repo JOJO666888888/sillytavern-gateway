@@ -60,9 +60,15 @@
                 </div>
             </div>
             <div class="gateway-field">
+                <label class="checkbox-label">
+                    <input type="checkbox" id="gateway_panel_require_auth" checked> 启用网关鉴权
+                </label>
+                <span class="gateway-hint">关闭后无需 Token 即可连接（首次连接更省事），但同网络内任何设备都能访问你的 Bot Token 与聊天记录，仅建议在完全可信网络关闭。</span>
+            </div>
+            <div class="gateway-field">
                 <label>鉴权 Token</label>
-                <input type="password" id="gateway_panel_auth_token" class="text_pole" placeholder="网关启动日志中的 server.authToken">
-                <span class="gateway-hint">网关已默认开启鉴权。请填入后端首次启动生成的 token（见网关控制台日志或 config/gateway.json）。</span>
+                <input type="password" id="gateway_panel_auth_token" class="text_pole" placeholder="网关启动控制台明文打印的 token">
+                <span class="gateway-hint">网关默认开启鉴权。首启会在控制台用框线明文打印 token，复制填入即可；也可见 config/gateway.json 的 server.authToken。</span>
             </div>
 
             <!-- 本地服务控制 -->

@@ -131,7 +131,9 @@ describe('掩码回传保护', () => {
 
 describe('默认配置完整性', () => {
     test('关键安全默认值正确', () => {
-        assert.strictEqual(configManager.get('server.host'), '127.0.0.1', '默认只绑本地');
+        // 默认全网卡监听（0.0.0.0）：服务器/远程部署开箱可连；
+        // 配合默认开启的鉴权兜底，防裸奔。
+        assert.strictEqual(configManager.get('server.host'), '0.0.0.0', '默认全网卡监听，便于远程连接');
         assert.notStrictEqual(configManager.get('server.requireAuth'), false, '默认强制鉴权');
     });
 

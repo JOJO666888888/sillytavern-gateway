@@ -22,13 +22,18 @@ const SENSITIVE_KEY_RE = /token|secret|password|apikey|api_key|accesstoken|acces
 const DEFAULT_CONFIG = {
     server: {
         port: 3210,
-        host: '127.0.0.1',
+        // 默认全网卡监听：服务器/远程部署下，用户从浏览器即可直连网关。
+        // 若你只在本机使用、不想暴露到局域网，可改为 '127.0.0.1'。
+        // 绑定非回环地址时，请保持 requireAuth=true，否则 Bot Token 与会话数据
+        // 会被同网络任意设备读取。
+        host: '0.0.0.0',
         // 本地鉴权：所有 /api/* 写操作（及默认全部读操作）需在
         // X-Gateway-Token 头携带此值。首次启动自动生成并写回配置文件。
         // 留空 + requireAuth=true 时会在启动时自动生成。
         authToken: '',
         // 是否强制鉴权。默认开启，堵住"恶意网页 drive-by 调用本地端口"与
-        // 同机其它进程未授权访问。仅在你完全信任本机所有进程时才关闭。
+        // 同机其它进程未授权访问。可在 SillyTavern 网关面板用「启用鉴权」开关关闭，
+        // 仅在你完全信任本机/局域网所有设备时才关闭。
         requireAuth: true,
         // 允许跨域访问的前端 Origin 白名单（SillyTavern 页面地址）。
         // 为空时默认放行 localhost / 127.0.0.1 的任意端口。

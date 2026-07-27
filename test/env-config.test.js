@@ -12,9 +12,9 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert';
 import { applyEnvOverrides, ENV_MAP, isSecretPath, describeEnvVars, getByPath } from '../server/utils/env-config.js';
 
-/** 构造一个最小的配置骨架 */
+/** 构造一个最小的配置骨架（host 默认 0.0.0.0，与 DEFAULT_CONFIG 对齐） */
 const baseConfig = () => ({
-    server: { port: 3210, host: '127.0.0.1', authToken: '', requireAuth: true, allowedOrigins: [] },
+    server: { port: 3210, host: '0.0.0.0', authToken: '', requireAuth: true, allowedOrigins: [] },
     admins: [],
     adapters: {
         telegram: { enabled: false, botToken: '', allowedUsers: [] },
@@ -68,7 +68,7 @@ describe('类型转换', () => {
         const c = baseConfig();
         applyEnvOverrides(c, {});
         assert.strictEqual(c.server.port, 3210);
-        assert.strictEqual(c.server.host, '127.0.0.1');
+        assert.strictEqual(c.server.host, '0.0.0.0');
     });
 });
 

@@ -95,7 +95,10 @@ app.use((req, res, next) => {
     const provided = req.headers['x-gateway-token'] ||
         (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
     if (!tokenEquals(String(provided), String(expected))) {
-        return res.status(401).json({ success: false, error: '未授权：缺少或错误的 X-Gateway-Token' });
+        return res.status(401).json({
+            success: false,
+            error: '鉴权失败：缺少或错误的 X-Gateway-Token。请在 SillyTavern 网关面板填入正确的 token（网关启动控制台会明文打印）',
+        });
     }
     next();
 });
@@ -550,6 +553,17 @@ const HOST = configManager.get('server.host') || '127.0.0.1';
 
 const server = http.createServer(app);
 
+// 监听错误：端口被占用等，给出可操作的中文提示而非裸调用栈。
+server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+        logger.error(`端口 ${PORT} 已被占用，无法启动网关。可能已有另一个网关实例在运行。`);
+        logger.error(`解决：1) 停止旧实例后再启动；2) 或修改 config/gateway.json 的 server.port 换个端口。`);
+    } else {
+        logger.error(`HTTP 服务启动失败: ${err.message}`);
+    }
+    process.exit(1);
+});
+
 async function startServer() {
     logger.info('========================================');
     logger.info('  SillyTavern Gateway 多平台聊天网关');
@@ -593,23 +607,39 @@ async function startServer() {
     // 启动网关
     await gatewayCore.start();
 
+    // 打印鉴权与绑定提示。刻意放在 server.listen 之前：端口被占用时
+    // listen 会抛 EADDRINUSE，若信息写在 listen 回调里就永远打不出来，
+    // 用户连不上也看不到 token，无从排查。
+    const requireAuth = configManager.get('server.requireAuth') !== false;
+    if (requireAuth) {
+        const token = configManager.get('server.authToken') || '';
+        logger.info(`🔐 API 鉴权已开启。请在 SillyTavern 网关面板填入 token。`);
+        if (token) {
+            // 明文打印 token，方便首次连接时直接复制。
+            // 刻意用 console.log 而非 logger：winston 的 redactSecrets 会把
+            // ≥32 位十六进制串（token 正是此形态）打码成 <redacted-hex>，
+            // 那样用户根本看不见 token、无从填入。这里仅此一行绕过脱敏，
+            // 其余日志仍走脱敏管道。贴日志求助时请手动删掉这一行。
+            const box = '═'.repeat(Math.max(0, token.length + 16));
+            console.log(`\n  ╔${box}╗`);
+            console.log(`  ║  🔑 网关鉴权 Token（复制填入 SillyTavern 网关面板）  ║`);
+            console.log(`  ║  ${token}  ║`);
+            console.log(`  ╚${box}╝\n`);
+        } else {
+            logger.warn('authToken 缺失：API 将返回 503。请检查 config/gateway.json 写权限，或用环境变量 GATEWAY_AUTH_TOKEN 指定。');
+        }
+    } else {
+        logger.warn('⚠️ API 鉴权已关闭（server.requireAuth=false）。任何能访问本端口的进程/设备均可调用网关 API（含 Bot Token 与会话数据），仅建议在完全可信网络使用。');
+    }
+    if (HOST === '0.0.0.0' || (HOST !== '127.0.0.1' && HOST !== 'localhost')) {
+        logger.warn(`⚠️ 网关绑定在 ${HOST}（对外可达）。请确保已开启鉴权并置于可信网络，否则 Bot Token 与会话数据存在暴露风险。`);
+    }
+
     // 启动 HTTP 服务
     server.listen(PORT, HOST, () => {
         logger.info(`HTTP API 服务已启动: http://${HOST}:${PORT}`);
         logger.info(`API 文档: http://${HOST}:${PORT}/api/gateway/health`);
         logger.info(`插件管理: http://${HOST}:${PORT}/api/plugins`);
-
-        const requireAuth = configManager.get('server.requireAuth') !== false;
-        if (requireAuth) {
-            const token = configManager.get('server.authToken') || '';
-            const masked = token ? `***${token.slice(-4)}` : '(未设置)';
-            logger.info(`🔐 API 鉴权已开启。请在 SillyTavern 网关面板填入 token（当前 ${masked}），完整值见 config/gateway.json 的 server.authToken`);
-        } else {
-            logger.warn('⚠️ API 鉴权已关闭（server.requireAuth=false）。任何本机进程/网页均可调用网关 API，仅建议在完全可信环境使用。');
-        }
-        if (HOST !== '127.0.0.1' && HOST !== 'localhost') {
-            logger.warn(`⚠️ 网关绑定在 ${HOST}（非本地回环）。请确保已开启鉴权并置于可信网络，否则 Bot Token 与会话数据存在暴露风险。`);
-        }
     });
 }
 
