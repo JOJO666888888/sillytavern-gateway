@@ -88,6 +88,8 @@ export class EventPipeline {
                 configManager: services.configManager,
                 gatewayConfig: services.getGatewayConfigFor?.(listener.pluginName),
                 llm: services.getLLMFor?.(listener.pluginName),
+                fs: services.getFsFor?.(listener.pluginName),
+                assets: services.getAssetsFor?.(listener.pluginName),
                 pluginName: listener.pluginName,
             });
 

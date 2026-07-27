@@ -23,7 +23,7 @@ export class PluginContext {
     constructor(options = {}) {
         const {
             message, gateway, sessionManager, configManager, pluginName, commandArgs,
-            gatewayConfig, llm,
+            gatewayConfig, llm, fs, assets,
         } = options;
 
         // 消息信息
@@ -54,6 +54,12 @@ export class PluginContext {
         // 按插件权限收窄的 LLM 调用服务。由 PluginManager 注入；
         // 未声明 "llm" 权限时为拒绝桩，调用即抛错。缺失时 ctx.llm 抛提示。
         this._llm = llm || null;
+        // 按插件权限收窄的文件系统服务。由 PluginManager 注入；
+        // 未声明 "fs" 权限时为拒绝桩，调用即抛错。缺失时 ctx.fs 抛提示。
+        this._fs = fs || null;
+        // 按插件权限收窄的 ST 资产只读服务。由 PluginManager 注入；
+        // 未声明 "assets" 权限时为拒绝桩，调用即抛错。缺失时 ctx.assets 抛提示。
+        this._assets = assets || null;
         this._pluginName = pluginName || '';
     }
 
@@ -228,6 +234,49 @@ export class PluginContext {
             );
         }
         return this._llm;
+    }
+
+    /**
+     * 文件系统服务（受 "fs" 权限约束）。
+     *
+     * 用法：
+     *   const text = ctx.fs.read('data.json');
+     *   ctx.fs.write('output.txt', 'hello');
+     *   const files = ctx.fs.list('subdir');
+     *   if (ctx.fs.exists('config.json')) { ... }
+     *
+     * 仅可读写 data/plugins/<插件名>/ 目录下的文件。
+     * 未声明 "fs" 权限时，调用任何方法会抛出清晰错误。
+     */
+    get fs() {
+        if (!this._fs) {
+            throw new Error(
+                `插件 ${this._pluginName || '?'} 使用 ctx.fs 需要 "fs" 权限，请在 plugin.json 的 permissions 中声明`,
+            );
+        }
+        return this._fs;
+    }
+
+    /**
+     * ST 资产只读服务（受 "assets" 权限约束）。
+     *
+     * 用法：
+     *   const chars = ctx.assets.listCharacters();
+     *   const card = ctx.assets.readCharacter('Alice');
+     *   const books = ctx.assets.listWorldbooks();
+     *   const wb = ctx.assets.readWorldbook('lore');
+     *   const presets = ctx.assets.listPresets();
+     *   const preset = ctx.assets.readPreset('default');
+     *
+     * 未声明 "assets" 权限时，调用任何方法会抛出清晰错误。
+     */
+    get assets() {
+        if (!this._assets) {
+            throw new Error(
+                `插件 ${this._pluginName || '?'} 使用 ctx.assets 需要 "assets" 权限，请在 plugin.json 的 permissions 中声明`,
+            );
+        }
+        return this._assets;
     }
 
     /**

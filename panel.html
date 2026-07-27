@@ -357,11 +357,27 @@
                 <div class="gateway-section-subtitle">
                     📦 资产 <button id="gateway_rt_refresh" class="menu_button" title="刷新"><i class="fa-solid fa-rotate-right"></i></button>
                 </div>
+                <div id="gateway_rt_dirs" class="gateway-rt-dirs" style="display:none;"></div>
                 <div id="gateway_rt_assets" class="gateway-adapters-status">
                     <div class="gateway-empty-hint">未加载</div>
                 </div>
+                <div class="gateway-rt-asset-actions">
+                    <button id="gateway_rt_import_char" class="menu_button gateway-import-btn" title="导入角色卡 (.png/.json)">
+                        <i class="fa-solid fa-file-import"></i> 导入角色卡
+                    </button>
+                    <button id="gateway_rt_import_world" class="menu_button gateway-import-btn" title="导入世界书 (.json)">
+                        <i class="fa-solid fa-file-import"></i> 导入世界书
+                    </button>
+                    <button id="gateway_rt_import_preset" class="menu_button gateway-import-btn" title="导入预设 (.json)">
+                        <i class="fa-solid fa-file-import"></i> 导入预设
+                    </button>
+                    <button id="gateway_rt_sync_st" class="menu_button gateway-import-btn" title="从 SillyTavern 目录一键同步全部资产">
+                        <i class="fa-solid fa-cloud-arrow-down"></i> 从 ST 同步
+                    </button>
+                    <input type="file" id="gateway_rt_file_input" style="display:none;" accept=".png,.json">
+                </div>
                 <div class="gateway-field">
-                    <span class="gateway-hint">把 ST 的角色卡放入 <code>assets/characters/</code>、世界书 <code>assets/worldbooks/</code>、预设 <code>assets/presets/</code>；存档在 <code>data/chats/</code>（与 ST 互通）。</span>
+                    <span class="gateway-hint">角色卡放入 <code>assets/characters/</code>、世界书 <code>assets/worldbooks/</code>、预设 <code>assets/presets/</code>；存档在 <code>data/chats/</code>（与 ST 互通）。也可点击上方按钮导入或从 ST 一键同步。</span>
                 </div>
 
                 <!-- 会话 Profile 管理 -->

@@ -2629,6 +2629,8 @@ function bindRegexEvents() {
 
 /** 缓存最近一次拉到的资产列表，供 Profile 下拉框使用 */
 let rtAssets = { characters: [], worldbooks: [], presets: [], archives: [] };
+/** 缓存资产目录绝对路径 */
+let rtDirs = null;
 
 /**
  * 加载自建推理管线状态：开关/LLM 配置 + 资产 + 会话绑定
@@ -2653,18 +2655,31 @@ async function loadRuntimePanel() {
         const st = await apiRequest('/api/runtime/status');
         if (!st.enabled) {
             stateEl.text('未启用').attr('class', 'gateway-adapter-state disconnected');
+            $('#gateway_rt_dirs').hide();
             $('#gateway_rt_assets').html('<div class="gateway-empty-hint">管线未启用（勾选上方开关并保存后重启网关服务）</div>');
             $('#gateway_rt_profiles').html('<div class="gateway-empty-hint">管线未启用</div>');
             return;
         }
         stateEl.text('运行中').attr('class', 'gateway-adapter-state connected');
         rtAssets = st.assets || rtAssets;
+        rtDirs = st.dirs || null;
+        renderRuntimeDirs(rtDirs);
         renderRuntimeAssets(rtAssets);
         await loadRuntimeProfiles();
     } catch (_) {
         stateEl.text('-').attr('class', 'gateway-adapter-state');
         $('#gateway_rt_assets').html('<div class="gateway-empty-hint">无法连接网关</div>');
     }
+}
+
+/** 渲染资产目录绝对路径 */
+function renderRuntimeDirs(dirs) {
+    if (!dirs) { $('#gateway_rt_dirs').hide(); return; }
+    const labels = { characters: '角色卡', worldbooks: '世界书', presets: '预设', chats: '存档' };
+    const html = Object.entries(labels).map(([key, label]) =>
+        `<div>${label}目录：<code>${escapeHtml(dirs[key] || '')}</code></div>`
+    ).join('');
+    $('#gateway_rt_dirs').html(html).show();
 }
 
 /** 渲染资产列表 */
@@ -2676,7 +2691,7 @@ function renderRuntimeAssets(assets) {
                 : `<span class="gateway-empty-hint">${hint}</span>`}
         </div>`;
     $('#gateway_rt_assets').html(
-        group('角色卡', assets.characters, '无，请放入 assets/characters/') +
+        group('角色卡', assets.characters, '无，点击下方导入或放入 assets/characters/') +
         group('世界书', assets.worldbooks, '无') +
         group('预设', assets.presets, '无（用内置默认）') +
         group('存档', assets.archives, '无（首次对话自动创建）')
@@ -2823,6 +2838,74 @@ function bindRuntimeEvents() {
     $('#gateway_rt_save').on('click', saveRuntimeConfig);
     $('#gateway_rt_refresh').on('click', loadRuntimePanel);
     $('#gateway_rt_preview').on('click', previewRuntimePrompt);
+    // 资产导入
+    $('#gateway_rt_import_char').on('click', () => triggerAssetUpload('characters'));
+    $('#gateway_rt_import_world').on('click', () => triggerAssetUpload('worldbooks'));
+    $('#gateway_rt_import_preset').on('click', () => triggerAssetUpload('presets'));
+    $('#gateway_rt_file_input').on('change', handleAssetUpload);
+    // ST 同步
+    $('#gateway_rt_sync_st').on('click', syncFromSillyTavern);
+}
+
+/** 触发文件选择对话框 */
+let pendingAssetType = null;
+function triggerAssetUpload(type) {
+    if (!rtDirs) { toastr.warning('请先启用自建推理管线'); return; }
+    pendingAssetType = type;
+    const accept = type === 'characters' ? '.png,.json' : '.json';
+    $('#gateway_rt_file_input').attr('accept', accept).val('').trigger('click');
+}
+
+/** 处理文件上传 */
+async function handleAssetUpload() {
+    const file = this.files?.[0];
+    if (!file || !pendingAssetType) return;
+    const type = pendingAssetType;
+    pendingAssetType = null;
+    try {
+        const settings = getSettings();
+        const formData = new FormData();
+        formData.append('file', file);
+        const resp = await fetch(`${settings.serverUrl}/api/runtime/assets/${type}`, {
+            method: 'POST',
+            headers: settings.authToken ? { 'X-Gateway-Token': settings.authToken } : {},
+            body: formData,
+        });
+        if (!resp.ok) {
+            const body = await resp.json().catch(() => ({}));
+            throw new Error(body.error || `HTTP ${resp.status}`);
+        }
+        const data = await resp.json();
+        toastr.success(`已导入「${data.name}」`);
+        rtAssets = data.assets || rtAssets;
+        renderRuntimeAssets(rtAssets);
+    } catch (e) {
+        toastr.error(`导入失败: ${e.message}`);
+    }
+}
+
+/** 从 SillyTavern 目录一键同步资产 */
+async function syncFromSillyTavern() {
+    if (!rtDirs) { toastr.warning('请先启用自建推理管线'); return; }
+    // 尝试自动推断 ST 路径：扩展目录回溯
+    let defaultPath = '';
+    try {
+        // sillytavern-gateway/ -> third-party/ -> extensions/ -> scripts/ -> public/ -> SillyTavern/
+        defaultPath = '../../../../..';
+    } catch (_) {}
+    const stPath = prompt('请输入 SillyTavern 安装路径（包含 data/default-user/ 的根目录）：', defaultPath);
+    if (!stPath) return;
+    try {
+        const data = await apiRequest('/api/runtime/sync-from-st', {
+            method: 'POST',
+            body: JSON.stringify({ stPath }),
+        });
+        toastr.success(`同步完成：角色卡 ${data.characters} / 世界书 ${data.worldbooks} / 预设 ${data.presets}`);
+        rtAssets = data.assets || rtAssets;
+        renderRuntimeAssets(rtAssets);
+    } catch (e) {
+        toastr.error(`同步失败: ${e.message}`);
+    }
 }
 
 // ==================== R3: Schema 驱动的插件配置弹窗 ====================

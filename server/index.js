@@ -20,6 +20,7 @@ import { PluginManager } from './plugin-manager.js';
 import { mediaStore } from './media/media-store.js';
 import { NativeRuntime } from './runtime/pipeline.js';
 import { registerRuntimeCommands } from './runtime/runtime-commands.js';
+import multer from 'multer';
 
 const logger = createLogger('server');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -27,6 +28,9 @@ const REPO_ROOT = path.join(__dirname, '..');
 
 const app = express();
 app.use(express.json());
+
+// 文件上传中间件（资产导入用）
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 // 插件管理器
 let pluginManager = null;
@@ -301,7 +305,12 @@ app.get('/api/runtime/status', (req, res) => {
     if (!nativeRuntime) {
         return res.json({ success: true, enabled: false, message: '自建推理管线未启用（config.runtime.enabled=false）' });
     }
-    res.json({ success: true, enabled: true, assets: nativeRuntime.listAssets(), profiles: nativeRuntime.profiles.list().length });
+    res.json({
+        success: true, enabled: true,
+        assets: nativeRuntime.listAssets(),
+        dirs: nativeRuntime.dirs,
+        profiles: nativeRuntime.profiles.list().length,
+    });
 });
 
 /** 会话 Profile 列表 */
@@ -325,6 +334,40 @@ app.post('/api/runtime/preview', async (req, res) => {
     try {
         const { messages, sampling } = await nativeRuntime.prepare(platform, chatId, input || '');
         res.json({ success: true, messages, sampling });
+    } catch (error) {
+        res.status(400).json({ success: false, error: error.message });
+    }
+});
+
+/** 上传资产文件（角色卡/世界书/预设） */
+app.post('/api/runtime/assets/:type', upload.single('file'), (req, res) => {
+    if (!nativeRuntime) return res.status(400).json({ success: false, error: '自建推理管线未启用' });
+    const { type } = req.params;
+    if (!['characters', 'worldbooks', 'presets'].includes(type)) {
+        return res.status(400).json({ success: false, error: '类型必须是 characters / worldbooks / presets' });
+    }
+    if (!req.file) return res.status(400).json({ success: false, error: '未收到文件' });
+    try {
+        const result = nativeRuntime.importAsset(type, req.file.originalname, req.file.buffer);
+        logger.info(`资产已导入: ${type}/${result.name}`);
+        res.json({ success: true, ...result, assets: nativeRuntime.listAssets() });
+    } catch (error) {
+        res.status(400).json({ success: false, error: error.message });
+    }
+});
+
+/** 从 SillyTavern 目录一键同步资产 */
+app.post('/api/runtime/sync-from-st', (req, res) => {
+    if (!nativeRuntime) return res.status(400).json({ success: false, error: '自建推理管线未启用' });
+    const { stPath } = req.body || {};
+    if (!stPath) return res.status(400).json({ success: false, error: '请提供 SillyTavern 安装路径' });
+    try {
+        if (!fs.existsSync(stPath)) {
+            return res.status(400).json({ success: false, error: `路径不存在: ${stPath}` });
+        }
+        const result = nativeRuntime.syncFromSillyTavern(stPath);
+        logger.info(`从 ST 同步资产完成: 角色卡 ${result.characters} / 世界书 ${result.worldbooks} / 预设 ${result.presets}`);
+        res.json({ success: true, ...result, assets: nativeRuntime.listAssets() });
     } catch (error) {
         res.status(400).json({ success: false, error: error.message });
     }

@@ -266,6 +266,8 @@ export class PluginManager {
             configManager: this.configManager,
             gatewayConfig: this.getGatewayConfigFor(pluginName),
             llm: this.getLLMFor(pluginName),
+            fs: this.getFsFor(pluginName),
+            assets: this.getAssetsFor(pluginName),
             pluginName,
         });
     }
@@ -326,6 +328,36 @@ export class PluginManager {
         }).llm;
     }
 
+    /**
+     * 为指定插件返回按其权限收窄的文件系统服务。
+     * 未声明 "fs" 权限时返回拒绝桩（调用即抛错）。
+     * @param {string} pluginName
+     */
+    getFsFor(pluginName) {
+        const instance = this.loader.getPlugin(pluginName);
+        const granted = new Set(instance?._grantedPermissions || []);
+        return buildScopedServices(pluginName, granted, {
+            gateway: null,
+            sessionManager: null,
+            configManager: this.configManager,
+        }, [], { fs: true, pluginName }).fs;
+    }
+
+    /**
+     * 为指定插件返回按其权限收窄的 ST 资产只读服务。
+     * 未声明 "assets" 权限时返回拒绝桩（调用即抛错）。
+     * @param {string} pluginName
+     */
+    getAssetsFor(pluginName) {
+        const instance = this.loader.getPlugin(pluginName);
+        const granted = new Set(instance?._grantedPermissions || []);
+        return buildScopedServices(pluginName, granted, {
+            gateway: null,
+            sessionManager: null,
+            configManager: this.configManager,
+        }, [], { assets: true, pluginName }).assets;
+    }
+
     /** 传给命令路由/事件管线的服务集合 */
     _dispatchServices() {
         return {
@@ -334,6 +366,8 @@ export class PluginManager {
             configManager: this.configManager,
             getGatewayConfigFor: (name) => this.getGatewayConfigFor(name),
             getLLMFor: (name) => this.getLLMFor(name),
+            getFsFor: (name) => this.getFsFor(name),
+            getAssetsFor: (name) => this.getAssetsFor(name),
         };
     }
 

@@ -1299,6 +1299,34 @@
     margin-right: 6px;
 }
 
+.gateway-rt-dirs {
+    margin-bottom: 8px;
+    padding: 6px 8px;
+    background: rgba(128, 128, 128, 0.1);
+    border-radius: 4px;
+    font-size: 0.8em;
+}
+
+.gateway-rt-dirs div {
+    margin-bottom: 2px;
+}
+
+.gateway-rt-dirs code {
+    word-break: break-all;
+}
+
+.gateway-rt-asset-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 8px 0;
+}
+
+.gateway-rt-asset-actions .gateway-import-btn {
+    font-size: 11px;
+    padding: 4px 10px;
+}
+
 .gateway-rt-msg {
     border: 1px solid rgba(128, 128, 128, 0.25);
     border-radius: 4px;

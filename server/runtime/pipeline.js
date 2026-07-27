@@ -97,6 +97,10 @@ export class NativeRuntime {
             presets: path.resolve(ROOT, cfg.presetsDir || 'assets/presets'),
             chats: path.resolve(ROOT, cfg.chatsDir || 'data/chats'),
         };
+        // 自动创建资产目录（首次启用时用户不再需要手动建文件夹）
+        for (const dir of Object.values(this.dirs)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
         this.profiles = new ProfileStore({ defaults: cfg.defaults || {} });
         this._cardCache = new Map();
         this._bookCache = new Map();
@@ -154,6 +158,68 @@ export class NativeRuntime {
         this._cardCache.clear();
         this._bookCache.clear();
         this._presetCache.clear();
+    }
+
+    /**
+     * 导入资产文件（写入磁盘 + 清缓存）
+     * @param {string} type - characters | worldbooks | presets
+     * @param {string} filename - 原始文件名
+     * @param {Buffer} buffer - 文件内容
+     * @returns {{name: string, path: string}}
+     */
+    importAsset(type, filename, buffer) {
+        const dir = this.dirs[type];
+        if (!dir) throw new Error(`未知资产类型: ${type}`);
+        // 安全文件名：去掉路径分隔符
+        const safeName = filename.replace(/[\\/]/g, '_');
+        const filePath = path.join(dir, safeName);
+        fs.writeFileSync(filePath, buffer);
+        this.clearCache();
+        return { name: path.basename(safeName, path.extname(safeName)), path: filePath };
+    }
+
+    /**
+     * 从 SillyTavern 目录批量同步资产
+     * @param {string} stRoot - SillyTavern 安装根目录
+     * @returns {{characters: number, worldbooks: number, presets: number}}
+     */
+    syncFromSillyTavern(stRoot) {
+        const result = { characters: 0, worldbooks: 0, presets: 0 };
+        // ST 默认用户数据目录
+        const userData = path.join(stRoot, 'data', 'default-user');
+        // 角色卡: data/default-user/characters/*.png + *.json
+        const charDir = path.join(userData, 'characters');
+        if (fs.existsSync(charDir)) {
+            for (const f of fs.readdirSync(charDir)) {
+                const ext = path.extname(f).toLowerCase();
+                if (ext === '.png' || ext === '.json') {
+                    fs.copyFileSync(path.join(charDir, f), path.join(this.dirs.characters, f));
+                    result.characters++;
+                }
+            }
+        }
+        // 世界书: data/default-user/worlds/*.json
+        const worldDir = path.join(userData, 'worlds');
+        if (fs.existsSync(worldDir)) {
+            for (const f of fs.readdirSync(worldDir)) {
+                if (path.extname(f).toLowerCase() === '.json') {
+                    fs.copyFileSync(path.join(worldDir, f), path.join(this.dirs.worldbooks, f));
+                    result.worldbooks++;
+                }
+            }
+        }
+        // 预设: data/default-user/OpenAI Settings/*.json
+        const presetDir = path.join(userData, 'OpenAI Settings');
+        if (fs.existsSync(presetDir)) {
+            for (const f of fs.readdirSync(presetDir)) {
+                if (path.extname(f).toLowerCase() === '.json') {
+                    fs.copyFileSync(path.join(presetDir, f), path.join(this.dirs.presets, f));
+                    result.presets++;
+                }
+            }
+        }
+        this.clearCache();
+        return result;
     }
 
     /** 取会话的存档对象 */

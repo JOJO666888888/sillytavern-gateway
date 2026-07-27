@@ -27,8 +27,12 @@
  */
 
 import { createLogger } from './utils/logger.js';
+import { fileURLToPath } from 'url';
+import path from 'path';
 
 const logger = createLogger('plugin-perm');
+// ESM 模块没有 __dirname，手动构造供 createFsService/createAssetsService 使用
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * 权限注册表
@@ -77,6 +81,16 @@ export const PERMISSIONS = {
     'gateway.admin': {
         risk: 'high',
         desc: '管理适配器与其它插件（启停、改配置）',
+        default: false,
+    },
+    'fs': {
+        risk: 'medium',
+        desc: '读写插件数据目录下的文件（data/plugins/<插件名>/）',
+        default: false,
+    },
+    'assets': {
+        risk: 'low',
+        desc: '只读访问 ST 资产（角色卡/世界书/预设）',
         default: false,
     },
 };
@@ -206,9 +220,10 @@ const LLM_METHODS = ['chat', 'chatStream', 'chatWithTools', 'runTools', 'verify'
  * @param {Set<string>} granted - 已授予的权限
  * @param {object} raw - 原始服务 { gateway, sessionManager, configManager, savePluginConfig, llmService }
  * @param {Function[]} managedUnregister - 收集出站过滤器注销函数（框架代管回收）
+ * @param {object} extra - 额外选项 { fs?: boolean, assets?: boolean, pluginName?: string }
  * @returns {object} 收窄后的 services
  */
-export function buildScopedServices(pluginName, granted, raw, managedUnregister = []) {
+export function buildScopedServices(pluginName, granted, raw, managedUnregister = [], extra = {}) {
     const gateway = raw.gateway ? new Proxy(raw.gateway, {
         get(target, prop, receiver) {
             // 出站过滤器：自动标注归属 + 记录注销函数（供禁用插件时强制回收）
@@ -278,9 +293,109 @@ export function buildScopedServices(pluginName, granted, raw, managedUnregister 
         // 且凭据字段恒被脱敏。
         gatewayConfig: makeGatewayConfigView(raw.configManager, granted, pluginName),
         savePluginConfig: raw.savePluginConfig,
+        // 文件系统服务：读写插件数据目录下的文件。未授予 fs 权限（或未请求）时为拒绝桩。
+        fs: (granted.has('fs') && extra.fs) ? createFsService(pluginName) : deniedStub(pluginName, 'fs', ['read', 'write', 'list', 'exists']),
+        // ST 资产只读服务：角色卡/世界书/预设。未授予 assets 权限（或未请求）时为拒绝桩。
+        assets: (granted.has('assets') && extra.assets) ? createAssetsService() : deniedStub(pluginName, 'assets', ['listCharacters', 'readCharacter', 'listWorldbooks', 'readWorldbook', 'listPresets', 'readPreset']),
         // 供插件系统内部使用（不供插件业务逻辑访问凭据）
         _permissions: granted,
         _pluginName: pluginName,
+    };
+}
+
+/**
+ * 创建插件专属的文件系统服务。
+ * 仅允许读写 data/plugins/<插件名>/ 目录下的文件，路径穿越被拒绝。
+ * @param {string} pluginName
+ */
+function createFsService(pluginName) {
+    const path = require('path');
+    const fs = require('fs');
+    const dataDir = path.resolve(__dirname, '..', 'data', 'plugins', pluginName);
+
+    // 安全解析：确保解析后的路径仍在 dataDir 之下，防止 ../ 穿越
+    const safeResolve = (relativePath) => {
+        const resolved = path.resolve(dataDir, relativePath);
+        if (!resolved.startsWith(dataDir + path.sep) && resolved !== dataDir) {
+            throw new Error(`路径越界: ${relativePath}`);
+        }
+        return resolved;
+    };
+
+    return {
+        // 读文件，返回字符串
+        read(relativePath) {
+            const full = safeResolve(relativePath);
+            return fs.readFileSync(full, 'utf-8');
+        },
+        // 写文件（自动创建父目录）
+        write(relativePath, content) {
+            const full = safeResolve(relativePath);
+            fs.mkdirSync(path.dirname(full), { recursive: true });
+            fs.writeFileSync(full, content, 'utf-8');
+        },
+        // 列目录，返回文件名数组
+        list(relativePath) {
+            const full = safeResolve(relativePath);
+            return fs.readdirSync(full);
+        },
+        // 判断是否存在
+        exists(relativePath) {
+            const full = safeResolve(relativePath);
+            return fs.existsSync(full);
+        },
+    };
+}
+
+/**
+ * 创建 ST 资产只读服务。
+ * 读取 assets/ 目录下的角色卡、世界书、预设。
+ */
+function createAssetsService() {
+    const path = require('path');
+    const fs = require('fs');
+    const assetsDir = path.resolve(__dirname, '..', 'assets');
+
+    return {
+        // 列出 assets/characters/ 下的 .json 和 .png 文件名
+        listCharacters() {
+            const dir = path.join(assetsDir, 'characters');
+            if (!fs.existsSync(dir)) return [];
+            return fs.readdirSync(dir).filter(f => f.endsWith('.json') || f.endsWith('.png'));
+        },
+        // 读取角色卡 JSON（png 暂不支持提取，返回 null）
+        readCharacter(name) {
+            const jsonPath = path.join(assetsDir, 'characters', name.endsWith('.json') ? name : name + '.json');
+            if (fs.existsSync(jsonPath)) {
+                return JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
+            }
+            // png 提取暂不支持，返回 null
+            return null;
+        },
+        // 列出 assets/worldbooks/ 下的 .json 文件名
+        listWorldbooks() {
+            const dir = path.join(assetsDir, 'worldbooks');
+            if (!fs.existsSync(dir)) return [];
+            return fs.readdirSync(dir).filter(f => f.endsWith('.json'));
+        },
+        // 读取世界书 JSON
+        readWorldbook(name) {
+            const full = path.join(assetsDir, 'worldbooks', name.endsWith('.json') ? name : name + '.json');
+            if (!fs.existsSync(full)) return null;
+            return JSON.parse(fs.readFileSync(full, 'utf-8'));
+        },
+        // 列出 assets/presets/ 下的 .json 文件名
+        listPresets() {
+            const dir = path.join(assetsDir, 'presets');
+            if (!fs.existsSync(dir)) return [];
+            return fs.readdirSync(dir).filter(f => f.endsWith('.json'));
+        },
+        // 读取预设 JSON
+        readPreset(name) {
+            const full = path.join(assetsDir, 'presets', name.endsWith('.json') ? name : name + '.json');
+            if (!fs.existsSync(full)) return null;
+            return JSON.parse(fs.readFileSync(full, 'utf-8'));
+        },
     };
 }
 
