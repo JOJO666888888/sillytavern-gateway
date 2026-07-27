@@ -17,11 +17,13 @@ export class PluginContext {
      * @param {import('./utils/config.js').default} options.configManager - 配置管理器
      * @param {string} options.pluginName - 当前插件名称
      * @param {object} options.commandArgs - 命令参数（如果是命令触发）
+     * @param {object} options.gatewayConfig - 按权限收窄的网关配置视图
+     * @param {object} options.llm - 按权限收窄的 LLM 调用服务
      */
     constructor(options = {}) {
         const {
             message, gateway, sessionManager, configManager, pluginName, commandArgs,
-            gatewayConfig,
+            gatewayConfig, llm,
         } = options;
 
         // 消息信息
@@ -49,6 +51,9 @@ export class PluginContext {
         // 按插件权限收窄的网关配置视图（凭据脱敏）。由 PluginManager 注入；
         // 缺失时 getConfig() 一律拒绝，避免"注入缺失=意外放行"。
         this._gatewayConfig = gatewayConfig || null;
+        // 按插件权限收窄的 LLM 调用服务。由 PluginManager 注入；
+        // 未声明 "llm" 权限时为拒绝桩，调用即抛错。缺失时 ctx.llm 抛提示。
+        this._llm = llm || null;
         this._pluginName = pluginName || '';
     }
 
@@ -204,6 +209,26 @@ export class PluginContext {
     }
 
     // ==================== 网关服务 ====================
+
+    /**
+     * 调用网关配置的 LLM（受 "llm" 权限约束；拿不到 API key）。
+     *
+     * 用法：
+     *   const reply = await ctx.llm.chat([{ role: 'user', content: ctx.content }]);
+     *   // 流式：
+     *   await ctx.llm.chatStream(msgs, {}, (delta, full) => { ... });
+     *
+     * 未声明 "llm" 权限时，调用 chat/chatStream/chatWithTools/runTools/verify 会抛出清晰错误。
+     * @returns {{chat: Function, chatStream: Function, chatWithTools: Function, runTools: Function, verify: Function}}
+     */
+    get llm() {
+        if (!this._llm) {
+            throw new Error(
+                `插件 ${this._pluginName || '?'} 使用 ctx.llm 需要 "llm" 权限，请在 plugin.json 的 permissions 中声明`,
+            );
+        }
+        return this._llm;
+    }
 
     /**
      * 获取所有适配器状态

@@ -9,6 +9,9 @@ import { fileURLToPath } from 'url';
 import { createLogger } from './utils/logger.js';
 import { PluginLoader } from './plugin-loader.js';
 import { buildScopedServices, normalizePermissions, scanPluginRisk, formatInstallDisclosure, highestRisk } from './plugin-permissions.js';
+import { createLLMService } from './llm-service.js';
+import { SchedulerService } from './scheduler-service.js';
+import { PluginContext } from './plugin-context.js';
 import { CommandRouter } from './command-router.js';
 import { EventPipeline } from './event-pipeline.js';
 import { execSync } from 'child_process';
@@ -66,6 +69,10 @@ export class PluginManager {
         this.sessionManager = options.sessionManager;
         this.configManager = options.configManager;
 
+        // LLM 调用服务：供声明了 "llm" 权限的插件调用网关配置的 LLM。
+        // 现读 runtime.llm 配置，apiKey 只在服务内部用于拼请求，不流入插件。
+        this.llmService = createLLMService(this.configManager);
+
         // 插件数据目录（存放各插件配置）
         this.dataDir = path.resolve(__dirname, '..', 'data', 'plugins');
         // 不能让这里抛：异常会一路冒到 startServer().catch() → process.exit(1)，
@@ -93,6 +100,7 @@ export class PluginManager {
                 gateway: this.gateway,
                 sessionManager: this.sessionManager,
                 configManager: this.configManager,
+                llmService: this.llmService,
                 savePluginConfig: (name, config) => this.savePluginConfig(name, config),
             },
         });
@@ -100,6 +108,9 @@ export class PluginManager {
         // 命令路由器和事件管线
         this.commandRouter = new CommandRouter();
         this.eventPipeline = new EventPipeline();
+        // 定时任务调度器：消费插件 static schedules，60s 轮询按分钟触发。
+        // 此前 schedules 只被展示、无人执行，AstrBot「定时任务」类插件无法移植。
+        this.scheduler = new SchedulerService();
 
         // 插件状态（启用/禁用）
         this.pluginStates = new Map(); // name -> { enabled: boolean }
@@ -169,6 +180,9 @@ export class PluginManager {
         await this.gateway.syncAllCommands(commands);
 
         logger.info(`插件系统初始化完成，已加载 ${this.loader.getAllPlugins().size} 个插件`);
+
+        // 所有已启用插件的定时任务已注册，启动调度轮询
+        this.scheduler.start();
     }
 
     /**
@@ -214,6 +228,46 @@ export class PluginManager {
         }
 
         logger.debug(`已注册插件 ${instance.meta.name}: ${commands.length} 命令, ${listeners.length} 监听器`);
+
+        // 注册定时任务
+        const schedules = instance.getSchedules();
+        if (schedules.length > 0) {
+            this.scheduler.registerPlugin({
+                pluginName: instance.meta.name,
+                schedules,
+                // run 回调：为每次触发构造一个不含入站消息的 ctx（llm/gatewayConfig 按权限收窄），
+                // 再调用插件的 handler 方法。handler 抛错由 scheduler 隔离。
+                run: async (schedule) => {
+                    const fn = instance[schedule.handler];
+                    if (typeof fn !== 'function') {
+                        logger.warn(`插件 ${instance.meta.name} 的定时任务处理器 ${schedule.handler} 不存在`);
+                        return;
+                    }
+                    const ctx = this._buildScheduleContext(instance.meta.name);
+                    return await fn.call(instance, ctx);
+                },
+            });
+            logger.debug(`已注册插件 ${instance.meta.name}: ${schedules.length} 定时任务`);
+        }
+    }
+
+    /**
+     * 为定时任务构造上下文。无入站消息（message 为 null），
+     * 插件通过 ctx.send(platform, chatId, text) 主动推送，或用 ctx.llm 调用模型。
+     * llm / gatewayConfig 与命令/监听器走同一套权限收窄。
+     * @param {string} pluginName
+     * @returns {PluginContext}
+     */
+    _buildScheduleContext(pluginName) {
+        return new PluginContext({
+            message: null,
+            gateway: this.gateway,
+            sessionManager: this.sessionManager,
+            configManager: this.configManager,
+            gatewayConfig: this.getGatewayConfigFor(pluginName),
+            llm: this.getLLMFor(pluginName),
+            pluginName,
+        });
     }
 
     /**
@@ -223,9 +277,15 @@ export class PluginManager {
     unregisterPlugin(pluginName) {
         this.commandRouter.unregisterByPlugin(pluginName);
         this.eventPipeline.unregisterByPlugin(pluginName);
+        // 注销该插件的定时任务
+        this.scheduler.unregisterByPlugin(pluginName);
         // 框架代管回收：强制移除该插件注册的出站过滤器（安全网，即便插件 onUnload 有 bug）
         if (this.gateway.removeOutboundFiltersByPlugin) {
             this.gateway.removeOutboundFiltersByPlugin(pluginName);
+        }
+        // 框架代管回收：强制移除该插件注册的入站过滤器（安全网）
+        if (this.gateway.removeInboundFiltersByPlugin) {
+            this.gateway.removeInboundFiltersByPlugin(pluginName);
         }
     }
 
@@ -250,6 +310,22 @@ export class PluginManager {
         }).gatewayConfig;
     }
 
+    /**
+     * 为指定插件返回按其权限收窄的 LLM 调用服务。
+     * 未声明 "llm" 权限时返回拒绝桩（调用即抛错）。
+     * @param {string} pluginName
+     */
+    getLLMFor(pluginName) {
+        const instance = this.loader.getPlugin(pluginName);
+        const granted = new Set(instance?._grantedPermissions || []);
+        return buildScopedServices(pluginName, granted, {
+            gateway: null,
+            sessionManager: null,
+            configManager: this.configManager,
+            llmService: this.llmService,
+        }).llm;
+    }
+
     /** 传给命令路由/事件管线的服务集合 */
     _dispatchServices() {
         return {
@@ -257,6 +333,7 @@ export class PluginManager {
             sessionManager: this.sessionManager,
             configManager: this.configManager,
             getGatewayConfigFor: (name) => this.getGatewayConfigFor(name),
+            getLLMFor: (name) => this.getLLMFor(name),
         };
     }
 
@@ -967,6 +1044,7 @@ export class PluginManager {
      * 关闭插件系统
      */
     async shutdown() {
+        this.scheduler.stop();
         await this.loader.unloadAll();
         logger.info('插件系统已关闭');
     }

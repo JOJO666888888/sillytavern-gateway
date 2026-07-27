@@ -133,6 +133,7 @@ describe('能力收窄', () => {
     function svcWith(perms) {
         const gateway = {
             addOutboundFilter: () => () => {},
+            addInboundFilter: () => () => {},
             sendMessage: () => 'sent',
             sendDirect: () => 'sent',
             getStatus: () => ({ ok: true }),
@@ -174,8 +175,83 @@ describe('能力收窄', () => {
         assert.throws(() => svc.gateway.registerAdapter(), /需要 "gateway.admin" 权限/);
     });
 
+    test('未声明 gateway.inbound 时注册入站过滤器被拒绝', () => {
+        const svc = svcWith([]);
+        assert.throws(() => svc.gateway.addInboundFilter(m => m, { name: 'x' }), /需要 "gateway.inbound" 权限/);
+    });
+
+    test('gateway.inbound 非默认授予', () => {
+        const { granted } = normalizePermissions([], 'p');
+        assert.ok(!granted.has('gateway.inbound'), 'inbound 过滤能看到全部消息，不应默认授予');
+    });
+
+    test('声明 gateway.inbound 后可注册入站过滤器并自动标注归属', () => {
+        const managed = [];
+        const gateway = {
+            addInboundFilter: (fn, opts) => { gateway._lastOpts = opts; return () => {}; },
+        };
+        const { granted } = normalizePermissions(['gateway.inbound'], 'myplugin');
+        const svc = buildScopedServices('myplugin', granted, { gateway, configManager: fakeConfig() }, managed);
+
+        svc.gateway.addInboundFilter(m => m, { name: 'f' });
+        assert.strictEqual(gateway._lastOpts.pluginName, 'myplugin', '应自动标注归属插件');
+        assert.strictEqual(managed.length, 1, '注销函数应被框架记录以便回收');
+    });
+
+    test('gateway.inbound 是 medium 风险', () => {
+        assert.strictEqual(PERMISSIONS['gateway.inbound'].risk, 'medium');
+    });
+
     test('无害方法（getStatus）不受限制', () => {
         assert.deepStrictEqual(svcWith([]).gateway.getStatus(), { ok: true });
+    });
+});
+
+describe('LLM 调用权限', () => {
+    const fakeLLM = {
+        chat: async () => 'reply',
+        chatStream: async (_m, _s, onDelta) => { onDelta?.('r', 'r'); return 'r'; },
+        chatWithTools: async () => ({ text: 't', toolCalls: [] }),
+        runTools: async () => ({ text: 'final', steps: 1 }),
+        verify: async () => ({ ok: true, message: 'ok' }),
+    };
+
+    test('llm 权限默认不授予', () => {
+        const { granted } = normalizePermissions(undefined, 'p');
+        assert.ok(!granted.has('llm'), 'llm 不得默认授予（调用要花钱）');
+    });
+
+    test('未声明 llm 时调用抛出清晰错误', () => {
+        const { granted } = normalizePermissions([], 'p');
+        const svc = buildScopedServices('p', granted, { configManager: fakeConfig(), llmService: fakeLLM });
+        assert.throws(() => svc.llm.chat([]), /需要 "llm" 权限/);
+        assert.throws(() => svc.llm.chatStream([]), /需要 "llm" 权限/);
+        assert.throws(() => svc.llm.chatWithTools([], []), /需要 "llm" 权限/);
+        assert.throws(() => svc.llm.runTools([], [], () => {}), /需要 "llm" 权限/);
+        assert.throws(() => svc.llm.verify(), /需要 "llm" 权限/);
+    });
+
+    test('声明 llm 后可调用真实服务', async () => {
+        const { granted } = normalizePermissions(['llm'], 'p');
+        const svc = buildScopedServices('p', granted, { configManager: fakeConfig(), llmService: fakeLLM });
+        assert.strictEqual(await svc.llm.chat([{ role: 'user', content: 'hi' }]), 'reply');
+    });
+
+    test('声明 llm 后可用工具调用（chatWithTools / runTools）', async () => {
+        const { granted } = normalizePermissions(['llm'], 'p');
+        const svc = buildScopedServices('p', granted, { configManager: fakeConfig(), llmService: fakeLLM });
+        assert.deepStrictEqual(await svc.llm.chatWithTools([], []), { text: 't', toolCalls: [] });
+        assert.deepStrictEqual(await svc.llm.runTools([], [], () => {}), { text: 'final', steps: 1 });
+    });
+
+    test('声明 llm 但服务缺失时仍为拒绝桩（不静默 undefined）', () => {
+        const { granted } = normalizePermissions(['llm'], 'p');
+        const svc = buildScopedServices('p', granted, { configManager: fakeConfig() });
+        assert.throws(() => svc.llm.chat([]), /需要 "llm" 权限/);
+    });
+
+    test('llm 属于 medium 风险', () => {
+        assert.strictEqual(highestRisk(['config', 'llm']), 'medium');
     });
 });
 

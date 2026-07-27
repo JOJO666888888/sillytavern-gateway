@@ -7,7 +7,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 import http from 'http';
-import { LLMClient, buildRequest, extractText, extractDelta, buildMultimodalContent, describeEmptyCompletion } from '../server/runtime/llm-client.js';
+import { LLMClient, buildRequest, extractText, extractDelta, buildMultimodalContent, describeEmptyCompletion, buildToolsSpec, extractToolCalls } from '../server/runtime/llm-client.js';
 
 /** 起一个返回固定 SSE 流的本地服务器 */
 function sseServer(chunks, { splitAt } = {}) {
@@ -246,5 +246,175 @@ describe('思维链不会漏进正文', () => {
         assert.strictEqual(extractText('openai', {
             choices: [{ message: { content: '', reasoning_content: '思考过程不该被当成回复' } }],
         }), '');
+    });
+});
+
+describe('工具调用 - tools 规格构造（三 provider）', () => {
+    const tools = [{
+        name: 'search', description: '联网搜索',
+        parameters: { type: 'object', properties: { q: { type: 'string' } }, required: ['q'] },
+    }];
+
+    test('openai: tools[].function', () => {
+        const spec = buildToolsSpec('openai', tools);
+        assert.strictEqual(spec.tools[0].type, 'function');
+        assert.strictEqual(spec.tools[0].function.name, 'search');
+        assert.deepStrictEqual(spec.tools[0].function.parameters.required, ['q']);
+    });
+
+    test('claude: tools[].input_schema', () => {
+        const spec = buildToolsSpec('claude', tools);
+        assert.strictEqual(spec.tools[0].name, 'search');
+        assert.deepStrictEqual(spec.tools[0].input_schema.required, ['q']);
+    });
+
+    test('gemini: tools[0].functionDeclarations', () => {
+        const spec = buildToolsSpec('gemini', tools);
+        assert.strictEqual(spec.tools[0].functionDeclarations[0].name, 'search');
+    });
+
+    test('无工具时返回空对象（不污染 body）', () => {
+        assert.deepStrictEqual(buildToolsSpec('openai', []), {});
+        assert.deepStrictEqual(buildToolsSpec('openai', undefined), {});
+    });
+
+    test('buildRequest 合并 sampling.tools', () => {
+        const r = buildRequest({ provider: 'openai', model: 'm' }, [{ role: 'user', content: 'x' }], { tools });
+        assert.strictEqual(r.body.tools[0].function.name, 'search');
+    });
+});
+
+describe('工具调用 - tool_calls 提取（三 provider）', () => {
+    test('openai: message.tool_calls，arguments 解析为对象', () => {
+        const calls = extractToolCalls('openai', {
+            choices: [{ message: { tool_calls: [{ id: 'c1', function: { name: 'search', arguments: '{"q":"天气"}' } }] } }],
+        });
+        assert.deepStrictEqual(calls, [{ id: 'c1', name: 'search', arguments: { q: '天气' } }]);
+    });
+
+    test('openai: arguments 非法 JSON 降级为空对象', () => {
+        const calls = extractToolCalls('openai', {
+            choices: [{ message: { tool_calls: [{ id: 'c1', function: { name: 's', arguments: '不是json' } }] } }],
+        });
+        assert.deepStrictEqual(calls[0].arguments, {});
+    });
+
+    test('claude: content 里的 tool_use block', () => {
+        const calls = extractToolCalls('claude', {
+            content: [{ type: 'text', text: '让我查一下' }, { type: 'tool_use', id: 't1', name: 'search', input: { q: 'x' } }],
+        });
+        assert.deepStrictEqual(calls, [{ id: 't1', name: 'search', arguments: { q: 'x' } }]);
+    });
+
+    test('gemini: functionCall，合成稳定 id', () => {
+        const calls = extractToolCalls('gemini', {
+            candidates: [{ content: { parts: [{ functionCall: { name: 'search', args: { q: 'x' } } }] } }],
+        });
+        assert.strictEqual(calls[0].name, 'search');
+        assert.deepStrictEqual(calls[0].arguments, { q: 'x' });
+    });
+
+    test('无工具调用返回空数组', () => {
+        assert.deepStrictEqual(extractToolCalls('openai', { choices: [{ message: { content: '普通回复' } }] }), []);
+    });
+});
+
+describe('工具调用 - 消息回灌（三 provider round-trip）', () => {
+    const convo = [
+        { role: 'user', content: '天气如何' },
+        { role: 'assistant', content: '', toolCalls: [{ id: 'c1', name: 'search', arguments: { q: '天气' } }] },
+        { role: 'tool', toolCallId: 'c1', name: 'search', content: '晴 30度' },
+    ];
+
+    test('openai: assistant.tool_calls + tool 消息', () => {
+        const r = buildRequest({ provider: 'openai', model: 'm' }, convo, {});
+        assert.strictEqual(r.body.messages[1].tool_calls[0].function.name, 'search');
+        assert.strictEqual(r.body.messages[2].role, 'tool');
+        assert.strictEqual(r.body.messages[2].tool_call_id, 'c1');
+    });
+
+    test('claude: tool_use + tool_result block', () => {
+        const r = buildRequest({ provider: 'claude', model: 'm' }, convo, {});
+        assert.strictEqual(r.body.messages[1].content[0].type, 'tool_use');
+        assert.strictEqual(r.body.messages[2].content[0].type, 'tool_result');
+        assert.strictEqual(r.body.messages[2].content[0].tool_use_id, 'c1');
+    });
+
+    test('gemini: functionCall + functionResponse', () => {
+        const r = buildRequest({ provider: 'gemini', model: 'm' }, convo, {});
+        assert.strictEqual(r.body.contents[1].parts[0].functionCall.name, 'search');
+        assert.ok(r.body.contents[2].parts[0].functionResponse);
+    });
+});
+
+/** 起一个按请求次数返回不同 JSON 的本地服务器（模拟 agent 多轮） */
+function scriptedServer(responses) {
+    let i = 0;
+    const srv = http.createServer((req, res) => {
+        const body = responses[Math.min(i, responses.length - 1)];
+        i++;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(body));
+    });
+    return new Promise(resolve => srv.listen(0, () => resolve({ srv, port: srv.address().port })));
+}
+
+describe('工具调用 - runTools agent 循环（真实服务器）', () => {
+    test('模型请求工具 → 执行 → 回灌 → 最终答复', async () => {
+        const { srv, port } = await scriptedServer([
+            // 第 1 次：模型要求调用 search
+            { choices: [{ message: { content: '', tool_calls: [{ id: 'c1', function: { name: 'search', arguments: '{"q":"天气"}' } }] } }] },
+            // 第 2 次：模型给出最终答复（无工具调用）
+            { choices: [{ message: { content: '今天晴，30度' } }] },
+        ]);
+        try {
+            const client = new LLMClient({ provider: 'openai', baseUrl: `http://127.0.0.1:${port}`, model: 'm' });
+            const executed = [];
+            const result = await client.runTools(
+                [{ role: 'user', content: '天气如何' }],
+                [{ name: 'search', description: '搜索', parameters: { type: 'object', properties: { q: { type: 'string' } } } }],
+                (name, args) => { executed.push({ name, args }); return '晴 30度'; },
+            );
+            assert.strictEqual(result.text, '今天晴，30度');
+            assert.strictEqual(result.steps, 1);
+            assert.deepStrictEqual(executed, [{ name: 'search', args: { q: '天气' } }]);
+            // 完整消息应含 assistant 的 toolCalls 与 tool 结果
+            const toolMsg = result.messages.find(m => m.role === 'tool');
+            assert.strictEqual(toolMsg.content, '晴 30度');
+        } finally { srv.close(); }
+    });
+
+    test('executor 抛错时把 error 回灌给模型，不中断循环', async () => {
+        const { srv, port } = await scriptedServer([
+            { choices: [{ message: { content: '', tool_calls: [{ id: 'c1', function: { name: 'boom', arguments: '{}' } }] } }] },
+            { choices: [{ message: { content: '工具失败了，我直接答复' } }] },
+        ]);
+        try {
+            const client = new LLMClient({ provider: 'openai', baseUrl: `http://127.0.0.1:${port}`, model: 'm' });
+            const result = await client.runTools(
+                [{ role: 'user', content: 'x' }],
+                [{ name: 'boom' }],
+                () => { throw new Error('工具炸了'); },
+            );
+            assert.strictEqual(result.text, '工具失败了，我直接答复');
+            const toolMsg = result.messages.find(m => m.role === 'tool');
+            assert.match(toolMsg.content, /工具炸了/);
+        } finally { srv.close(); }
+    });
+
+    test('达到 maxSteps 上限仍未收敛：兜底再问一次拿最终文本', async () => {
+        // 每次都返回工具调用，永不收敛
+        const { srv, port } = await scriptedServer([
+            { choices: [{ message: { content: '', tool_calls: [{ id: 'c1', function: { name: 'loop', arguments: '{}' } }] } }] },
+        ]);
+        try {
+            const client = new LLMClient({ provider: 'openai', baseUrl: `http://127.0.0.1:${port}`, model: 'm' });
+            // maxSteps=2：2 轮工具后兜底 generate。但服务器只会返回工具调用的 JSON，
+            // 兜底 generate 提取 text 为空会抛错——用它验证兜底路径确实被走到。
+            await assert.rejects(
+                () => client.runTools([{ role: 'user', content: 'x' }], [{ name: 'loop' }], () => 'again', { maxSteps: 2 }),
+                /空内容/,
+            );
+        } finally { srv.close(); }
     });
 });

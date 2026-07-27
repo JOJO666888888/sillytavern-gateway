@@ -115,6 +115,88 @@ describe('GatewayCore 出站过滤器', () => {
     });
 });
 
+describe('GatewayCore 入站过滤器', () => {
+    const makeMsg = () => new InboundMessage({ platform: 'qq', chatId: 'g1', senderId: 'u1', senderName: '张三', content: 'hello' });
+
+    test('按 priority 从小到大依次执行', () => {
+        const gc = new GatewayCore();
+        const order = [];
+        gc.addInboundFilter(m => { order.push('late'); return m; }, { name: 'late', priority: 50 });
+        gc.addInboundFilter(m => { order.push('early'); return m; }, { name: 'early', priority: 5 });
+
+        gc.applyInboundFilters(makeMsg());
+        assert.deepStrictEqual(order, ['early', 'late']);
+    });
+
+    test('过滤器可改写消息内容', () => {
+        const gc = new GatewayCore();
+        gc.addInboundFilter(m => { m.content = m.content.toUpperCase(); return m; }, { name: 'upper' });
+        const result = gc.applyInboundFilters(makeMsg());
+        assert.strictEqual(result.content, 'HELLO');
+    });
+
+    test('返回 null 拦截消息', () => {
+        const gc = new GatewayCore();
+        gc.addInboundFilter(() => null, { name: 'block' });
+        const result = gc.applyInboundFilters(makeMsg());
+        assert.strictEqual(result, null);
+    });
+
+    test('单个过滤器抛错被隔离，消息不丢失（fail-open）', () => {
+        const gc = new GatewayCore();
+        let reached = false;
+        gc.addInboundFilter(() => { throw new Error('boom'); }, { name: 'bad', priority: 1 });
+        gc.addInboundFilter(m => { reached = true; return m; }, { name: 'good', priority: 2 });
+
+        const result = gc.applyInboundFilters(makeMsg());
+        assert.ok(reached, '后续过滤器仍应执行');
+        assert.ok(result, '消息不应因异常而丢失');
+    });
+
+    test('removeInboundFiltersByPlugin 精确回收指定插件的过滤器', () => {
+        const gc = new GatewayCore();
+        gc.addInboundFilter(m => m, { name: 'f1', pluginName: 'plugin-a' });
+        gc.addInboundFilter(m => m, { name: 'f2', pluginName: 'plugin-a' });
+        gc.addInboundFilter(m => m, { name: 'f3', pluginName: 'plugin-b' });
+
+        const removed = gc.removeInboundFiltersByPlugin('plugin-a');
+        assert.strictEqual(removed, 2);
+        assert.strictEqual(gc.inboundFilters.length, 1);
+        assert.strictEqual(gc.inboundFilters[0].name, 'f3');
+    });
+
+    test('addInboundFilter 返回的注销函数可移除自身', () => {
+        const gc = new GatewayCore();
+        const off = gc.addInboundFilter(m => m, { name: 'x' });
+        assert.strictEqual(gc.inboundFilters.length, 1);
+        off();
+        assert.strictEqual(gc.inboundFilters.length, 0);
+    });
+
+    test('handleInbound 中被拦截的消息不进入队列、不触发处理器', () => {
+        const gc = new GatewayCore();
+        let handlerCalled = false;
+        gc.onMessage(() => { handlerCalled = true; });
+        gc.addInboundFilter(() => null, { name: 'block-all' });
+
+        const before = gc.inboundQueue.length;
+        gc.handleInbound('qq', makeMsg());
+
+        assert.strictEqual(handlerCalled, false, '被拦截消息不应触发处理器');
+        assert.strictEqual(gc.inboundQueue.length, before, '被拦截消息不应进入入站队列');
+    });
+
+    test('handleInbound 中过滤器改写在处理器可见', () => {
+        const gc = new GatewayCore();
+        let seen = null;
+        gc.onMessage((m) => { seen = m.content; });
+        gc.addInboundFilter(m => { m.content = '[已脱敏]'; return m; }, { name: 'redact' });
+
+        gc.handleInbound('qq', makeMsg());
+        assert.strictEqual(seen, '[已脱敏]');
+    });
+});
+
 describe('消息模型（媒体抽象层 P1-D）', () => {
     test('MediaAsset 保留类型，mediaUrls 向后兼容派生', () => {
         const msg = new InboundMessage({

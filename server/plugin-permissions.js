@@ -45,6 +45,13 @@ export const PERMISSIONS = {
         desc: '注册出站过滤器（可修改或拦截发出的消息）',
         default: true,
     },
+    'gateway.inbound': {
+        risk: 'medium',
+        // 比出站过滤更强：能看到**每一条**用户消息（在命令路由/会话历史/LLM 之前），
+        // 且能静默拦截。因此与 sessions 同级，非默认授予、需显式声明。
+        desc: '注册入站过滤器（可读取、改写或拦截所有收到的消息）',
+        default: false,
+    },
     'gateway.send': {
         risk: 'medium',
         desc: '主动向任意平台/会话发送消息',
@@ -53,6 +60,13 @@ export const PERMISSIONS = {
     'sessions': {
         risk: 'medium',
         desc: '读写会话历史记录（能看到用户的聊天内容）',
+        default: false,
+    },
+    'llm': {
+        risk: 'medium',
+        // 非默认授予：调用要花钱，且插件能把任意内容送给模型。
+        // 但只给"调用"能力，拿不到 apiKey——与 gatewayConfig 脱敏视图同一原则。
+        desc: '调用网关配置的 LLM（消耗你的 API 额度，但拿不到 API key）',
         default: false,
     },
     'gateway.config': {
@@ -180,15 +194,17 @@ const SEND_METHODS = new Set(['sendMessage', 'sendDirect', 'broadcast']);
 /** 需要 gateway.admin 权限的网关方法 */
 const ADMIN_METHODS = new Set([
     'registerAdapter', 'unregisterAdapter', 'start', 'stop',
-    'setCommandRouter', 'syncAllCommands', 'removeOutboundFiltersByPlugin',
+    'setCommandRouter', 'syncAllCommands', 'removeOutboundFiltersByPlugin', 'removeInboundFiltersByPlugin',
 ]);
+/** LLM 服务方法（未授予 llm 权限时，调用这些方法会抛出清晰错误） */
+const LLM_METHODS = ['chat', 'chatStream', 'chatWithTools', 'runTools', 'verify'];
 
 /**
  * 构造某插件专属的、按权限收窄的 services。
  *
  * @param {string} pluginName
  * @param {Set<string>} granted - 已授予的权限
- * @param {object} raw - 原始服务 { gateway, sessionManager, configManager, savePluginConfig }
+ * @param {object} raw - 原始服务 { gateway, sessionManager, configManager, savePluginConfig, llmService }
  * @param {Function[]} managedUnregister - 收集出站过滤器注销函数（框架代管回收）
  * @returns {object} 收窄后的 services
  */
@@ -204,6 +220,20 @@ export function buildScopedServices(pluginName, granted, raw, managedUnregister 
                 }
                 return (filter, opts = {}) => {
                     const unregister = target.addOutboundFilter(filter, { ...opts, pluginName });
+                    if (typeof unregister === 'function') managedUnregister.push(unregister);
+                    return unregister;
+                };
+            }
+
+            // 入站过滤器：与出站对称，但权限更严（gateway.inbound 非默认授予）
+            if (prop === 'addInboundFilter') {
+                if (!granted.has('gateway.inbound')) {
+                    return () => {
+                        throw new Error(`插件 ${pluginName} 注册入站过滤器需要 "gateway.inbound" 权限`);
+                    };
+                }
+                return (filter, opts = {}) => {
+                    const unregister = target.addInboundFilter(filter, { ...opts, pluginName });
                     if (typeof unregister === 'function') managedUnregister.push(unregister);
                     return unregister;
                 };
@@ -233,9 +263,17 @@ export function buildScopedServices(pluginName, granted, raw, managedUnregister 
             'getOrCreate', 'deleteSession', 'setMetadata',
         ]);
 
+    const llm = (granted.has('llm') && raw.llmService)
+        ? raw.llmService
+        : deniedStub(pluginName, 'llm', LLM_METHODS);
+
     return {
         gateway,
         sessionManager,
+        // 调用网关配置的 LLM。未授予 llm 权限（或服务缺失）时为拒绝桩，
+        // 调用即抛出清晰错误。授予时也只给"调用"能力——apiKey 在服务内部
+        // 用于拼 HTTP 请求，绝不流入插件（与 gatewayConfig 脱敏同一原则）。
+        llm,
         // 关键：不再传出原始 configManager。插件只能通过受控视图读取，
         // 且凭据字段恒被脱敏。
         gatewayConfig: makeGatewayConfigView(raw.configManager, granted, pluginName),

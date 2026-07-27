@@ -22,6 +22,7 @@ export class GatewayCore extends EventEmitter {
         });
         this.messageHandlers = [];        // 消息处理函数列表
         this.outboundFilters = [];        // 出站消息过滤器列表
+        this.inboundFilters = [];         // 入站消息过滤器列表（在命令路由/会话历史之前应用）
         this.messageLog = [];             // 最近消息日志（仅观测用，会截断）
         this.maxLogSize = 200;
         this.running = false;
@@ -173,6 +174,16 @@ export class GatewayCore extends EventEmitter {
     handleInbound(platform, message) {
         message.platform = platform;
 
+        // 入站过滤器链：在记录日志/emit/分发到命令路由与会话历史**之前**应用。
+        // 插件可在此改写消息（脱敏、翻译、规范化）或返回 null 拦截（黑名单、限流）。
+        // 与出站过滤链对称。返回 null 表示消息被拦截：不记录、不 emit、不分发。
+        const filtered = this.applyInboundFilters(message);
+        if (!filtered) {
+            logger.debug(`[${platform}] 入站消息被过滤器拦截，已丢弃`);
+            return;
+        }
+        message = filtered;
+
         // 记录消息日志
         this.addMessageLog('inbound', message);
 
@@ -271,6 +282,76 @@ export class GatewayCore extends EventEmitter {
         const removed = before - this.outboundFilters.length;
         if (removed > 0) logger.info(`已回收插件 ${pluginName} 的 ${removed} 个出站过滤器`);
         return removed;
+    }
+
+    // ==================== 入站过滤器（与出站对称） ====================
+
+    /**
+     * 注册入站消息过滤器。
+     * 在消息被记录/emit/分发到命令路由与会话历史**之前**依次应用。
+     * @param {Function} filter - (message: InboundMessage) => InboundMessage|null
+     *   返回修改后的消息（可改写内容/字段），返回 null 表示拦截该消息（后续处理全部跳过）
+     * @param {object} options - { name?: string, priority?: number, pluginName?: string }
+     * @returns {Function} 取消注册的函数
+     */
+    addInboundFilter(filter, options = {}) {
+        const entry = {
+            filter,
+            name: options.name || 'anonymous',
+            priority: options.priority ?? 100,
+            pluginName: options.pluginName || null, // 归属插件（供禁用/卸载时框架强制回收）
+        };
+        this.inboundFilters.push(entry);
+        this.inboundFilters.sort((a, b) => a.priority - b.priority);
+        logger.info(`入站过滤器已注册: ${entry.name} (priority: ${entry.priority}${entry.pluginName ? `, plugin: ${entry.pluginName}` : ''})`);
+        return () => {
+            const idx = this.inboundFilters.indexOf(entry);
+            if (idx > -1) this.inboundFilters.splice(idx, 1);
+        };
+    }
+
+    /**
+     * 移除指定名称的入站过滤器
+     * @param {string} name
+     */
+    removeInboundFilter(name) {
+        this.inboundFilters = this.inboundFilters.filter(f => f.name !== name);
+    }
+
+    /**
+     * 移除某插件注册的所有入站过滤器（框架代管回收的安全网）
+     * @param {string} pluginName
+     * @returns {number} 移除数量
+     */
+    removeInboundFiltersByPlugin(pluginName) {
+        if (!pluginName) return 0;
+        const before = this.inboundFilters.length;
+        this.inboundFilters = this.inboundFilters.filter(f => f.pluginName !== pluginName);
+        const removed = before - this.inboundFilters.length;
+        if (removed > 0) logger.info(`已回收插件 ${pluginName} 的 ${removed} 个入站过滤器`);
+        return removed;
+    }
+
+    /**
+     * 应用入站过滤器链
+     * @param {InboundMessage} message
+     * @returns {InboundMessage|null} 过滤后的消息，或 null（被拦截）
+     */
+    applyInboundFilters(message) {
+        let msg = message;
+        for (const entry of this.inboundFilters) {
+            try {
+                msg = entry.filter(msg);
+                if (msg === null) {
+                    logger.debug(`入站消息被过滤器 ${entry.name} 拦截`);
+                    return null;
+                }
+            } catch (error) {
+                // 单个过滤器出错不打断链，也不吞掉消息（fail-open：坏插件不该让网关聋掉）
+                logger.error(`入站过滤器 ${entry.name} 执行失败: ${error.message}`);
+            }
+        }
+        return msg;
     }
 
     /**
