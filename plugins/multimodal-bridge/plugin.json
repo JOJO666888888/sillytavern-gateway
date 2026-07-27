@@ -1,0 +1,18 @@
+{
+    "name": "multimodal-bridge",
+    "displayName": "多模态桥接",
+    "version": "1.0.0",
+    "author": "gateway-team",
+    "description": "看图说话：收到图片消息时，用网关配置的多模态 LLM 生成图片描述并回复。/describe 也可手动触发对最近图片的描述。对标 AstrBot 的多模态能力。",
+    "main": "index.js",
+    "priority": 100,
+    "enabled": false,
+    "dependencies": [],
+    "permissions": ["llm"],
+    "config": {
+        "autoDescribe": { "type": "boolean", "default": false, "description": "是否对收到的图片自动生成描述" },
+        "autoInGroup": { "type": "boolean", "default": false, "description": "群聊中也自动描述（否则仅私聊）" },
+        "prompt": { "type": "string", "default": "请用简洁的中文描述这张图片的主要内容。", "description": "描述图片时的提示词" },
+        "maxTokens": { "type": "number", "default": 512, "min": 1, "max": 4096, "description": "最大生成 token 数" }
+    }
+}

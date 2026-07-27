@@ -41,8 +41,10 @@
 | 权限 | 说明 |
 |------|------|
 | `sessions` | 读写会话历史（能看到用户聊天内容） |
+| `gateway.inbound` | 注册入站过滤器（可读取/改写/拦截**所有**收到的消息） |
 | `gateway.config` | 读取网关全局配置（**凭据字段恒被脱敏**） |
 | `gateway.admin` | 管理适配器与其它插件 |
+| `llm` | 调用网关配置的 LLM（消耗 API 额度，**但拿不到 API key**） |
 
 **重要变化**：插件不再能读取 bot token / 网关鉴权 token。
 `ctx.getConfig('adapters.telegram.botToken')` 现在返回 `undefined`（无权限）或
@@ -271,6 +273,13 @@ export default class MyPlugin extends GatewayPlugin {
     ];
 }
 ```
+
+> **定时任务由调度器实际执行**（每分钟轮询，按分钟触发）。`cron` 为标准 **5 段**：`分 时 日 月 周`。
+> 支持 `*`、`*/N`（步进）、`N`（精确）、`A,B,C`（列表）、`N-M`（区间）、`A-B/N`（区间步进）。
+> 周字段 `0` 与 `7` 均表示周日；日与周都非 `*` 时按 cron 惯例取「或」。
+> 定时任务的 `ctx` **没有入站消息**（`ctx.message` 为 `null`）——用 `ctx.send(platform, chatId, text)`
+> 主动推送、用 `ctx.llm.*` 调用模型（需 `llm` 权限）。单个任务抛错会被调度器隔离，不影响其它任务。
+> 完整样板见 `plugins/example-scheduler/`。
 
 ### 5.2 生命周期钩子
 
@@ -548,6 +557,51 @@ await gateway.sendDirect(derivedMessage, {
 
 > 💡 `configUi: "auto"` 的插件从 GitHub 安装后即自动获得配置 UI，**无需修改 panel.html**。
 
+### 8.5 入站消息过滤器（Inbound Filters，需 `gateway.inbound` 权限）
+
+与出站过滤器对称，但作用在 **入站** 方向：在消息被记录、分发到命令路由、写入会话历史、送入推理管线**之前**依次应用。适合消息预处理（脱敏、翻译、规范化）或拦截（黑名单、限流、防刷）。这是移植 AstrBot 消息预处理/拦截型插件的挂载点。
+
+> ⚠️ 入站过滤器能看到**每一条**用户消息且能静默拦截，权限比出站更严：需在 plugin.json 显式声明 `"permissions": ["gateway.inbound"]`（medium 风险，非默认授予）。
+
+```javascript
+async onLoad() {
+    const gateway = this._services.gateway;
+    if (gateway && gateway.addInboundFilter) {
+        this._removeInbound = gateway.addInboundFilter(
+            (msg) => this.filterInbound(msg),
+            { name: 'my-inbound', priority: 10 }   // priority 越小越先执行
+        );
+    }
+}
+
+async onUnload() {
+    if (this._removeInbound) { this._removeInbound(); this._removeInbound = null; }
+}
+
+/**
+ * @param {InboundMessage} message - 入站消息（含 platform/chatId/senderId/content 等）
+ * @returns {InboundMessage|null} 修改后的消息；返回 null 表示拦截（后续处理全部跳过）
+ */
+filterInbound(message) {
+    if (!message?.content) return message;
+
+    // 例：脱敏手机号
+    message.content = message.content.replace(/1\d{10}/g, '[手机号]');
+
+    // 例：拦截黑名单用户（返回 null，网关将丢弃这条消息）
+    if (this.getConfig('blocklist')?.includes(message.senderId)) return null;
+
+    return message;
+}
+```
+
+- 返回 **修改后的消息**（直接改 `message.content` 等字段即可），改写对后续所有处理（命令路由/会话历史/监听器）可见。
+- 返回 **`null`** 表示拦截：消息不记录、不 emit、不分发。
+- 过滤器抛异常被框架捕获记录，**不中断链、不吞消息**（fail-open：坏插件不该让网关聋掉）。
+- 多个过滤器按 `priority` 升序串成链；禁用/卸载/重载时框架自动回收（与出站过滤器同一安全网）。
+
+**入站过滤器 vs 事件监听器**：监听器在命令路由**之后**跑、只能 `stopPropagation`，无法改写消息或阻止命令/会话历史；入站过滤器在最前端,能改写和拦截一切。需要预处理/拦截用过滤器，需要响应/回复用监听器。
+
 ---
 
 ## 9. PluginContext（ctx）上下文 API
@@ -594,7 +648,67 @@ ctx.getAdapters();                     // 获取所有适配器状态
 ctx.getSessions();                     // 获取所有会话列表
 ```
 
-### 9.4 控制流
+### 9.4 LLM 调用（需 `llm` 权限）
+
+```javascript
+// 非流式：发送消息数组，返回完整回复
+const reply = await ctx.llm.chat([
+  { role: 'system', content: '你是乐于助人的助手。' },
+  { role: 'user', content: ctx.content },
+], { temperature: 0.7, max_tokens: 500 });
+
+// 流式：边收边回调增量，同时返回完整文本
+await ctx.llm.chatStream(messages, {}, (delta, full) => {
+  // delta: 本次增量文本；full: 截至目前完整文本
+  console.log(`收到: ${delta}`);
+});
+
+// 连通性校验
+const { ok, message } = await ctx.llm.verify();
+```
+
+`messages` 与 `sampling` 格式与 `LLMClient` 一致（`generate()` 的参数），
+`content` 可以是字符串或多模态 parts 数组。插件拿不到 API key。
+
+#### 工具调用（function-calling / Agent）
+
+声明一组工具交给模型，模型自主决定调用哪些、传什么参数，网关执行后把结果回灌，
+循环到模型给出最终答复。三 provider（openai/claude/gemini）统一，插件无需关心差异。
+这是移植 AstrBot agent 型 / 联网搜索类插件的挂载点。
+
+```javascript
+const tools = [{
+  name: 'get_weather',
+  description: '查询某城市的当前天气',
+  parameters: {                         // JSON Schema
+    type: 'object',
+    properties: { city: { type: 'string', description: '城市名' } },
+    required: ['city'],
+  },
+}];
+
+// 方式一：runTools —— 网关代跑完整 agent 循环（推荐）
+const { text, steps } = await ctx.llm.runTools(
+  [{ role: 'user', content: ctx.content }],
+  tools,
+  async (name, args) => {               // executor：模型请求调用工具时回调
+    if (name === 'get_weather') return { weather: '晴', temp: '30℃' };
+    return { error: '未知工具' };
+  },
+  { maxSteps: 5 },                       // 防死循环，默认 5 轮
+);
+await ctx.reply(text);
+
+// 方式二：chatWithTools —— 只问一轮，插件自己掌控执行/回灌
+const { text, toolCalls } = await ctx.llm.chatWithTools(messages, tools);
+// toolCalls: [{ id, name, arguments }]，为空表示模型直接给了 text
+```
+
+- `executor` 返回值（对象/字符串）会被序列化回灌给模型；抛错时错误信息作为工具结果回灌（不中断循环）。
+- 达到 `maxSteps` 仍未收敛时，网关兜底再问一次（不带工具）逼出最终文本。
+- 完整样板见 `plugins/example-agent/`。
+
+### 9.5 控制流
 
 ```javascript
 ctx.stopPropagation();   // 阻止消息继续传递给后续插件（并标记已处理）
@@ -977,7 +1091,8 @@ this.meta                         // 元数据 {name, displayName, version, ...}
 this.logger.info/warn/error/debug // 日志
 this.getConfig(key?)              // 读配置
 this.setConfig(key, value)        // 写配置（自动持久化）
-this._services.gateway            // 网关核心（addOutboundFilter 等）
+this._services.gateway            // 网关核心（addOutboundFilter / addInboundFilter 等）
+this._services.llm                // LLM 调用（chat/chatStream/chatWithTools/runTools/verify，需 "llm" 权限）
 ```
 
 ### 15.2 上下文 ctx
@@ -995,6 +1110,11 @@ await ctx.send(platform, chatId, text, {chatType?})
 ctx.getHistory(limit?) / ctx.clearHistory()
 ctx.getConfig('path.to.key')      // 网关全局配置
 ctx.getAdapters() / ctx.getSessions()
+ctx.llm.chat(msgs, sampling)      // 调用 LLM（需 "llm" 权限）
+ctx.llm.chatStream(msgs, sampling, onDelta?)  // 流式调用
+ctx.llm.chatWithTools(msgs, tools, sampling?) // 单轮工具调用 → { text, toolCalls }
+ctx.llm.runTools(msgs, tools, executor, opts?) // agent 循环 → { text, steps }
+ctx.llm.verify()                  // 连通性校验
 ctx.stopPropagation()             // 中断管线
 ```
 
@@ -1031,6 +1151,90 @@ GET    /api/plugins/marketplace/search    市场搜索
 
 ---
 
+## 16. 从 AstrBot 移植
+
+AstrBot（Python）拥有丰富的插件生态。本网关提供 **`server/compat` 兼容层**，把 AstrBot 的核心 API（`Star` 基类、`AstrMessageEvent`、消息组件、生成器 handler）用同名 JS 接口镜像出来，让移植变成**逐行翻译**而非架构重写。
+
+> 兼容层不是 Python 运行时——它不"跑" AstrBot 代码，而是让你把 Python 源码按对照表翻译成语义等价的 JS。可用 `astrbot-port` skill 自动完成翻译（见 `docs/skills/astrbot-port.md`）。
+
+### 16.1 一行 import 替换
+
+AstrBot 里分散的多条 import：
+
+```python
+from astrbot.api.star import Context, Star, register
+from astrbot.api.event import AstrMessageEvent, filter
+import astrbot.api.message_components as Comp
+```
+
+统一替换为：
+
+```js
+import {
+    Star, AstrMessageEvent, Plain, Image, At, Reply,
+    defineCommand, defineLLMTool,
+} from '../../server/compat/index.js';
+```
+
+### 16.2 API 对照表
+
+| AstrBot (Python) | 本网关 (JS) |
+|---|---|
+| `class Foo(Star):` | `export default class Foo extends Star {` |
+| `async def initialize(self):` | `async initialize() {` |
+| `async def terminate(self):` | `async terminate() {` |
+| `@filter.command("hi", alias={'嗨'})` | `static commands = [defineCommand('hi', { alias: ['嗨'], handler: 'hi' })]` |
+| `@filter.llm_tool("查天气")` | `static get llm_tools() { return [defineLLMTool('name', '查天气', schema, 'handler')] }` |
+| `async def h(self, event):` + `yield` | `async *h(event) {` + `yield`（兼容层自动 drain 发送） |
+| `yield event.plain_result("x")` | `yield event.plain_result('x')` |
+| `yield event.image_result(u)` | `yield event.image_result(u)` |
+| `yield event.chain_result([Comp.Plain("x"), Comp.Image.fromURL(u)])` | `yield event.chain_result([new Plain('x'), Image.fromURL(u)])` |
+| `event.message_str` / `get_sender_name()` / `get_group_id()` / `is_admin()` | 同名 |
+| `event.send("x")` | `await event.send('x')` |
+| `Comp.Plain / Image / At / Reply` | `new Plain / Image / At / Reply`（`Image.fromURL/fromFileSystem` 同名） |
+| `self.context.send_message(session, chain)` | `this.context.send_message(session, chain)` |
+| `self.context.get_using_provider()` | `await this.context.get_using_provider()`（需 `llm` 权限） |
+| `_conf_schema.json` | `plugin.json` 的 `config` 字段 |
+| `self.config["key"]` | `this.getConfig('key')` |
+| `self.config.save_config()` | `this.setConfig(key, value)` |
+
+### 16.3 生成器 handler（核心）
+
+AstrBot handler 是 **异步生成器**，用 `yield` 发送一条或多条消息。兼容层的 `Star` 基类会自动检测生成器 handler 并包装：每次 `yield` 出的 result 依次发送，异常隔离。
+
+```js
+// AstrBot: async def hello(self, event): yield event.plain_result(...)
+async *hello(event) {
+    yield event.plain_result(`你好 ${event.get_sender_name()}`);
+    yield event.chain_result([new At(event.get_sender_id()), new Plain(' 欢迎！')]);
+}
+```
+
+非生成器的普通 handler（`async handler(ctx) { return ctx.reply(...) }`）也照常支持，不会被包装。
+
+### 16.4 三类插件移植配方
+
+- **命令型**（`@filter.command`）→ `static commands = [defineCommand(...)]` + 生成器 handler
+- **Agent/工具型**（`@filter.llm_tool`）→ `static get llm_tools()` + `executeTool` + `ctx.llm.runTools`（需 `llm` 权限，见 §9.4）
+- **消息处理/拦截型** → 入站过滤器 `gateway.addInboundFilter`（需 `gateway.inbound` 权限，见 §8.5）
+
+活样板：`plugins/example-astrbot-port/index.js`（一个插件同时演示前两类）。
+
+### 16.5 已知不支持项与降级
+
+| AstrBot 特性 | 本网关处理 |
+|---|---|
+| `event.send_streaming(...)` | 降级为普通发送（网关无流式出站） |
+| `event.send_typing()` | 无操作（仅日志） |
+| `Comp.Face` / `Comp.Poke` / `Comp.Node` | 不支持，忽略或改文本 |
+| `@filter.permission_type` | `defineCommand('x', { adminOnly: true })` |
+| `@filter.regex` | handler 内手动 `event.message_str.match(...)` |
+| 平台专有 API（`get_group`、`react`） | 不支持；用 `event.send` / `ctx.send` |
+
+> 安全不变量不变：兼容层的 `event.send` / `context.get_using_provider` 一律走已按权限收窄的 ctx，插件仍拿不到 bot token / API key。
+
+---
+
 ## 参考实现
 
 | 插件 | 路径 | 学习重点 |
@@ -1038,5 +1242,9 @@ GET    /api/plugins/marketplace/search    市场搜索
 | Hello World | `plugins/example-hello/` | 最小命令 + 监听器 + 配置 |
 | 掷骰子 | `plugins/example-dice/` | 多命令 + 参数解析 |
 | 正则过滤器 | `plugins/regex-filter/` | 出站过滤器 + 子命令 + 前端抽屉式配置界面 |
+| 定时任务 | `plugins/example-scheduler/` | `static schedules` + 主动推送 |
+| 入站过滤器 | `plugins/example-inbound-filter/` | `gateway.inbound` + 消息改写/拦截 |
+| 工具调用 Agent | `plugins/example-agent/` | `ctx.llm.runTools` function-calling |
+| AstrBot 移植示范 | `plugins/example-astrbot-port/` | `server/compat` 兼容层 + 生成器 handler |
 
 > 有疑问时，先读 `server/plugin-sdk.js`、`server/plugin-context.js` 的源码注释——那是最权威的 API 定义。

@@ -1,0 +1,22 @@
+{
+    "name": "persona-router",
+    "version": "1.0.0",
+    "description": "角色路由：为每个会话切换不同人设（system prompt），并用网关 LLM 以该人设对话",
+    "author": "sillytavern-gateway",
+    "main": "index.js",
+    "enabled": false,
+    "permissions": ["llm", "sessions"],
+    "config": {
+        "personas": {
+            "default": "你是一个乐于助人的助手。",
+            "猫娘": "你是一只可爱的猫娘，说话时会在句尾加上「喵～」，性格活泼粘人。",
+            "程序员": "你是一位资深软件工程师，回答简洁、务实，善于给出可运行的示例代码。"
+        },
+        "defaultPersona": "default",
+        "autoReply": false,
+        "autoReplyInGroup": false,
+        "historyLimit": 10,
+        "temperature": 0.8,
+        "maxTokens": 1024
+    }
+}

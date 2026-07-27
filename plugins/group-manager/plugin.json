@@ -1,0 +1,18 @@
+{
+    "name": "group-manager",
+    "version": "1.0.0",
+    "description": "群管理：关键词自动回复、群公告广播、群规查询等群聊辅助能力",
+    "author": "sillytavern-gateway",
+    "main": "index.js",
+    "enabled": false,
+    "permissions": ["gateway.send"],
+    "config": {
+        "keywords": [
+            { "match": "帮助", "reply": "输入 /help 查看可用命令" },
+            { "match": "群规", "reply": "请文明发言，禁止刷屏与广告。" }
+        ],
+        "keywordMode": "contains",
+        "keywordInGroupOnly": true,
+        "keywordCooldownSeconds": 10
+    }
+}

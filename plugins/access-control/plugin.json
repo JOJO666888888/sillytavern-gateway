@@ -1,0 +1,17 @@
+{
+    "name": "access-control",
+    "displayName": "权限管理",
+    "version": "1.0.0",
+    "author": "gateway-team",
+    "description": "黑名单与限流：管理员可拉黑/解禁用户，被拉黑用户的消息在进入命令路由前即被拦截；可选简单频率限制（每人每分钟消息上限）。对标 AstrBot 的权限控制。",
+    "main": "index.js",
+    "priority": 100,
+    "enabled": false,
+    "dependencies": [],
+    "permissions": ["gateway.inbound", "config"],
+    "config": {
+        "blocklist": { "type": "array", "default": [], "description": "被拉黑的用户身份列表（platform:senderId 或裸 senderId）" },
+        "rateLimit": { "type": "number", "default": 0, "min": 0, "max": 120, "description": "每人每分钟消息上限（0=不限流）" },
+        "rateLimitAction": { "type": "string", "default": "drop", "description": "超限动作：drop=丢弃 / warn=丢弃并私下提示（暂等同 drop）" }
+    }
+}

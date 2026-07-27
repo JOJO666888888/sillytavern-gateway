@@ -1,0 +1,16 @@
+{
+    "name": "example-astrbot-port",
+    "displayName": "AstrBot 移植示范",
+    "version": "1.0.0",
+    "author": "gateway-team",
+    "description": "用 AstrBot 兼容层（Star 基类 + 生成器 handler + 消息组件 + llm_tool）落地的示范插件，展示一个典型 AstrBot 插件移植后长什么样。",
+    "main": "index.js",
+    "priority": 100,
+    "enabled": false,
+    "dependencies": [],
+    "permissions": ["llm"],
+    "config": {
+        "greeting": { "type": "string", "default": "你好", "description": "问候语前缀" },
+        "maxSteps": { "type": "number", "default": 5, "min": 1, "max": 10, "description": "工具调用最大轮数" }
+    }
+}

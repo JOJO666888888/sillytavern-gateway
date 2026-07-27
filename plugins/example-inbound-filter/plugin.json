@@ -1,0 +1,16 @@
+{
+    "name": "example-inbound-filter",
+    "displayName": "入站过滤示例",
+    "version": "1.0.0",
+    "author": "gateway-team",
+    "description": "演示 addInboundFilter：在命令路由/会话历史之前脱敏、拦截黑名单用户。移植 AstrBot 消息预处理/拦截型插件的参考样板。",
+    "main": "index.js",
+    "priority": 100,
+    "enabled": false,
+    "dependencies": [],
+    "permissions": ["gateway.inbound"],
+    "config": {
+        "blocklist": { "type": "array", "default": [], "inputMode": "csv", "description": "黑名单发送者 ID（逗号分隔），来自这些用户的消息将被直接拦截" },
+        "redactPhone": { "type": "boolean", "default": true, "description": "是否把消息中的手机号替换为 [手机号]" }
+    }
+}

@@ -1,0 +1,20 @@
+{
+    "name": "llm-chat",
+    "displayName": "LLM 直连",
+    "version": "1.0.0",
+    "author": "gateway-team",
+    "description": "让机器人用网关配置的 LLM 直接对话：/chat 命令问答，可选群/私聊自动回复，带多轮会话记忆。对标 AstrBot 的 LLM 直连能力。",
+    "main": "index.js",
+    "priority": 100,
+    "enabled": false,
+    "dependencies": [],
+    "permissions": ["llm", "sessions"],
+    "config": {
+        "systemPrompt": { "type": "string", "default": "你是一个乐于助人的助手，用简洁的中文回答。", "description": "系统提示词" },
+        "autoReply": { "type": "boolean", "default": false, "description": "是否对非命令消息自动回复（私聊/被@时）" },
+        "autoReplyInGroup": { "type": "boolean", "default": false, "description": "群聊中是否也自动回复（仅在被@时）" },
+        "historyLimit": { "type": "number", "default": 10, "min": 0, "max": 50, "description": "带入模型的历史轮数（0=不带历史）" },
+        "temperature": { "type": "number", "default": 0.7, "min": 0, "max": 2, "description": "采样温度" },
+        "maxTokens": { "type": "number", "default": 1024, "min": 1, "max": 8192, "description": "最大生成 token 数" }
+    }
+}

@@ -1,0 +1,16 @@
+{
+    "name": "example-scheduler",
+    "displayName": "定时任务示例",
+    "version": "1.0.0",
+    "author": "gateway-team",
+    "description": "演示 static schedules 定时任务：按 cron 主动推送消息 / 调用 LLM。移植 AstrBot 定时类插件的参考样板。",
+    "main": "index.js",
+    "priority": 100,
+    "enabled": false,
+    "dependencies": [],
+    "permissions": ["llm"],
+    "config": {
+        "targetPlatform": { "type": "string", "default": "", "description": "定时推送的目标平台（如 qq / telegram），留空则只记日志不推送" },
+        "targetChatId": { "type": "string", "default": "", "description": "定时推送的目标会话 ID" }
+    }
+}

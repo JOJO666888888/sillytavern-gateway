@@ -1,0 +1,20 @@
+{
+    "name": "web-search",
+    "version": "1.0.0",
+    "description": "联网搜索：给 LLM 装上一个 web_search 工具，模型自主决定何时联网查资料后作答",
+    "author": "sillytavern-gateway",
+    "main": "index.js",
+    "enabled": false,
+    "permissions": ["llm"],
+    "config": {
+        "provider": "duckduckgo",
+        "maxResults": 5,
+        "maxSteps": 4,
+        "systemPrompt": "你是联网助手，可用 web_search 工具查资料。需要实时/事实信息时先搜索再作答，并用中文简洁回答，附上关键来源。",
+        "searchApi": {
+            "url": "",
+            "apiKey": "",
+            "queryParam": "q"
+        }
+    }
+}

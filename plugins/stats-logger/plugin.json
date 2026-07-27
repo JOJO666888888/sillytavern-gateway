@@ -1,0 +1,12 @@
+{
+    "name": "stats-logger",
+    "version": "1.0.0",
+    "description": "日志统计：统计入站消息量（按平台/会话/用户），提供 /stats 查询",
+    "author": "sillytavern-gateway",
+    "main": "index.js",
+    "enabled": false,
+    "permissions": ["gateway.inbound"],
+    "config": {
+        "topN": 10
+    }
+}
