@@ -385,6 +385,7 @@ export class NativeRuntime {
             userInput: userContent,
             userName: profile.persona?.name || 'User',
             tokenBudget: this.config.tokenBudget ?? 0,
+            enableMacros: this.config.enableMacros !== false,
         });
 
         return { messages, sampling, card, archive, profile, world };
@@ -425,7 +426,14 @@ export class NativeRuntime {
         const card = this.getCard(profile.character);
         if (!card) return null;
         const userName = profile.persona?.name || 'User';
-        return (card.firstMes || '')
+        const enableMacros = this.config.enableMacros !== false;
+        const text = card.firstMes || '';
+        if (!text) return null;
+        if (enableMacros) {
+            const engine = new MacroEngine({ charName: card.name, userName });
+            return engine.process(text) || null;
+        }
+        return text
             .replace(/\{\{char\}\}/gi, card.name)
             .replace(/\{\{user\}\}/gi, userName) || null;
     }

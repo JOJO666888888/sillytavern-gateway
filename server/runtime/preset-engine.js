@@ -1,5 +1,6 @@
 import fs from 'fs';
 import { createLogger } from '../utils/logger.js';
+import { MacroEngine } from './macro-engine.js';
 
 const logger = createLogger('preset');
 
@@ -259,13 +260,22 @@ export function buildPrompt(ctx) {
     const {
         card = {}, preset = defaultPreset(), persona, world,
         history = [], userInput = '', userName = 'User', tokenBudget = 0,
+        enableMacros = true,
     } = ctx;
     const charName = card.name || 'Assistant';
 
-    // 占位符替换
-    const sub = (s) => (s || '')
-        .replace(/\{\{char\}\}/gi, charName)
-        .replace(/\{\{user\}\}/gi, userName);
+    // 宏引擎：处理 ST 宏 (setvar/getvar/roll/random/注释) + {{char}}/{{user}}
+    // 每次调用 buildPrompt 初始化新的变量表 (单次请求级别作用域)
+    const macroEngine = new MacroEngine({ charName, userName });
+
+    // 文本处理：启用宏时走宏引擎, 否则仅做 char/user 替换 (向后兼容)
+    const sub = (s) => {
+        if (!s) return '';
+        if (enableMacros) return macroEngine.process(s);
+        return s
+            .replace(/\{\{char\}\}/gi, charName)
+            .replace(/\{\{user\}\}/gi, userName);
+    };
 
     // 各段内容
     const segments = {

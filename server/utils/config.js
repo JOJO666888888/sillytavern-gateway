@@ -120,6 +120,7 @@ const DEFAULT_CONFIG = {
     // 默认关闭；开启后入站消息由 native runtime 处理，不再依赖 ST 浏览器页面。
     runtime: {
         enabled: false,
+        enableMacros: true,
         charactersDir: 'assets/characters',
         worldbooksDir: 'assets/worldbooks',
         presetsDir: 'assets/presets',
