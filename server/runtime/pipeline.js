@@ -5,7 +5,7 @@ import { createLogger } from '../utils/logger.js';
 import { loadCharacterCard, listCharacterCards } from './card-loader.js';
 import { normalizeLorebook, loadLorebook, activateEntries } from './worldbook-engine.js';
 import { ChatArchive, listArchives } from './chat-archive.js';
-import { loadPreset, defaultPreset, buildPrompt } from './preset-engine.js';
+import { loadPreset, defaultPreset, buildPrompt, listPresetEntries } from './preset-engine.js';
 import { LLMClient } from './llm-client.js';
 import { ProfileStore } from './profile-store.js';
 
@@ -105,6 +105,9 @@ export class NativeRuntime {
         this._cardCache = new Map();
         this._bookCache = new Map();
         this._presetCache = new Map();
+        // 条目级启停覆盖（资产级，sidecar 文件，非破坏式：不改原资产文件）
+        this._overridesFile = path.resolve(ROOT, cfg.overridesFile || 'data/asset-overrides.json');
+        this._overrides = this._loadOverrides();
     }
 
     /** 资产列表（供命令/API 展示） */
@@ -132,23 +135,24 @@ export class NativeRuntime {
         return card;
     }
 
-    /** 按名字加载世界书（带缓存） */
+    /** 按名字加载世界书（带缓存）；应用资产级条目覆盖（禁用的条目置 enabled=false） */
     getWorldbook(name) {
         if (this._bookCache.has(name)) return this._bookCache.get(name);
         const file = path.join(this.dirs.worldbooks, `${name}.json`);
         if (!fs.existsSync(file)) return null;
-        const book = loadLorebook(file);
+        const disabled = this.getDisabledEntries('worldbooks', name);
+        const book = loadLorebook(file).map(e => disabled.has(e.id) ? { ...e, enabled: false } : e);
         this._bookCache.set(name, book);
         return book;
     }
 
-    /** 按名字加载预设（带缓存），无则默认 */
+    /** 按名字加载预设（带缓存），无则默认；应用资产级条目覆盖 */
     getPreset(name) {
         if (!name) return defaultPreset();
         if (this._presetCache.has(name)) return this._presetCache.get(name);
         const file = path.join(this.dirs.presets, `${name}.json`);
         if (!fs.existsSync(file)) return defaultPreset();
-        const p = loadPreset(file);
+        const p = loadPreset(file, this.getDisabledEntries('presets', name));
         this._presetCache.set(name, p);
         return p;
     }
@@ -158,6 +162,98 @@ export class NativeRuntime {
         this._cardCache.clear();
         this._bookCache.clear();
         this._presetCache.clear();
+    }
+
+    // ==================== 资产管理：删除 + 条目级启停覆盖 ====================
+
+    /** 加载条目覆盖（资产级 sidecar，非破坏式） */
+    _loadOverrides() {
+        try {
+            if (fs.existsSync(this._overridesFile)) {
+                const data = JSON.parse(fs.readFileSync(this._overridesFile, 'utf-8'));
+                return { worldbooks: data.worldbooks || {}, presets: data.presets || {} };
+            }
+        } catch (e) {
+            logger.warn(`条目覆盖文件读取失败，使用空覆盖: ${e.message}`);
+        }
+        return { worldbooks: {}, presets: {} };
+    }
+
+    _saveOverrides() {
+        try {
+            fs.mkdirSync(path.dirname(this._overridesFile), { recursive: true });
+            fs.writeFileSync(this._overridesFile, JSON.stringify(this._overrides, null, 2));
+        } catch (e) {
+            logger.error(`条目覆盖文件写入失败: ${e.message}`);
+        }
+    }
+
+    /** 取某资产的禁用条目 id 集合 */
+    getDisabledEntries(type, name) {
+        return new Set((this._overrides[type] || {})[name] || []);
+    }
+
+    /**
+     * 设置某资产的禁用条目 id（整体替换），落盘并清缓存。
+     * @param {string} type - worldbooks | presets
+     * @param {string} name
+     * @param {string[]} disabledIds
+     */
+    setDisabledEntries(type, name, disabledIds) {
+        if (!this._overrides[type]) this._overrides[type] = {};
+        this._overrides[type][name] = Array.from(new Set(disabledIds || []));
+        this._saveOverrides();
+        this.clearCache();
+    }
+
+    /**
+     * 删除一个资产文件（按去扩展名的基础名），并清理其条目覆盖。
+     * name 必须在 listAssets 中存在（防路径遍历）。
+     */
+    deleteAsset(type, name) {
+        const dir = this.dirs[type];
+        if (!dir) throw new Error(`未知资产类型: ${type}`);
+        if (!this.listAssets()[type].includes(name)) throw new Error(`未找到资产: ${type}/${name}`);
+        const validExts = type === 'characters' ? ['.png', '.json'] : ['.json'];
+        for (const ext of validExts) {
+            const file = path.join(dir, name + ext);
+            if (fs.existsSync(file)) fs.unlinkSync(file);
+        }
+        if (this._overrides[type]) {
+            delete this._overrides[type][name];
+            this._saveOverrides();
+        }
+        this.clearCache();
+    }
+
+    /**
+     * 列出某资产的可切换条目（含当前启用状态 = 文件默认 && 未被覆盖禁用）。
+     * 仅 worldbooks / presets 有条目概念；返回 [] 表示无可切换条目。
+     * @returns {Array<{id: string, label: string, enabled: boolean, isMarker?: boolean}>}
+     */
+    listEntries(type, name) {
+        if (type !== 'worldbooks' && type !== 'presets') return [];
+        const dir = this.dirs[type];
+        if (!dir || !this.listAssets()[type].includes(name)) {
+            throw new Error(`未找到资产: ${type}/${name}`);
+        }
+        const disabled = this.getDisabledEntries(type, name);
+        const file = path.join(dir, `${name}.json`);
+        if (type === 'worldbooks') {
+            const entries = normalizeLorebook(JSON.parse(fs.readFileSync(file, 'utf-8')));
+            return entries.map(e => ({
+                id: e.id,
+                label: e.comment || (e.keys.length ? e.keys.join(' / ') : e.content.slice(0, 40)),
+                enabled: e.enabled && !disabled.has(e.id),
+            }));
+        }
+        const raw = JSON.parse(fs.readFileSync(file, 'utf-8'));
+        return listPresetEntries(raw).map(e => ({
+            id: e.id,
+            label: e.label,
+            enabled: e.enabled && !disabled.has(e.id),
+            isMarker: e.isMarker,
+        }));
     }
 
     /**

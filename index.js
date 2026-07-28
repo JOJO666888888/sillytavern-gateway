@@ -2651,19 +2651,30 @@ function renderRuntimeDirs(dirs) {
     $('#gateway_rt_dirs').html(html).show();
 }
 
-/** 渲染资产列表 */
+/** 渲染资产列表（每项可勾选删除；世界书/预设可编辑条目启用） */
 function renderRuntimeAssets(assets) {
-    const group = (label, arr, hint) => `
-        <div class="gateway-rt-asset-group">
-            <b>${label}</b>${arr.length
-                ? arr.map(a => escapeHtml(a)).join('、')
-                : `<span class="gateway-empty-hint">${hint}</span>`}
-        </div>`;
+    const group = (label, type, arr, hint, opts = {}) => {
+        const { allowDelete = true, allowEntries = false } = opts;
+        const delBtn = (allowDelete && arr.length)
+            ? ` <button class="menu_button gateway-rt-del-btn" data-type="${type}" title="删除勾选的项"><i class="fa-solid fa-trash"></i> 删除选中</button>`
+            : '';
+        const head = `<div class="gateway-rt-asset-group-head"><b>${label}</b>${delBtn}</div>`;
+        if (!arr.length) return `<div class="gateway-rt-asset-group">${head}<span class="gateway-empty-hint">${hint}</span></div>`;
+        const rows = arr.map(name => `
+            <div class="gateway-rt-asset-row" data-type="${type}" data-name="${escapeHtml(name)}">
+                <label class="gateway-rt-asset-item">
+                    <input type="checkbox" class="gateway-rt-asset-check">
+                    <span>${escapeHtml(name)}</span>
+                </label>
+                ${allowEntries ? `<button class="menu_button gateway-rt-entries-btn" title="编辑条目启用"><i class="fa-solid fa-list-ul"></i> 条目</button>` : ''}
+            </div>`).join('');
+        return `<div class="gateway-rt-asset-group">${head}${rows}</div>`;
+    };
     $('#gateway_rt_assets').html(
-        group('角色卡', assets.characters, '无，点击下方导入或放入 assets/characters/') +
-        group('世界书', assets.worldbooks, '无') +
-        group('预设', assets.presets, '无（用内置默认）') +
-        group('存档', assets.archives, '无（首次对话自动创建）')
+        group('角色卡', 'characters', assets.characters, '无，点击下方导入或放入 assets/characters/', { allowEntries: false }) +
+        group('世界书', 'worldbooks', assets.worldbooks, '无', { allowEntries: true }) +
+        group('预设', 'presets', assets.presets, '无（用内置默认）', { allowEntries: true }) +
+        group('存档', 'archives', assets.archives, '无（首次对话自动创建）', { allowDelete: false, allowEntries: false })
     );
 }
 
@@ -2852,6 +2863,82 @@ function bindRuntimeEvents() {
     $('#gateway_rt_file_input').on('change', handleAssetUpload);
     // ST 同步
     $('#gateway_rt_sync_st').on('click', syncFromSillyTavern);
+    // 资产管理：删除选中 / 编辑条目（事件委托，HTML 重渲染后仍生效）
+    $('#gateway_rt_assets')
+        .on('click', '.gateway-rt-del-btn', handleAssetDelete)
+        .on('click', '.gateway-rt-entries-btn', function () {
+            const row = $(this).closest('.gateway-rt-asset-row');
+            openEntryEditor(row.data('type'), row.data('name'));
+        });
+}
+
+/** 删除勾选的资产（带确认） */
+async function handleAssetDelete() {
+    const type = $(this).data('type');
+    const names = $(`#gateway_rt_assets .gateway-rt-asset-row[data-type="${type}"] .gateway-rt-asset-check:checked`)
+        .map(function () { return $(this).closest('.gateway-rt-asset-row').data('name'); }).get();
+    if (!names.length) {
+        toastr.warning('请先勾选要删除的项');
+        return;
+    }
+    const confirmed = await callGenericPopup(
+        `确定删除选中的 ${names.length} 个${type === 'characters' ? '角色卡' : type === 'worldbooks' ? '世界书' : '预设'}？\n${names.map(n => '· ' + n).join('\n')}`,
+        POPUP_TYPE.CONFIRM, '', { okButton: '删除', cancelButton: '取消', wide: true },
+    );
+    if (confirmed !== 1 && confirmed !== true) return;
+    try {
+        let lastAssets = null;
+        for (const name of names) {
+            const data = await apiRequest(`/api/runtime/assets/${encodeURIComponent(type)}/${encodeURIComponent(name)}`, { method: 'DELETE' });
+            lastAssets = data.assets || lastAssets;
+        }
+        if (lastAssets) { rtAssets = lastAssets; renderRuntimeAssets(rtAssets); loadRuntimeProfiles(); }
+        toastr.success(`已删除 ${names.length} 项`);
+    } catch (e) {
+        toastr.error(`删除失败: ${e.message}`);
+        loadRuntimePanel();
+    }
+}
+
+/**
+ * 打开条目启用编辑弹窗（世界书/预设）。
+ * 勾选=启用，取消=禁用；保存时把未勾选的条目 id 作为 disabled 回写。
+ */
+async function openEntryEditor(type, name) {
+    try {
+        const data = await apiRequest(`/api/runtime/assets/${encodeURIComponent(type)}/${encodeURIComponent(name)}/entries`);
+        const entries = data.entries || [];
+        if (!entries.length) {
+            toastr.info(`「${name}」没有可切换的条目${type === 'presets' ? '（该预设未含 ST prompt_order，使用默认顺序）' : ''}`);
+            return;
+        }
+        const rows = entries.map(e => `
+            <label class="gateway-rt-entry-row">
+                <input type="checkbox" data-id="${escapeHtml(e.id)}" ${e.enabled ? 'checked' : ''}>
+                <span class="gateway-rt-entry-label">${escapeHtml(e.label)}</span>
+                ${e.isMarker ? '<span class="gateway-rt-entry-tag">段落</span>' : ''}
+            </label>`).join('');
+        const dialog = $(`
+            <div class="gateway-entry-popup">
+                <h3><i class="fa-solid fa-list-ul"></i> ${escapeHtml(name)} 的条目</h3>
+                <div class="gateway-hint">勾选=启用，取消=禁用。${type === 'worldbooks' ? '世界书条目按关键词/常驻触发。' : '预设条目决定 prompt 组装顺序，标"段落"者为占位段。'}</div>
+                <div class="gateway-rt-entry-list">${rows}</div>
+            </div>`);
+        const result = await callGenericPopup(dialog, POPUP_TYPE.TEXT, '', {
+            wide: true, large: true, allowVerticalScrolling: true,
+            okButton: '保存', cancelButton: '取消',
+        });
+        if (result !== 1) return;
+        const disabled = dialog.find('.gateway-rt-entry-list input:not(:checked)').map(function () {
+            return $(this).attr('data-id');
+        }).get();
+        await apiRequest(`/api/runtime/assets/${encodeURIComponent(type)}/${encodeURIComponent(name)}/entries`, {
+            method: 'POST', body: JSON.stringify({ disabled }),
+        });
+        toastr.success(`已保存「${name}」的条目启用设置`);
+    } catch (e) {
+        toastr.error(`条目编辑失败: ${e.message}`);
+    }
 }
 
 /** 触发文件选择对话框 */

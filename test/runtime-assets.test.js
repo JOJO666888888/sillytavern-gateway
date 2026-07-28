@@ -328,3 +328,85 @@ describe('资产导入文件名解码（修复 multer 中文乱码）', () => {
         assert.strictEqual(result.name, 'my-preset');
     });
 });
+
+describe('资产管理：删除 + 条目级启停覆盖', () => {
+    function makeRuntime() {
+        const base = makeTmp();
+        return new NativeRuntime({ config: {
+            charactersDir: path.join(base, 'characters'),
+            worldbooksDir: path.join(base, 'worldbooks'),
+            presetsDir: path.join(base, 'presets'),
+            chatsDir: path.join(base, 'chats'),
+            overridesFile: path.join(base, 'overrides.json'),
+        }});
+    }
+
+    function writeBook(rt, name, entries) {
+        fs.writeFileSync(path.join(rt.dirs.worldbooks, `${name}.json`), JSON.stringify({ entries }));
+    }
+
+    test('deleteAsset 删除文件并清理覆盖', () => {
+        const rt = makeRuntime();
+        writeBook(rt, '书A', [{ uid: 1, keys: ['k'], content: 'c' }]);
+        assert.ok(rt.listAssets().worldbooks.includes('书A'));
+        rt.setDisabledEntries('worldbooks', '书A', ['1']);
+        rt.deleteAsset('worldbooks', '书A');
+        assert.ok(!rt.listAssets().worldbooks.includes('书A'));
+        assert.ok(!fs.existsSync(path.join(rt.dirs.worldbooks, '书A.json')));
+        assert.strictEqual(rt.getDisabledEntries('worldbooks', '书A').size, 0, '删除后覆盖应清理');
+    });
+
+    test('deleteAsset 拒绝路径遍历（不存在的资产）', () => {
+        const rt = makeRuntime();
+        assert.throws(() => rt.deleteAsset('worldbooks', '../../etc/passwd'), /未找到资产/);
+    });
+
+    test('listEntries 反映文件默认 + 覆盖禁用', () => {
+        const rt = makeRuntime();
+        writeBook(rt, '书B', [
+            { uid: 1, keys: ['魔法'], content: '魔法内容', comment: '魔法' },
+            { uid: 2, keys: ['剑'], content: '剑内容', comment: '剑', disable: true },
+        ]);
+        let entries = rt.listEntries('worldbooks', '书B');
+        assert.strictEqual(entries[0].enabled, true);
+        assert.strictEqual(entries[1].enabled, false, '文件 disable:true 应反映为禁用');
+        rt.setDisabledEntries('worldbooks', '书B', ['1']);
+        entries = rt.listEntries('worldbooks', '书B');
+        assert.strictEqual(entries[0].enabled, false, '覆盖禁用 uid=1');
+        assert.strictEqual(entries[1].enabled, false);
+    });
+
+    test('getWorldbook 应用覆盖：禁用条目不激活', () => {
+        const rt = makeRuntime();
+        writeBook(rt, '书C', [
+            { uid: 1, keys: ['魔法'], content: '魔法触发内容' },
+            { uid: 2, keys: ['剑'], content: '剑触发内容' },
+        ]);
+        rt.setDisabledEntries('worldbooks', '书C', ['1']);
+        const book = rt.getWorldbook('书C');
+        const { activated } = activateEntries(book, '魔法 剑');
+        const contents = activated.map(e => e.content);
+        assert.ok(!contents.includes('魔法触发内容'), '被覆盖禁用的条目不应激活');
+        assert.ok(contents.includes('剑触发内容'), '未禁用的条目应正常激活');
+    });
+
+    test('覆盖持久化到 sidecar 文件，新实例加载', () => {
+        const base = makeTmp();
+        const cfg = {
+            charactersDir: path.join(base, 'c'), worldbooksDir: path.join(base, 'w'),
+            presetsDir: path.join(base, 'p'), chatsDir: path.join(base, 'ch'),
+            overridesFile: path.join(base, 'overrides.json'),
+        };
+        const rt1 = new NativeRuntime({ config: cfg });
+        writeBook(rt1, '书D', [{ uid: 1, keys: ['k'], content: 'c' }]);
+        rt1.setDisabledEntries('worldbooks', '书D', ['1']);
+        assert.ok(fs.existsSync(cfg.overridesFile));
+        const rt2 = new NativeRuntime({ config: cfg });
+        assert.ok(rt2.getDisabledEntries('worldbooks', '书D').has('1'), '新实例应加载已持久化的覆盖');
+    });
+
+    test('listEntries 角色卡返回空（无条目概念）', () => {
+        const rt = makeRuntime();
+        assert.deepStrictEqual(rt.listEntries('characters', 'whatever'), []);
+    });
+});

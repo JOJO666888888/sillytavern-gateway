@@ -1365,6 +1365,107 @@
     margin-right: 6px;
 }
 
+/* 资产管理：分组头部（标题 + 删除选中）*/
+.gateway-rt-asset-group-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 4px 0;
+}
+
+.gateway-rt-asset-group-head .gateway-rt-del-btn {
+    margin-left: auto;
+    font-size: 0.8em;
+    padding: 2px 8px;
+}
+
+/* 资产行：勾选框 + 名字 + 条目按钮 */
+.gateway-rt-asset-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 4px;
+}
+
+.gateway-rt-asset-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    min-width: 0;
+    cursor: pointer;
+}
+
+.gateway-rt-asset-item input[type="checkbox"] {
+    margin: 0;
+    flex: 0 0 auto;
+}
+
+.gateway-rt-asset-item span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.gateway-rt-entries-btn {
+    flex: 0 0 auto;
+    font-size: 0.8em;
+    padding: 2px 8px;
+}
+
+/* 条目编辑弹窗 */
+.gateway-entry-popup h3 {
+    margin: 0 0 6px;
+}
+
+.gateway-entry-popup .gateway-hint {
+    display: block;
+    margin-bottom: 8px;
+}
+
+.gateway-rt-entry-list {
+    max-height: 50vh;
+    overflow-y: auto;
+    border: 1px solid rgba(128, 128, 128, 0.25);
+    border-radius: 4px;
+    padding: 4px;
+}
+
+.gateway-rt-entry-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 6px;
+    cursor: pointer;
+    border-radius: 3px;
+}
+
+.gateway-rt-entry-row:hover {
+    background: rgba(128, 128, 128, 0.12);
+}
+
+.gateway-rt-entry-row input[type="checkbox"] {
+    margin: 0;
+    flex: 0 0 auto;
+}
+
+.gateway-rt-entry-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.gateway-rt-entry-tag {
+    flex: 0 0 auto;
+    font-size: 0.7em;
+    padding: 1px 6px;
+    border-radius: 8px;
+    background: rgba(128, 128, 128, 0.25);
+    opacity: 0.8;
+}
+
 .gateway-rt-dirs {
     margin-bottom: 8px;
     padding: 6px 8px;

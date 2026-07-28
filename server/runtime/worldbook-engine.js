@@ -15,7 +15,8 @@ const logger = createLogger('worldbook');
  *   - 基础递归扫描（已激活内容可再触发新条目，带深度上限）
  *
  * 归一化后条目结构：
- *   { keys[], secondaryKeys[], content, constant, selective, order, position, caseSensitive, enabled }
+ *   { id, keys[], secondaryKeys[], content, constant, selective, order, position, caseSensitive, enabled, comment }
+ *   id 来自 ST 的 uid/id；缺失时按过滤后位置赋 idx{i}，用作条目级启停覆盖的稳定标识。
  */
 
 /**
@@ -52,8 +53,12 @@ export function normalizeLorebook(book) {
             caseSensitive: !!(e.case_sensitive ?? e.caseSensitive),
             enabled,
             comment: e.comment || e.name || '',
+            // 保留原始 uid 供条目级启停覆盖做稳定标识
+            uid: e.uid ?? e.id ?? null,
         };
-    }).filter(e => e.content); // 空内容条目丢弃
+    })
+        .filter(e => e.content) // 空内容条目丢弃
+        .map((e, i) => ({ ...e, id: e.uid != null ? String(e.uid) : `idx${i}` }));
 }
 
 /** 从文件加载世界书 */

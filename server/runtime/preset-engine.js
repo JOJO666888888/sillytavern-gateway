@@ -93,9 +93,9 @@ export function truncateHistoryByTokens(history, budget) {
 }
 
 /** 从文件加载预设 */
-export function loadPreset(filePath) {
+export function loadPreset(filePath, disabledIds) {
     const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-    return normalizePreset(raw);
+    return normalizePreset(raw, disabledIds);
 }
 
 /**
@@ -125,9 +125,10 @@ const ST_MARKER_MAP = {
  *   - {type:'literal', role, content}：预设自带的固定文本（main / jailbreak / nsfw / 自定义条目）
  *
  * @param {object} raw - 原始预设 JSON
+ * @param {Set<string>} [disabledIds] - 额外禁用的条目 identifier（资产级覆盖，与文件内 enabled=false 同等处理）
  * @returns {Array|null} 顺序数组；无法解析时返回 null（调用方回退默认顺序）
  */
-export function parseSTPromptOrder(raw) {
+export function parseSTPromptOrder(raw, disabledIds = new Set()) {
     if (!Array.isArray(raw?.prompts) || !Array.isArray(raw?.prompt_order)) return null;
 
     // 建立 identifier → prompt 定义 的索引
@@ -144,7 +145,8 @@ export function parseSTPromptOrder(raw) {
 
     const result = [];
     for (const item of orderList) {
-        if (!item || item.enabled === false) continue;   // 尊重 enabled 开关
+        if (!item || item.enabled === false) continue;   // 尊重文件内 enabled 开关
+        if (disabledIds.has(item.identifier)) continue;   // 尊重资产级覆盖禁用
         const def = byId.get(item.identifier);
         if (!def) continue;
 
@@ -168,8 +170,37 @@ export function parseSTPromptOrder(raw) {
     return result.length ? result : null;
 }
 
+/**
+ * 列出预设的可切换条目（供面板条目编辑用）。
+ * 条目来自 ST 的 prompt_order：每个 { identifier, enabled } 对应 prompts[] 里的一条。
+ * marker 条目（角色描述/世界书/历史等占位）也列出，可整体启停。
+ * @param {object} raw - 原始预设 JSON
+ * @returns {Array<{id: string, label: string, enabled: boolean, isMarker: boolean}>} 无 prompt_order 时返回 []
+ */
+export function listPresetEntries(raw) {
+    if (!Array.isArray(raw?.prompts) || !Array.isArray(raw?.prompt_order)) return [];
+    const byId = new Map();
+    for (const p of raw.prompts) if (p && p.identifier) byId.set(p.identifier, p);
+    const orderEntry = raw.prompt_order.find(o => o.character_id === 100001)
+        || raw.prompt_order[raw.prompt_order.length - 1];
+    const orderList = orderEntry?.order;
+    if (!Array.isArray(orderList)) return [];
+    const out = [];
+    for (const item of orderList) {
+        if (!item || !item.identifier) continue;
+        const def = byId.get(item.identifier);
+        out.push({
+            id: item.identifier,
+            label: def?.name || item.identifier,
+            enabled: item.enabled !== false,
+            isMarker: !!(def?.marker || ST_MARKER_MAP[item.identifier]),
+        });
+    }
+    return out;
+}
+
 /** 归一化预设：提取采样参数与顺序 */
-export function normalizePreset(raw = {}) {
+export function normalizePreset(raw = {}, disabledIds) {
     const sampling = { ...DEFAULT_SAMPLING };
     for (const k of Object.keys(DEFAULT_SAMPLING)) {
         if (raw[k] !== undefined) sampling[k] = raw[k];
@@ -188,7 +219,7 @@ export function normalizePreset(raw = {}) {
         order = raw.gateway_order;
         source = 'gateway_order';
     } else {
-        const stOrder = parseSTPromptOrder(raw);
+        const stOrder = parseSTPromptOrder(raw, disabledIds);
         if (stOrder) {
             order = stOrder;
             source = 'st_prompt_order';
@@ -313,4 +344,4 @@ export function buildPrompt(ctx) {
     return { messages, sampling: preset.sampling };
 }
 
-export default { loadPreset, normalizePreset, defaultPreset, buildPrompt, parseSTPromptOrder, estimateTokens, estimateMessagesTokens, truncateHistoryByTokens };
+export default { loadPreset, normalizePreset, defaultPreset, buildPrompt, parseSTPromptOrder, listPresetEntries, estimateTokens, estimateMessagesTokens, truncateHistoryByTokens };

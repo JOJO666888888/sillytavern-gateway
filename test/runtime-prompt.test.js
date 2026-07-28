@@ -5,7 +5,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 import {
-    normalizePreset, defaultPreset, buildPrompt, parseSTPromptOrder,
+    normalizePreset, defaultPreset, buildPrompt, parseSTPromptOrder, listPresetEntries,
     estimateTokens, truncateHistoryByTokens,
 } from '../server/runtime/preset-engine.js';
 
@@ -130,6 +130,41 @@ describe('ST 预设 prompt_order 还原', () => {
         const p = defaultPreset();
         assert.strictEqual(p.orderSource, 'default');
         assert.ok(p.order.includes('history'));
+    });
+});
+
+describe('条目级启停（disabledIds 覆盖 + listPresetEntries）', () => {
+    test('disabledIds 覆盖禁用 prompt_order 条目', () => {
+        const order = parseSTPromptOrder(stPreset(), new Set(['main']));
+        assert.ok(!order.some(o => o && o.identifier === 'main'), 'main 被覆盖禁用应不在顺序表');
+        assert.ok(order.some(o => o === 'worldBefore'), '未禁用的 marker 应保留');
+    });
+
+    test('disabledIds 与文件 enabled=false 叠加生效', () => {
+        // nsfw 已 enabled:false；再覆盖禁用 jailbreak
+        const order = parseSTPromptOrder(stPreset(), new Set(['jailbreak']));
+        assert.ok(!JSON.stringify(order).includes('保持角色'), 'jailbreak 被覆盖禁用');
+        assert.ok(!JSON.stringify(order).includes('不该出现的内容'), 'nsfw 文件级禁用仍生效');
+    });
+
+    test('listPresetEntries 列出所有条目含 enabled 与 isMarker', () => {
+        const entries = listPresetEntries(stPreset());
+        const ids = entries.map(e => e.id);
+        assert.ok(ids.includes('main') && ids.includes('worldInfoBefore') && ids.includes('nsfw'));
+        const nsfw = entries.find(e => e.id === 'nsfw');
+        assert.strictEqual(nsfw.enabled, false, '文件 enabled=false 应反映');
+        assert.strictEqual(entries.find(e => e.id === 'worldInfoBefore').isMarker, true, 'marker 条目标记');
+        assert.strictEqual(entries.find(e => e.id === 'main').isMarker, false);
+    });
+
+    test('listPresetEntries 无 prompt_order 返回空', () => {
+        assert.deepStrictEqual(listPresetEntries({ prompts: [] }), []);
+        assert.deepStrictEqual(listPresetEntries({}), []);
+    });
+
+    test('normalizePreset 透传 disabledIds 到构建顺序', () => {
+        const p = normalizePreset(stPreset(), new Set(['main']));
+        assert.ok(!p.order.some(o => o && o.identifier === 'main'), '被禁条目不应进入构建顺序');
     });
 });
 

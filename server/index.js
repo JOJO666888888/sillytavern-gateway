@@ -372,6 +372,57 @@ app.post('/api/runtime/assets/:type', upload.single('file'), (req, res) => {
     }
 });
 
+/** 删除一个已导入资产（角色卡/世界书/预设） */
+app.delete('/api/runtime/assets/:type/:name', (req, res) => {
+    if (!nativeRuntime) return res.status(400).json({ success: false, error: '自建推理管线未启用' });
+    const { type, name } = req.params;
+    if (!['characters', 'worldbooks', 'presets'].includes(type)) {
+        return res.status(400).json({ success: false, error: '类型必须是 characters / worldbooks / presets' });
+    }
+    try {
+        nativeRuntime.deleteAsset(type, name);
+        logger.info(`资产已删除: ${type}/${name}`);
+        res.json({ success: true, assets: nativeRuntime.listAssets() });
+    } catch (error) {
+        res.status(400).json({ success: false, error: error.message });
+    }
+});
+
+/** 列出某世界书/预设的可切换条目（含启用状态） */
+app.get('/api/runtime/assets/:type/:name/entries', (req, res) => {
+    if (!nativeRuntime) return res.status(400).json({ success: false, error: '自建推理管线未启用' });
+    const { type, name } = req.params;
+    if (!['worldbooks', 'presets'].includes(type)) {
+        return res.status(400).json({ success: false, error: '条目仅支持 worldbooks / presets' });
+    }
+    try {
+        const entries = nativeRuntime.listEntries(type, name);
+        res.json({ success: true, entries });
+    } catch (error) {
+        res.status(400).json({ success: false, error: error.message });
+    }
+});
+
+/** 设置某世界书/预设的条目启用状态（整体替换禁用列表） */
+app.post('/api/runtime/assets/:type/:name/entries', (req, res) => {
+    if (!nativeRuntime) return res.status(400).json({ success: false, error: '自建推理管线未启用' });
+    const { type, name } = req.params;
+    if (!['worldbooks', 'presets'].includes(type)) {
+        return res.status(400).json({ success: false, error: '条目仅支持 worldbooks / presets' });
+    }
+    const { disabled } = req.body || {};
+    if (!Array.isArray(disabled)) {
+        return res.status(400).json({ success: false, error: '请求体需为 { disabled: [条目id...] }' });
+    }
+    try {
+        nativeRuntime.setDisabledEntries(type, name, disabled);
+        logger.info(`条目覆盖已更新: ${type}/${name} (禁用 ${disabled.length} 项)`);
+        res.json({ success: true });
+    } catch (error) {
+        res.status(400).json({ success: false, error: error.message });
+    }
+});
+
 /** 从 SillyTavern 目录一键同步资产 */
 app.post('/api/runtime/sync-from-st', (req, res) => {
     if (!nativeRuntime) return res.status(400).json({ success: false, error: '自建推理管线未启用' });
