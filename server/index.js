@@ -343,6 +343,15 @@ app.post('/api/runtime/profiles/:platform/:chatId', (req, res) => {
     res.json({ success: true, profile: p });
 });
 
+/** 删除某会话 Profile（移除其角色/预设/世界书绑定；聊天记录保留） */
+app.delete('/api/runtime/profiles/:platform/:chatId', (req, res) => {
+    if (!nativeRuntime) return res.status(400).json({ success: false, error: '自建推理管线未启用' });
+    const { platform, chatId } = req.params;
+    const ok = nativeRuntime.profiles.delete(platform, chatId);
+    if (ok) logger.info(`会话绑定已删除: ${platform}:${chatId}`);
+    res.json({ success: ok, profiles: nativeRuntime.profiles.list() });
+});
+
 /** 预览 prompt 组装结果（不调用 LLM，便于调试） */
 app.post('/api/runtime/preview', async (req, res) => {
     if (!nativeRuntime) return res.status(400).json({ success: false, error: '自建推理管线未启用' });

@@ -2701,7 +2701,10 @@ async function loadRuntimeProfiles() {
             <div class="gateway-rt-profile" data-platform="${escapeHtml(platform)}" data-chatid="${escapeHtml(chatId)}">
                 <div class="gateway-rt-profile-head">
                     <span>${getPlatformIcon(platform)} ${escapeHtml(p.session)}</span>
-                    <button class="menu_button gateway-rt-save-profile" title="保存该会话绑定"><i class="fa-solid fa-check"></i></button>
+                    <div class="gateway-rt-profile-actions">
+                        <button class="menu_button gateway-rt-save-profile" title="保存该会话绑定"><i class="fa-solid fa-check"></i></button>
+                        <button class="menu_button gateway-rt-del-profile" title="删除该会话绑定"><i class="fa-solid fa-trash"></i></button>
+                    </div>
                 </div>
                 <div class="gateway-rt-profile-row">
                     <label>角色卡</label>
@@ -2745,6 +2748,25 @@ async function loadRuntimeProfiles() {
                 toastr.success(`已保存 ${platform}:${chatId} 的绑定`);
             } catch (error) {
                 toastr.error(`保存失败: ${error.message}`);
+            }
+        });
+
+        // 删除该会话绑定
+        el.find('.gateway-rt-del-profile').off('click').on('click', async function () {
+            const box = $(this).closest('.gateway-rt-profile');
+            const platform = box.data('platform');
+            const chatId = box.data('chatid');
+            const confirmed = await callGenericPopup(
+                `确定删除会话绑定 ${platform}:${chatId}？\n（移除其角色卡/预设/世界书绑定；聊天记录保留）`,
+                POPUP_TYPE.CONFIRM, '', { okButton: '删除', cancelButton: '取消', wide: true },
+            );
+            if (confirmed !== 1 && confirmed !== true) return;
+            try {
+                await apiRequest(`/api/runtime/profiles/${encodeURIComponent(platform)}/${encodeURIComponent(chatId)}`, { method: 'DELETE' });
+                toastr.success(`已删除会话绑定 ${platform}:${chatId}`);
+                loadRuntimeProfiles();
+            } catch (e) {
+                toastr.error(`删除失败: ${e.message}`);
             }
         });
     } catch (_) {
