@@ -39,9 +39,21 @@ let nativeRuntime = null;
 
 /**
  * 判断请求 Origin 是否允许跨域。
- * 默认放行 localhost / 127.0.0.1 / [::1] 的任意端口（SillyTavern 常见部署），
- * 以及 server.allowedOrigins 白名单里显式列出的地址。
- * 不再使用通配 '*'，避免任意恶意网页 drive-by 调用本地端口。
+ *
+ * 放行规则（任一命中即放行）：
+ *   1) server.allowedOrigins 白名单里显式列出的 Origin
+ *   2) localhost / 127.0.0.1 / [::1] 的任意端口（本机 ST 常见部署）
+ *   3) 鉴权开启（requireAuth=true）时放行任意 Origin
+ *
+ * 第 3 条是关键：服务器部署时，用户从浏览器经公网 IP 访问 ST（Origin 形如
+ * http://<公网IP>:8000），既非 localhost 也不在白名单，会被 CORS 拦掉，
+ * 表现为 ST 面板 "Failed to fetch"——而且陷入死循环（连不上就没法在面板加白名单）。
+ * 由于网关用 X-Gateway-Token 头鉴权（非 Cookie），恶意网页拿不到 token 就调不动
+ * 任何 /api/* 写读接口（health 除外，本就公开），所以鉴权开启时放行 Origin 不引入
+ * 实质风险，token 仍是真正的保护层。
+ *
+ * 鉴权关闭（requireAuth=false）时**不**走第 3 条，CORS 退回严格白名单，
+ * 避免无鉴权的网关被任意网页 drive-by 调用。
  */
 function isOriginAllowed(origin) {
     if (!origin) return false;
@@ -49,10 +61,13 @@ function isOriginAllowed(origin) {
     if (allowed.includes(origin)) return true;
     try {
         const { hostname } = new URL(origin);
-        return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+        if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') return true;
     } catch (_) {
         return false;
     }
+    // 鉴权开启时放行任意 Origin：token 头是真正的保护，CORS 不应阻挡合法跨域访问
+    const requireAuth = configManager.get('server.requireAuth') !== false;
+    return requireAuth;
 }
 
 // CORS：收敛为 Origin 反射白名单（非通配），并声明自定义鉴权头
