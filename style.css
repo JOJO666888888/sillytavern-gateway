@@ -501,7 +501,7 @@
 .gateway-adapter-header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    gap: 8px;
     padding: 8px 12px;
     cursor: pointer;
     background: rgba(255, 255, 255, 0.03);
@@ -512,6 +512,23 @@
     background: rgba(255, 255, 255, 0.06);
 }
 
+.gateway-adapter-toggle-icon {
+    flex: 0 0 auto;
+    width: 14px;
+    text-align: center;
+    font-size: 0.75em;
+    color: var(--SmartThemeBodyColor, #999);
+    transition: transform 0.15s;
+}
+
+.gateway-adapter-toggle-icon.expanded {
+    transform: rotate(90deg);
+}
+
+.gateway-adapter-save {
+    margin-top: 8px;
+}
+
 .gateway-adapter-body {
     padding: 10px 12px;
     border-top: 1px solid var(--SmartThemeBorderColor, #333);
@@ -519,10 +536,12 @@
 
 /* 适配器标题与控件 */
 .gateway-adapter-title {
+    flex: 1 1 auto;
     display: inline-flex;
     align-items: center;
     gap: 6px;
     font-weight: 500;
+    min-width: 0;
 }
 
 .gateway-adapter-controls {

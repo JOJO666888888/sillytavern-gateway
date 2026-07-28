@@ -1022,119 +1022,6 @@ function bindWindowEvents() {
 }
 
 /**
- * 绑定设置面板事件
- */
-function bindSettingsEvents() {
-    // 连接按钮
-    $('#gateway_connect_btn').on('click', async () => {
-        const serverUrl = $('#gateway_server_url').val().trim();
-        if (serverUrl) {
-            getSettings().serverUrl = serverUrl;
-            saveSettingsDebounced();
-        }
-        await fetchGatewayStatus();
-        startPolling();
-    });
-
-    // 断开按钮
-    $('#gateway_disconnect_btn').on('click', () => {
-        stopPolling();
-        gatewayConnected = false;
-        updateConnectionStatus(false);
-    });
-
-    // 保存设置
-    $('#gateway_save_settings').on('click', async () => {
-        const settings = getSettings();
-        settings.serverUrl = $('#gateway_server_url').val().trim();
-        settings.autoReplyEnabled = $('#gateway_auto_reply_enabled_ext').is(':checked');
-        saveSettingsDebounced();
-
-        // 同步到后端配置
-        try {
-            await apiRequest('/api/gateway/config', {
-                method: 'POST',
-                body: JSON.stringify({
-                    adapters: {
-                        qq: {
-                            enabled: $('#gateway_qq_enabled').is(':checked'),
-                            mode: $('#gateway_qq_mode').val(),
-                            wsUrl: $('#gateway_qq_ws_url').val().trim(),
-                            accessToken: $('#gateway_qq_token').val(),
-                        },
-                        telegram: {
-                            enabled: $('#gateway_telegram_enabled').is(':checked'),
-                            botToken: $('#gateway_telegram_token').val(),
-                            requireMention: $('#gateway_telegram_require_mention').is(':checked'),
-                        },
-                        discord: {
-                            enabled: $('#gateway_discord_enabled').is(':checked'),
-                            botToken: $('#gateway_discord_token').val(),
-                            requireMention: $('#gateway_discord_require_mention').is(':checked'),
-                        },
-                    },
-                    autoReply: {
-                        enabled: settings.autoReplyEnabled,
-                        responseDelay: parseInt($('#gateway_response_delay').val()) || 500,
-                    },
-                }),
-            });
-            toastr.success('设置已保存');
-        } catch (error) {
-            toastr.error(`保存失败: ${error.message}`);
-        }
-    });
-
-    // 重新加载配置
-    $('#gateway_reload_config').on('click', async () => {
-        try {
-            const config = await apiRequest('/api/gateway/config');
-            loadConfigToUI(config);
-            toastr.success('配置已加载');
-        } catch (error) {
-            toastr.error(`加载失败: ${error.message}`);
-        }
-    });
-}
-
-/**
- * 将配置加载到 UI
- */
-function loadConfigToUI(config) {
-    if (!config) return;
-
-    const adapters = config.adapters || {};
-
-    // QQ
-    if (adapters.qq) {
-        $('#gateway_qq_enabled').prop('checked', adapters.qq.enabled);
-        $('#gateway_qq_mode').val(adapters.qq.mode);
-        $('#gateway_qq_ws_url').val(adapters.qq.wsUrl);
-        $('#gateway_qq_token').val(adapters.qq.accessToken);
-    }
-
-    // Telegram
-    if (adapters.telegram) {
-        $('#gateway_telegram_enabled').prop('checked', adapters.telegram.enabled);
-        $('#gateway_telegram_token').val(adapters.telegram.botToken);
-        $('#gateway_telegram_require_mention').prop('checked', adapters.telegram.requireMention);
-    }
-
-    // Discord
-    if (adapters.discord) {
-        $('#gateway_discord_enabled').prop('checked', adapters.discord.enabled);
-        $('#gateway_discord_token').val(adapters.discord.botToken);
-        $('#gateway_discord_require_mention').prop('checked', adapters.discord.requireMention);
-    }
-
-    // 自动回复
-    if (config.autoReply) {
-        $('#gateway_auto_reply_enabled_ext').prop('checked', getSettings().autoReplyEnabled);
-        $('#gateway_response_delay').val(config.autoReply.responseDelay);
-    }
-}
-
-/**
  * 注册斜杠命令
  */
 function registerSlashCommands() {
@@ -1233,15 +1120,6 @@ async function initExtension() {
     $('#gateway_extension').on('click', async () => {
         await showGatewayWindow();
     });
-
-    // 加载设置面板（扩展页内的简版设置）
-    try {
-        const settingsHtml = await renderTemplate('settings');
-        $('#extensions_settings2').append(settingsHtml);
-        bindSettingsEvents();
-    } catch (error) {
-        console.error('[Gateway] 扩展页设置面板加载失败:', error);
-    }
 
     // 注册斜杠命令
     registerSlashCommands();
@@ -1512,7 +1390,10 @@ function bindPanelEvents() {
         if ($(e.target).closest('.toggle-switch').length) return;
         if ($(e.target).closest('.gateway-adapter-verify').length) return;
         const targetId = $(this).data('toggle');
-        $(`#${targetId}`).stop(true, true).slideToggle(150);
+        const body = $(`#${targetId}`);
+        const icon = $(this).find('.gateway-adapter-toggle-icon');
+        body.stop(true, true).slideToggle(150);
+        icon.toggleClass('expanded', body.is(':visible'));
     });
 
     // 开关逻辑（修复反向问题）：
@@ -1521,10 +1402,13 @@ function bindPanelEvents() {
         const header = $(this).closest('.gateway-adapter-header');
         const targetId = header.data('toggle');
         const body = $(`#${targetId}`);
+        const icon = header.find('.gateway-adapter-toggle-icon');
         if (this.checked) {
             body.stop(true, true).slideDown(150);
+            icon.addClass('expanded');
         } else {
             body.stop(true, true).slideUp(150);
+            icon.removeClass('expanded');
         }
     });
 
@@ -1551,6 +1435,12 @@ function bindPanelEvents() {
 
     // 保存配置
     $('#gateway_panel_save_config').on('click', savePanelConfig);
+
+    // 各平台独立保存按钮
+    $('.gateway-adapter-save').on('click', function() {
+        const platform = $(this).data('platform');
+        saveSingleAdapterConfig(platform);
+    });
 
     // 从 GitHub 安装插件
     $('#gateway_plugin_install_btn').on('click', installPluginFromGitHub);
@@ -1681,7 +1571,8 @@ async function savePanelConfig() {
         });
         toastr.success('网关配置已保存');
 
-        // 自动启动已启用的适配器, 避免用户误以为"保存=启动"
+        // 保存后重启已启用的适配器：先 stop 再 start，确保新配置（如 botToken）生效。
+        // 仅调用 /start 不会重新初始化已连接的适配器，导致换号后仍连旧账号。
         try {
             const adapterChecks = [
                 { name: 'qq', prefix: 'qq' },
@@ -1695,9 +1586,13 @@ async function savePanelConfig() {
             for (const { name, prefix } of adapterChecks) {
                 if ($(`#gateway_panel_${prefix}_enabled`).is(':checked')) {
                     try {
+                        // 先停再启，强制用新配置重建连接
+                        await apiRequest(`/api/gateway/adapters/${name}/stop`, { method: 'POST' });
+                    } catch (_) { /* 适配器可能未运行, 静默忽略 */ }
+                    try {
                         await apiRequest(`/api/gateway/adapters/${name}/start`, { method: 'POST' });
                         anyStarted = true;
-                    } catch (_) { /* 适配器可能已在运行或配置有误, 静默忽略 */ }
+                    } catch (_) { /* 适配器配置有误, 静默忽略 */ }
                 }
             }
             if (anyStarted) {
@@ -1705,6 +1600,80 @@ async function savePanelConfig() {
                 await fetchGatewayStatus();
             }
         } catch (_) { /* 网关未连接时忽略, 不影响主流程 */ }
+    } catch (error) {
+        toastr.error(`保存失败: ${error.message}`);
+    }
+}
+
+/**
+ * 收集单个平台的配置对象
+ */
+function collectAdapterConfig(platform) {
+    switch (platform) {
+        case 'qq':
+            return {
+                enabled: $('#gateway_panel_qq_enabled').is(':checked'),
+                mode: $('#gateway_panel_qq_mode').val(),
+                wsUrl: $('#gateway_panel_qq_ws').val().trim(),
+                accessToken: $('#gateway_panel_qq_token').val(),
+                requireMention: $('#gateway_panel_qq_mention').is(':checked'),
+            };
+        case 'telegram':
+            return {
+                enabled: $('#gateway_panel_tg_enabled').is(':checked'),
+                botToken: $('#gateway_panel_tg_token').val(),
+                requireMention: $('#gateway_panel_tg_mention').is(':checked'),
+            };
+        case 'discord':
+            return {
+                enabled: $('#gateway_panel_dc_enabled').is(':checked'),
+                botToken: $('#gateway_panel_dc_token').val(),
+                requireMention: $('#gateway_panel_dc_mention').is(':checked'),
+            };
+        case 'feishu':
+            return {
+                enabled: $('#gateway_panel_fs_enabled').is(':checked'),
+                appId: $('#gateway_panel_fs_app_id').val().trim(),
+                appSecret: $('#gateway_panel_fs_app_secret').val(),
+                domain: $('#gateway_panel_fs_domain').val(),
+                requireMention: $('#gateway_panel_fs_mention').is(':checked'),
+            };
+        case 'qqofficial':
+            return {
+                enabled: $('#gateway_panel_qo_enabled').is(':checked'),
+                appId: $('#gateway_panel_qo_app_id').val().trim(),
+                secret: $('#gateway_panel_qo_secret').val(),
+                token: $('#gateway_panel_qo_token').val(),
+                sandbox: $('#gateway_panel_qo_sandbox').is(':checked'),
+            };
+        case 'dingtalk':
+            return {
+                enabled: $('#gateway_panel_dt_enabled').is(':checked'),
+                clientId: $('#gateway_panel_dt_client_id').val().trim(),
+                clientSecret: $('#gateway_panel_dt_client_secret').val(),
+            };
+        default: return null;
+    }
+}
+
+/**
+ * 保存单个平台配置并重启该平台适配器（先 stop 再 start，确保新 token 生效）
+ */
+async function saveSingleAdapterConfig(platform) {
+    const cfg = collectAdapterConfig(platform);
+    if (!cfg) return;
+    try {
+        await apiRequest('/api/gateway/config', {
+            method: 'POST',
+            body: JSON.stringify({ adapters: { [platform]: cfg } }),
+        });
+        toastr.success(`${platform} 配置已保存`);
+        // 先停再启，强制用新配置重建连接（修复换号后仍连旧账号的 bug）
+        if (cfg.enabled) {
+            try { await apiRequest(`/api/gateway/adapters/${platform}/stop`, { method: 'POST' }); } catch (_) {}
+            try { await apiRequest(`/api/gateway/adapters/${platform}/start`, { method: 'POST' }); } catch (_) {}
+            await fetchGatewayStatus();
+        }
     } catch (error) {
         toastr.error(`保存失败: ${error.message}`);
     }
