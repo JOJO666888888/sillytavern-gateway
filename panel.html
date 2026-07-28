@@ -45,13 +45,15 @@
         </div>
 
         <!-- 连接设置 -->
-        <div class="gateway-section">
-            <div class="gateway-section-title">
+        <div class="gateway-section gateway-collapsible">
+            <div class="gateway-section-title gateway-collapse-toggle" data-toggle="gateway_connection_body">
+                <i class="fa-solid fa-chevron-right gateway-collapse-arrow"></i>
                 <i class="fa-solid fa-link"></i> 连接
                 <button id="gateway_panel_verify_all" class="menu_button gateway-refresh-btn" title="验证所有平台连接">
                     <i class="fa-solid fa-plug-circle-check"></i> 验证全部
                 </button>
             </div>
+            <div id="gateway_connection_body" class="gateway-collapse-body" style="display:none;">
             <div class="gateway-field">
                 <label>网关地址</label>
                 <div class="gateway-field-row">
@@ -93,6 +95,7 @@
             </div>
             <div class="gateway-adapters-status" id="gateway_panel_adapters">
                 <!-- 动态填充验证结果汇总 -->
+            </div>
             </div>
         </div>
 
