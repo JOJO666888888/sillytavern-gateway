@@ -333,6 +333,55 @@ export function extractToolCalls(provider, data) {
 }
 
 /**
+ * 构造"列出可用模型"请求（不发送）--供面板下拉选择。
+ * 与 buildRequest 同风格的纯函数，便于单测。
+ * @param {object} cfg - { provider, baseUrl, apiKey }
+ * @returns {{url: string, headers: object}}
+ */
+export function buildListModelsRequest(cfg) {
+    const provider = (cfg.provider || 'openai').toLowerCase();
+    if (provider === 'claude') {
+        // Anthropic 的 /v1/models 需要 x-api-key + anthropic-version
+        return {
+            url: `${cfg.baseUrl || 'https://api.anthropic.com'}/v1/models?limit=1000`,
+            headers: {
+                'x-api-key': cfg.apiKey || '',
+                'anthropic-version': '2023-06-01',
+            },
+        };
+    }
+    if (provider === 'gemini') {
+        const base = cfg.baseUrl || 'https://generativelanguage.googleapis.com';
+        return {
+            url: `${base}/v1beta/models?key=${encodeURIComponent(cfg.apiKey || '')}`,
+            headers: {},
+        };
+    }
+    // openai 兼容（DeepSeek / Ollama / vLLM 等都走 /v1/models）
+    return {
+        url: `${cfg.baseUrl || 'https://api.openai.com/v1'}/models`,
+        headers: { 'Authorization': `Bearer ${cfg.apiKey || ''}` },
+    };
+}
+
+/**
+ * 从"列出模型"响应中提取模型 id 列表（统一为 string[]）。
+ * @param {string} provider
+ * @param {object} data
+ * @returns {string[]}
+ */
+export function extractModelIds(provider, data) {
+    const p = (provider || 'openai').toLowerCase();
+    if (p === 'gemini') {
+        const arr = data?.models || [];
+        return arr.map(m => String(m.name || '').replace(/^models\//, '')).filter(Boolean);
+    }
+    // openai 与 claude 的列表响应都是 { data: [{ id }, ...] }
+    const arr = data?.data || [];
+    return arr.map(m => m.id).filter(Boolean);
+}
+
+/**
  * 从各 provider 的响应中提取文本
  * @param {string} provider
  * @param {object} data
@@ -484,6 +533,28 @@ export class LLMClient {
             const text = extractText(cfg.provider, data);
             if (!text) throw new Error(`LLM 返回空内容${describeEmptyCompletion(cfg.provider, data)}`);
             return text;
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+
+    /**
+     * 拉取后端可用模型列表（供面板下拉选择，不消耗对话额度）。
+     * @returns {Promise<string[]>}
+     */
+    async listModels() {
+        const cfg = this.config;
+        const { url, headers } = buildListModelsRequest(cfg);
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), cfg.timeout ?? 20000);
+        try {
+            const resp = await fetch(url, { method: 'GET', headers, signal: controller.signal });
+            if (!resp.ok) {
+                const errText = await resp.text().catch(() => '');
+                throw new Error(`获取模型列表失败 HTTP ${resp.status}: ${errText.slice(0, 300)}`);
+            }
+            const data = await resp.json();
+            return extractModelIds(cfg.provider, data);
         } finally {
             clearTimeout(timer);
         }

@@ -1290,6 +1290,53 @@
     min-width: 0;
 }
 
+/* 世界书多选（checkbox 列表）*/
+.gateway-rt-wb-row {
+    align-items: flex-start;
+}
+
+.gateway-rt-wb-list {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    max-height: 120px;
+    overflow-y: auto;
+    padding: 4px 6px;
+    border: 1px solid rgba(128, 128, 128, 0.25);
+    border-radius: 4px;
+}
+
+.gateway-rt-wb-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.85em;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.gateway-rt-wb-item input[type="checkbox"] {
+    margin: 0;
+}
+
+/* 模型名 + 获取模型按钮 同行 */
+.gateway-rt-model-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.gateway-rt-model-row input {
+    flex: 1;
+    min-width: 0;
+}
+
+.gateway-rt-model-row button {
+    flex: 0 0 auto;
+}
+
 .gateway-rt-asset-group {
     margin-bottom: 4px;
     font-size: 0.9em;

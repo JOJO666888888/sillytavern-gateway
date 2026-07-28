@@ -19,6 +19,7 @@ import { OutboundMessage } from './adapters/base-adapter.js';
 import { PluginManager } from './plugin-manager.js';
 import { mediaStore } from './media/media-store.js';
 import { NativeRuntime } from './runtime/pipeline.js';
+import { LLMClient } from './runtime/llm-client.js';
 import { registerRuntimeCommands } from './runtime/runtime-commands.js';
 import multer from 'multer';
 
@@ -384,6 +385,29 @@ app.post('/api/runtime/sync-from-st', (req, res) => {
         logger.info(`从 ST 同步资产完成: 角色卡 ${result.characters} / 世界书 ${result.worldbooks} / 预设 ${result.presets}`);
         res.json({ success: true, ...result, assets: nativeRuntime.listAssets() });
     } catch (error) {
+        res.status(400).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * 拉取 LLM 可用模型列表（面板"获取模型"按钮用）。
+ * 用请求体里的 provider/baseUrl/apiKey；apiKey 为掩码或空时回退已保存的真 key。
+ * 该路由在全局 /api/* 鉴权中间件下，自动受 token 保护；apiKey 不进日志。
+ */
+app.post('/api/runtime/llm/models', async (req, res) => {
+    const body = req.body || {};
+    const saved = configManager.get('runtime.llm') || {};
+    const provider = body.provider || saved.provider || 'openai';
+    const baseUrl = body.baseUrl || saved.baseUrl || '';
+    // apiKey：优先用面板输入；掩码/空则回退已保存真 key（后端返回给前端的是脱敏串）
+    let apiKey = body.apiKey || '';
+    if (!apiKey || /^\*+$/.test(apiKey) || apiKey.includes('***')) apiKey = saved.apiKey || '';
+    try {
+        const models = await new LLMClient({ provider, baseUrl, apiKey, timeout: 20000 }).listModels();
+        logger.info(`拉取模型列表成功 (${provider}): ${models.length} 个`);
+        res.json({ success: true, models });
+    } catch (error) {
+        logger.warn(`拉取模型列表失败 (${provider}): ${error.message}`);
         res.status(400).json({ success: false, error: error.message });
     }
 });

@@ -7,7 +7,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 import http from 'http';
-import { LLMClient, buildRequest, extractText, extractDelta, buildMultimodalContent, describeEmptyCompletion, buildToolsSpec, extractToolCalls } from '../server/runtime/llm-client.js';
+import { LLMClient, buildRequest, extractText, extractDelta, buildMultimodalContent, describeEmptyCompletion, buildToolsSpec, extractToolCalls, buildListModelsRequest, extractModelIds } from '../server/runtime/llm-client.js';
 
 /** 起一个返回固定 SSE 流的本地服务器 */
 function sseServer(chunks, { splitAt } = {}) {
@@ -61,6 +61,89 @@ describe('请求构造（三 provider）', () => {
     test('自定义 baseUrl 生效（本地推理后端）', () => {
         const r = buildRequest({ provider: 'openai', baseUrl: 'http://127.0.0.1:11434/v1', model: 'llama' }, msgs, {});
         assert.match(r.url, /^http:\/\/127\.0\.0\.1:11434\/v1/);
+    });
+});
+
+describe('模型列表（buildListModelsRequest + extractModelIds）', () => {
+    test('OpenAI 兼容：GET /models，Bearer 头', () => {
+        const r = buildListModelsRequest({ provider: 'openai', baseUrl: 'http://127.0.0.1:11434/v1', apiKey: 'sk-x' });
+        assert.strictEqual(r.url, 'http://127.0.0.1:11434/v1/models');
+        assert.strictEqual(r.headers.Authorization, 'Bearer sk-x');
+    });
+
+    test('OpenAI 默认 baseUrl 指向官方', () => {
+        const r = buildListModelsRequest({ provider: 'openai', apiKey: 'k' });
+        assert.strictEqual(r.url, 'https://api.openai.com/v1/models');
+    });
+
+    test('Claude：GET /v1/models，x-api-key + anthropic-version 头', () => {
+        const r = buildListModelsRequest({ provider: 'claude', apiKey: 'k' });
+        assert.match(r.url, /\/v1\/models/);
+        assert.strictEqual(r.headers['x-api-key'], 'k');
+        assert.strictEqual(r.headers['anthropic-version'], '2023-06-01');
+    });
+
+    test('Gemini：key 走 query 参数，不带 Authorization', () => {
+        const r = buildListModelsRequest({ provider: 'gemini', apiKey: 'my key&' });
+        assert.match(r.url, /\/v1beta\/models\?key=/);
+        assert.ok(r.url.includes('my%20key%26'), 'key 应被 URL 编码');
+        assert.strictEqual(r.headers.Authorization, undefined);
+    });
+
+    test('extractModelIds：openai/claude 取 data[].id', () => {
+        assert.deepStrictEqual(
+            extractModelIds('openai', { data: [{ id: 'gpt-4o' }, { id: 'gpt-4o-mini' }] }),
+            ['gpt-4o', 'gpt-4o-mini'],
+        );
+        assert.deepStrictEqual(
+            extractModelIds('claude', { data: [{ id: 'claude-sonnet-4-5' }] }),
+            ['claude-sonnet-4-5'],
+        );
+    });
+
+    test('extractModelIds：gemini 去掉 models/ 前缀', () => {
+        assert.deepStrictEqual(
+            extractModelIds('gemini', { models: [{ name: 'models/gemini-2.0-flash' }, { name: 'models/gemini-pro' }] }),
+            ['gemini-2.0-flash', 'gemini-pro'],
+        );
+    });
+
+    test('extractModelIds：空/异常响应返回空数组', () => {
+        assert.deepStrictEqual(extractModelIds('openai', {}), []);
+        assert.deepStrictEqual(extractModelIds('gemini', { models: [{ name: '' }] }), []);
+    });
+
+    test('LLMClient.listModels 走本地服务器并解析（openai 兼容）', async () => {
+        const srv = http.createServer((req, res) => {
+            assert.match(req.url, /\/models$/);
+            assert.strictEqual(req.headers.authorization, 'Bearer test-key');
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ data: [{ id: 'qwen-32b' }, { id: 'llama-70b' }] }));
+        });
+        await new Promise(r => srv.listen(0, r));
+        const port = srv.address().port;
+        try {
+            const client = new LLMClient({ provider: 'openai', baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: 'test-key' });
+            const models = await client.listModels();
+            assert.deepStrictEqual(models, ['qwen-32b', 'llama-70b']);
+        } finally {
+            srv.close();
+        }
+    });
+
+    test('LLMClient.listModels 后端报错时抛带状态码', async () => {
+        const srv = http.createServer((req, res) => {
+            res.writeHead(401, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: { message: 'invalid api key' } }));
+        });
+        await new Promise(r => srv.listen(0, r));
+        const port = srv.address().port;
+        try {
+            const client = new LLMClient({ provider: 'openai', baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: 'bad' });
+            await assert.rejects(() => client.listModels(), /HTTP 401/);
+        } finally {
+            srv.close();
+        }
     });
 });
 

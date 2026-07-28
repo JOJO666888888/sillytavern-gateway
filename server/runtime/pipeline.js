@@ -170,6 +170,12 @@ export class NativeRuntime {
     importAsset(type, filename, buffer) {
         const dir = this.dirs[type];
         if (!dir) throw new Error(`未知资产类型: ${type}`);
+        // multer/busboy 默认按 latin1 解析 multipart 文件名参数，浏览器发的 UTF-8 中文
+        // 会变成 mojibake（出现 U+0080–U+00FF 高位字符）。带守卫转换：仅当检测到这类
+        // 高位字符时才按 latin1->UTF-8 还原，避免对已正确解码的名字二次破坏。
+        if (filename && /[\u0080-\u00FF]/.test(filename)) {
+            filename = Buffer.from(filename, 'latin1').toString('utf-8');
+        }
         // 安全文件名：去掉路径分隔符
         const safeName = filename.replace(/[\\/]/g, '_');
         const filePath = path.join(dir, safeName);

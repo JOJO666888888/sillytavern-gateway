@@ -9,6 +9,7 @@ import path from 'path';
 import { loadCharacterCard, parseCharacterCardPng, normalizeCard, extractPngTextChunks } from '../server/runtime/card-loader.js';
 import { normalizeLorebook, activateEntries } from '../server/runtime/worldbook-engine.js';
 import { ChatArchive } from '../server/runtime/chat-archive.js';
+import { NativeRuntime } from '../server/runtime/pipeline.js';
 import { tmpDir, buildCharacterPng } from './helpers.js';
 
 const tmps = [];
@@ -286,5 +287,44 @@ describe('聊天存档（.jsonl 与 ST 互通）', () => {
         const reloaded = new ChatArchive(file);
         assert.strictEqual(reloaded.length, 0);
         assert.strictEqual(reloaded.meta.character_name, '角色A');
+    });
+});
+
+describe('资产导入文件名解码（修复 multer 中文乱码）', () => {
+    /** 用临时目录构造一个 NativeRuntime，避免写到仓库资产目录 */
+    function makeRuntime() {
+        const base = makeTmp();
+        return new NativeRuntime({ config: {
+            charactersDir: path.join(base, 'characters'),
+            worldbooksDir: path.join(base, 'worldbooks'),
+            presetsDir: path.join(base, 'presets'),
+            chatsDir: path.join(base, 'chats'),
+        }});
+    }
+
+    test('multer/busboy 的 latin1 mojibake 还原为 UTF-8', () => {
+        const rt = makeRuntime();
+        // 模拟 multer 默认行为：把 UTF-8 文件名按 latin1 读成字符串（中文变 mojibake）
+        const mojibake = Buffer.from('绫波丽.json', 'utf-8').toString('latin1');
+        assert.notStrictEqual(mojibake, '绫波丽.json', '前置：mojibake 应与原文不同');
+        const buf = Buffer.from(JSON.stringify({ entries: [] }));
+
+        const result = rt.importAsset('worldbooks', mojibake, buf);
+        assert.strictEqual(result.name, '绫波丽');
+        assert.strictEqual(path.basename(result.path), '绫波丽.json', '落盘文件名应为正确 UTF-8');
+        assert.ok(rt.listAssets().worldbooks.includes('绫波丽'), 'listAssets 应列出正确名字');
+    });
+
+    test('已是正确 UTF-8 的中文文件名不被二次破坏', () => {
+        const rt = makeRuntime();
+        // 若 multer 已正确解码（defParamCharset=utf8），传入的就是正常 Unicode 串
+        const result = rt.importAsset('presets', '普通预设.json', Buffer.from('{}'));
+        assert.strictEqual(result.name, '普通预设');
+    });
+
+    test('纯 ASCII 文件名不受影响', () => {
+        const rt = makeRuntime();
+        const result = rt.importAsset('presets', 'my-preset.json', Buffer.from('{}'));
+        assert.strictEqual(result.name, 'my-preset');
     });
 });

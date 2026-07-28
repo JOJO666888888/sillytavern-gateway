@@ -2716,7 +2716,7 @@ async function loadRuntimeProfiles() {
         el.html(profiles.map(p => {
             const [platform, ...rest] = String(p.session).split(':');
             const chatId = rest.join(':');
-            const wb = (p.worldbooks || []).join(',');
+            const wbs = p.worldbooks || [];
             return `
             <div class="gateway-rt-profile" data-platform="${escapeHtml(platform)}" data-chatid="${escapeHtml(chatId)}">
                 <div class="gateway-rt-profile-head">
@@ -2731,9 +2731,13 @@ async function loadRuntimeProfiles() {
                     <label>预设</label>
                     <select class="text_pole rt-f-preset">${opts(rtAssets.presets, p.preset, '(默认)')}</select>
                 </div>
-                <div class="gateway-rt-profile-row">
+                <div class="gateway-rt-profile-row gateway-rt-wb-row">
                     <label>世界书</label>
-                    <input type="text" class="text_pole rt-f-worldbooks" value="${escapeHtml(wb)}" placeholder="逗号分隔，可用: ${escapeHtml(rtAssets.worldbooks.join(','))}">
+                    <div class="gateway-rt-wb-list rt-f-worldbooks">
+                        ${rtAssets.worldbooks.length
+                            ? rtAssets.worldbooks.map(w => `<label class="gateway-rt-wb-item"><input type="checkbox" value="${escapeHtml(w)}" ${wbs.includes(w) ? 'checked' : ''}> ${escapeHtml(w)}</label>`).join('')
+                            : '<span class="gateway-empty-hint">无可用世界书，先导入或从 ST 同步</span>'}
+                    </div>
                 </div>
                 <div class="gateway-rt-profile-row">
                     <label>存档</label>
@@ -2747,14 +2751,14 @@ async function loadRuntimeProfiles() {
             const box = $(this).closest('.gateway-rt-profile');
             const platform = box.data('platform');
             const chatId = box.data('chatid');
-            const wbRaw = box.find('.rt-f-worldbooks').val().trim();
+            const worldbooks = box.find('.rt-f-worldbooks input:checked').map((i, el) => el.value).get();
             try {
                 await apiRequest(`/api/runtime/profiles/${encodeURIComponent(platform)}/${encodeURIComponent(chatId)}`, {
                     method: 'POST',
                     body: JSON.stringify({
                         character: box.find('.rt-f-character').val(),
                         preset: box.find('.rt-f-preset').val(),
-                        worldbooks: wbRaw ? wbRaw.split(/[,，\s]+/).filter(Boolean) : [],
+                        worldbooks,
                         archive: box.find('.rt-f-archive').val().trim(),
                     }),
                 });
@@ -2798,6 +2802,39 @@ async function saveRuntimeConfig() {
     }
 }
 
+/**
+ * 拉取 LLM 可用模型列表，填入模型名输入框的 datalist 供下拉选择。
+ * 用面板当前的 provider/baseUrl/apiKey；apiKey 为掩码时不传，后端回退已存真 key。
+ */
+async function fetchRuntimeModels() {
+    const apiKey = $('#gateway_rt_apikey').val();
+    const payload = {
+        provider: $('#gateway_rt_provider').val(),
+        baseUrl: $('#gateway_rt_baseurl').val().trim(),
+        // 后端返回的是脱敏占位串；未改动则不回写，避免把掩码当真 key 发回
+        apiKey: (apiKey && !/^\*+$/.test(apiKey) && !apiKey.includes('***')) ? apiKey : undefined,
+    };
+    const btn = $('#gateway_rt_fetch_models');
+    const hint = $('#gateway_rt_model_hint');
+    btn.prop('disabled', true).html('<i class="fa-solid fa-spinner fa-spin"></i> 获取中');
+    hint.show().text('正在拉取模型列表...');
+    try {
+        const data = await apiRequest('/api/runtime/llm/models', { method: 'POST', body: JSON.stringify(payload) });
+        const models = data.models || [];
+        if (!models.length) {
+            hint.text('未返回任何模型--检查 Base URL / API Key 是否正确，以及服务商是否支持列模型。');
+            return;
+        }
+        $('#gateway_rt_model_list').html(models.map(m => `<option value="${escapeHtml(m)}">`).join(''));
+        hint.text(`已获取 ${models.length} 个模型，点击模型名输入框下拉选择。`);
+        $('#gateway_rt_model').trigger('focus');
+    } catch (e) {
+        hint.text(`获取失败: ${e.message}`);
+    } finally {
+        btn.prop('disabled', false).html('<i class="fa-solid fa-cloud-arrow-down"></i> 获取模型');
+    }
+}
+
 /** 预览最终 prompt */
 async function previewRuntimePrompt() {
     const session = $('#gateway_rt_pv_session').val().trim();
@@ -2838,6 +2875,7 @@ function bindRuntimeEvents() {
     $('#gateway_rt_save').on('click', saveRuntimeConfig);
     $('#gateway_rt_refresh').on('click', loadRuntimePanel);
     $('#gateway_rt_preview').on('click', previewRuntimePrompt);
+    $('#gateway_rt_fetch_models').on('click', fetchRuntimeModels);
     // 资产导入
     $('#gateway_rt_import_char').on('click', () => triggerAssetUpload('characters'));
     $('#gateway_rt_import_world').on('click', () => triggerAssetUpload('worldbooks'));
@@ -2879,6 +2917,8 @@ async function handleAssetUpload() {
         toastr.success(`已导入「${data.name}」`);
         rtAssets = data.assets || rtAssets;
         renderRuntimeAssets(rtAssets);
+        // 刷新会话绑定：让刚导入的角色卡/世界书/预设立刻出现在下拉与多选列表里
+        loadRuntimeProfiles();
     } catch (e) {
         toastr.error(`导入失败: ${e.message}`);
     }
@@ -2903,6 +2943,7 @@ async function syncFromSillyTavern() {
         toastr.success(`同步完成：角色卡 ${data.characters} / 世界书 ${data.worldbooks} / 预设 ${data.presets}`);
         rtAssets = data.assets || rtAssets;
         renderRuntimeAssets(rtAssets);
+        loadRuntimeProfiles();
     } catch (e) {
         toastr.error(`同步失败: ${e.message}`);
     }
