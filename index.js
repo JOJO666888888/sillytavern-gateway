@@ -2656,19 +2656,25 @@ function renderRuntimeAssets(assets) {
     const group = (label, type, arr, hint, opts = {}) => {
         const { allowDelete = true, allowEntries = false } = opts;
         const delBtn = (allowDelete && arr.length)
-            ? ` <button class="menu_button gateway-rt-del-btn" data-type="${type}" title="删除勾选的项"><i class="fa-solid fa-trash"></i> 删除选中</button>`
+            ? `<button class="menu_button gateway-rt-del-btn" data-type="${type}" title="删除勾选的项"><i class="fa-solid fa-trash"></i> 删除选中</button>`
             : '';
-        const head = `<div class="gateway-rt-asset-group-head"><b>${label}</b>${delBtn}</div>`;
-        if (!arr.length) return `<div class="gateway-rt-asset-group">${head}<span class="gateway-empty-hint">${hint}</span></div>`;
-        const rows = arr.map(name => `
-            <div class="gateway-rt-asset-row" data-type="${type}" data-name="${escapeHtml(name)}">
-                <label class="gateway-rt-asset-item">
-                    <input type="checkbox" class="gateway-rt-asset-check">
-                    <span>${escapeHtml(name)}</span>
-                </label>
-                ${allowEntries ? `<button class="menu_button gateway-rt-entries-btn" title="编辑条目启用"><i class="fa-solid fa-list-ul"></i> 条目</button>` : ''}
-            </div>`).join('');
-        return `<div class="gateway-rt-asset-group">${head}${rows}</div>`;
+        const head = `
+            <div class="gateway-rt-asset-group-head">
+                <i class="fa-solid fa-chevron-right gateway-rt-asset-arrow"></i>
+                <b>${label}</b><span class="gateway-rt-asset-count" title="${arr.length} 项">${arr.length}</span>${delBtn}
+            </div>`;
+        const bodyInner = !arr.length
+            ? `<span class="gateway-empty-hint">${hint}</span>`
+            : arr.map(name => `
+                <div class="gateway-rt-asset-row" data-type="${type}" data-name="${escapeHtml(name)}">
+                    <label class="gateway-rt-asset-item">
+                        <input type="checkbox" class="gateway-rt-asset-check">
+                        <span>${escapeHtml(name)}</span>
+                    </label>
+                    ${allowEntries ? `<button class="menu_button gateway-rt-entries-btn" title="编辑条目启用"><i class="fa-solid fa-list-ul"></i> 条目</button>` : ''}
+                </div>`).join('');
+        // 抽屉式：默认折叠，点击头部展开/收起（见 bindRuntimeEvents 委托）
+        return `<div class="gateway-rt-asset-group">${head}<div class="gateway-rt-asset-group-body" style="display:none;">${bodyInner}</div></div>`;
     };
     $('#gateway_rt_assets').html(
         group('角色卡', 'characters', assets.characters, '无，点击下方导入或放入 assets/characters/', { allowEntries: false }) +
@@ -2887,6 +2893,13 @@ function bindRuntimeEvents() {
     $('#gateway_rt_sync_st').on('click', syncFromSillyTavern);
     // 资产管理：删除选中 / 编辑条目（事件委托，HTML 重渲染后仍生效）
     $('#gateway_rt_assets')
+        .on('click', '.gateway-rt-asset-group-head', function (e) {
+            // 排除头部内的按钮/输入框，避免点击「删除选中」时误触发折叠
+            if ($(e.target).closest('button, input, select, textarea, label, a').length) return;
+            const body = $(this).siblings('.gateway-rt-asset-group-body');
+            body.stop(true, true).slideToggle(150);
+            $(this).find('.gateway-rt-asset-arrow').toggleClass('expanded');
+        })
         .on('click', '.gateway-rt-del-btn', handleAssetDelete)
         .on('click', '.gateway-rt-entries-btn', function () {
             const row = $(this).closest('.gateway-rt-asset-row');
@@ -2896,10 +2909,18 @@ function bindRuntimeEvents() {
 
 /** 删除勾选的资产（带确认） */
 async function handleAssetDelete() {
-    const type = $(this).data('type');
+    const $btn = $(this);
+    const type = $btn.data('type');
     const names = $(`#gateway_rt_assets .gateway-rt-asset-row[data-type="${type}"] .gateway-rt-asset-check:checked`)
         .map(function () { return $(this).closest('.gateway-rt-asset-row').data('name'); }).get();
     if (!names.length) {
+        // 分组折叠时无法勾选：自动展开该分组，引导用户勾选
+        const $group = $btn.closest('.gateway-rt-asset-group');
+        const $body = $group.find('.gateway-rt-asset-group-body');
+        if (!$body.is(':visible')) {
+            $body.stop(true, true).slideDown(150);
+            $group.find('.gateway-rt-asset-arrow').addClass('expanded');
+        }
         toastr.warning('请先勾选要删除的项');
         return;
     }

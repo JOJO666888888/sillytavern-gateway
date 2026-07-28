@@ -1366,27 +1366,63 @@
     flex: 0 0 auto;
 }
 
+/* 资产分组：抽屉式折叠（与连接/适配器区块一致）*/
 .gateway-rt-asset-group {
-    margin-bottom: 4px;
+    border: 1px solid var(--SmartThemeBorderColor, #333);
+    border-radius: 6px;
+    margin-bottom: 6px;
+    overflow: hidden;
     font-size: 0.9em;
 }
 
-.gateway-rt-asset-group b {
-    margin-right: 6px;
-}
-
-/* 资产管理：分组头部（标题 + 删除选中）*/
 .gateway-rt-asset-group-head {
     display: flex;
     align-items: center;
     gap: 6px;
-    margin: 4px 0;
+    padding: 6px 10px;
+    cursor: pointer;
+    background: rgba(255, 255, 255, 0.03);
+    transition: background 0.2s;
+}
+
+.gateway-rt-asset-group-head:hover {
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.gateway-rt-asset-arrow {
+    flex: 0 0 auto;
+    width: 12px;
+    text-align: center;
+    font-size: 0.75em;
+    color: var(--SmartThemeBodyColor, #999);
+    transition: transform 0.15s;
+}
+
+.gateway-rt-asset-arrow.expanded {
+    transform: rotate(90deg);
+}
+
+.gateway-rt-asset-group-head b {
+    margin-right: 2px;
+}
+
+.gateway-rt-asset-count {
+    font-size: 0.8em;
+    opacity: 0.75;
+    padding: 0 6px;
+    border-radius: 8px;
+    background: rgba(128, 128, 128, 0.2);
 }
 
 .gateway-rt-asset-group-head .gateway-rt-del-btn {
     margin-left: auto;
     font-size: 0.8em;
     padding: 2px 8px;
+}
+
+.gateway-rt-asset-group-body {
+    padding: 6px 10px;
+    border-top: 1px solid var(--SmartThemeBorderColor, #333);
 }
 
 /* 资产行：勾选框 + 名字 + 条目按钮 */
