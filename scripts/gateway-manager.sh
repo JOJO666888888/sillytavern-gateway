@@ -257,6 +257,140 @@ restore_config() {
 # 核心操作
 # ═══════════════════════════════════════════════════════════
 
+# ── SillyTavern 扩展目录链接 ──
+# 前端扩展必须在 ST 的 third-party/ 目录才能被加载
+# 本函数自动检测 ST 安装路径并创建软链接
+link_to_st_extensions() {
+    local gateway_dir="$1"
+    local ext_name="sillytavern-gateway"
+    local st_dir=""
+    local candidates=()
+
+    echo ""
+    info "检测 SillyTavern 安装路径..."
+
+    # 按常见安装位置生成候选路径
+    case "$OS_TYPE" in
+        termux)
+            candidates+=(
+                "$HOME/SillyTavern"
+                "$HOME/storage/shared/SillyTavern"
+                "$PREFIX/share/SillyTavern"
+            )
+            ;;
+        linux)
+            candidates+=(
+                "$HOME/SillyTavern"
+                "$HOME/sillytavern"
+                "/opt/SillyTavern"
+                "/srv/SillyTavern"
+            )
+            ;;
+        macos)
+            candidates+=(
+                "$HOME/SillyTavern"
+                "/Applications/SillyTavern"
+            )
+            ;;
+        windows-wsl|windows-gitbash)
+            # Windows 上的常见路径（通过 /mnt/c 或 Windows 路径）
+            candidates+=(
+                "/mnt/c/SillyTavern"
+                "/mnt/d/SillyTavern"
+                "C:/SillyTavern"
+                "D:/SillyTavern"
+                "$HOME/SillyTavern"
+            )
+            ;;
+    esac
+
+    # 逐个检测候选路径
+    for p in "${candidates[@]}"; do
+        if [ -d "$p/public/scripts/extensions/third-party" ]; then
+            st_dir="$p"
+            break
+        fi
+    done
+
+    # 如果没找到，询问用户
+    if [ -z "$st_dir" ]; then
+        warn "未自动找到 SillyTavern 安装目录"
+        echo "  SillyTavern 前端扩展需要安装到 ST 的扩展目录才能显示面板："
+        dim "  SillyTavern/public/scripts/extensions/third-party/"
+        echo ""
+        printf "请输入 SillyTavern 安装路径 (留空跳过，之后可手动链接): "
+        read -r st_dir
+        if [ -z "$st_dir" ]; then
+            warn "跳过 ST 扩展链接"
+            echo ""
+            echo "  后续可手动创建链接："
+            dim "  ln -s $gateway_dir <ST路径>/public/scripts/extensions/third-party/$ext_name"
+            echo ""
+            return 0
+        fi
+        if [ ! -d "$st_dir/public/scripts/extensions/third-party" ]; then
+            error "路径不像 SillyTavern: $st_dir"
+            dim "  应包含 public/scripts/extensions/third-party/ 子目录"
+            echo ""
+            echo "  后续可手动创建链接："
+            dim "  ln -s $gateway_dir $st_dir/public/scripts/extensions/third-party/$ext_name"
+            echo ""
+            return 0
+        fi
+    fi
+
+    local third_party_dir="$st_dir/public/scripts/extensions/third-party"
+    local link_target="$third_party_dir/$ext_name"
+
+    success "找到 SillyTavern: $st_dir"
+
+    # 如果已经是链接或目录，检查是否指向正确
+    if [ -L "$link_target" ] || [ -d "$link_target" ]; then
+        local current_target=""
+        if [ -L "$link_target" ]; then
+            current_target="$(readlink -f "$link_target" 2>/dev/null || readlink "$link_target" 2>/dev/null || echo "")"
+        fi
+        if [ "$current_target" = "$gateway_dir" ] || [ "$(cd "$link_target" && pwd 2>/dev/null)" = "$gateway_dir" ]; then
+            info "扩展链接已存在且指向正确，跳过"
+            return 0
+        fi
+        warn "$link_target 已存在"
+        printf "是否覆盖？(y/n) [n]: "
+        local r; read -r r
+        if [ "$r" != "y" ] && [ "$r" != "Y" ]; then
+            info "跳过链接创建"
+            return 0
+        fi
+        rm -rf "$link_target" 2>/dev/null || true
+    fi
+
+    # 创建软链接（或 Windows Junction）
+    info "创建扩展链接: $link_target -> $gateway_dir"
+    ln -s "$gateway_dir" "$link_target" 2>/dev/null
+    if [ $? -eq 0 ]; then
+        success "扩展链接已创建"
+        dim "  重启 SillyTavern 或刷新浏览器后，面板将出现在顶部设置栏"
+    else
+        # Windows Git Bash 可能不支持 ln -s，提示手动操作
+        warn "软链接创建失败（可能是权限不足或系统不支持）"
+        echo ""
+        echo "  请手动创建链接："
+        if [ "$OS_TYPE" = "windows-wsl" ] || [ "$OS_TYPE" = "windows-gitbash" ]; then
+            dim "  PowerShell (管理员):"
+            dim "  New-Item -ItemType Junction -Path \"$link_target\" -Target \"$(echo "$gateway_dir" | sed 's|/mnt/c|C:|; s|/mnt/d|D:|')\""
+            dim "  或 CMD (管理员):"
+            dim "  mklink /J \"$link_target\" \"$(echo "$gateway_dir" | sed 's|/mnt/c|C:|; s|/mnt/d|D:|')\""
+        else
+            dim "  ln -s $gateway_dir $link_target"
+        fi
+        echo ""
+        echo "  或直接把仓库 clone 到 ST 扩展目录："
+        dim "  cd $third_party_dir && git clone $GATEWAY_REPO $ext_name"
+    fi
+    log_action "INFO" "ST 扩展链接: $link_target -> $gateway_dir"
+    echo ""
+}
+
 # ── 安装 ──
 cmd_install() {
     info "开始安装 SillyTavern Gateway"
@@ -299,6 +433,10 @@ cmd_install() {
     info "安装依赖..."
     npm install || { error "npm install 失败"; return 1; }
 
+    # ── SillyTavern 扩展目录链接 ──
+    # 前端扩展必须在 ST 的 third-party 目录才能被加载
+    link_to_st_extensions "$dest"
+
     # 引导配置
     guided_config
 
@@ -336,8 +474,9 @@ cmd_install() {
     dim "  安装目录: $dest"
     dim "  管理脚本: $manager_link"
     echo ""
-    dim "  在 SillyTavern 中: 扩展 -> SillyTavern-Multiplatform-Gateway"
-    dim "  填入地址 http://localhost:${PORT} 和上面的 Token 即可连接"
+    dim "  在 SillyTavern 中: 扩展 -> 找到 Multi-Platform Gateway -> 勾选启用"
+    dim "  顶部设置栏点击网关图标 -> 填入 http://localhost:${PORT} + Token"
+    dim "  如果面板没出现: 确认扩展已链接到 ST 的 third-party/ 目录（安装时自动处理）"
     log_action "INFO" "安装完成到 $dest"
 }
 
