@@ -306,20 +306,38 @@ cmd_install() {
     info "首次启动网关..."
     start_gateway
 
+    # 安装后把管理脚本复制到用户目录，方便日常使用
+    local manager_link="$HOME/gateway-manager.sh"
+    cp "$INSTALL_DIR/scripts/gateway-manager.sh" "$manager_link" 2>/dev/null && chmod +x "$manager_link"
+
     # 显示 token
     local token
     sleep 2
     token="$(get_auth_token)"
+    echo ""
+    success "安装完成！"
+    echo ""
     if [ -n "$token" ]; then
-        echo ""
-        success "安装完成！"
-        echo ""
         info "鉴权 Token: $token"
-        dim "  请将此 Token 填入 SillyTavern 网关面板"
-        dim "  面板地址: http://localhost:${PORT}"
+        echo ""
     else
         warn "未能自动获取 Token，请查看日志: $LOG_DIR/gateway-stdout.log"
+        dim "  或运行: cd $dest && node scripts/show-token.js"
     fi
+    echo "  ┌─────────────────────────────────────────────┐"
+    echo "  │  后续管理命令:                                │"
+    echo "  │  ~/gateway-manager.sh          交互式菜单      │"
+    echo "  │  ~/gateway-manager.sh status   查看状态       │"
+    echo "  │  ~/gateway-manager.sh restart  重启网关       │"
+    echo "  │  ~/gateway-manager.sh --help   查看所有命令    │"
+    echo "  └─────────────────────────────────────────────┘"
+    echo ""
+    dim "  网关面板: http://localhost:${PORT}"
+    dim "  安装目录: $dest"
+    dim "  管理脚本: $manager_link"
+    echo ""
+    dim "  在 SillyTavern 中: 扩展 -> SillyTavern-Multiplatform-Gateway"
+    dim "  填入地址 http://localhost:${PORT} 和上面的 Token 即可连接"
     log_action "INFO" "安装完成到 $dest"
 }
 
