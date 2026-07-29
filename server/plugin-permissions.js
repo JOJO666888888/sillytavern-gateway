@@ -29,6 +29,7 @@
 import { createLogger } from './utils/logger.js';
 import { fileURLToPath } from 'url';
 import path from 'path';
+import fs from 'fs';
 
 const logger = createLogger('plugin-perm');
 // ESM 模块没有 __dirname，手动构造供 createFsService/createAssetsService 使用
@@ -316,8 +317,6 @@ export function buildScopedServices(pluginName, granted, raw, managedUnregister 
  * @param {string} pluginName
  */
 function createFsService(pluginName) {
-    const path = require('path');
-    const fs = require('fs');
     const dataDir = path.resolve(__dirname, '..', 'data', 'plugins', pluginName);
 
     // 安全解析：确保解析后的路径仍在 dataDir 之下，防止 ../ 穿越
@@ -359,8 +358,6 @@ function createFsService(pluginName) {
  * 读取 assets/ 目录下的角色卡、世界书、预设。
  */
 function createAssetsService() {
-    const path = require('path');
-    const fs = require('fs');
     const assetsDir = path.resolve(__dirname, '..', 'assets');
 
     return {
@@ -444,8 +441,8 @@ const RISK_PATTERNS = [
  * @returns {{findings: Array, maxLevel: string, filesScanned: number}}
  */
 export function scanPluginRisk(pluginDir, deps) {
-    const fs = deps?.fs || require('fs');
-    const path = deps?.path || require('path');
+    const _fs = deps?.fs || fs;
+    const _path = deps?.path || path;
 
     const findings = [];
     let filesScanned = 0;
@@ -453,23 +450,23 @@ export function scanPluginRisk(pluginDir, deps) {
     const walk = (dir, depth = 0) => {
         if (depth > 3) return;
         let entries;
-        try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
+        try { entries = _fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
         for (const e of entries) {
             if (e.name === 'node_modules' || e.name.startsWith('.')) continue;
-            const full = path.join(dir, e.name);
+            const full = _path.join(dir, e.name);
             if (e.isDirectory()) { walk(full, depth + 1); continue; }
             if (!/\.(js|mjs|cjs)$/.test(e.name)) continue;
 
             filesScanned++;
             let src;
-            try { src = fs.readFileSync(full, 'utf-8'); } catch (_) { continue; }
+            try { src = _fs.readFileSync(full, 'utf-8'); } catch (_) { continue; }
 
             for (const { re, level, label } of RISK_PATTERNS) {
                 const m = src.match(re);
                 if (m) {
                     // 定位行号便于用户自查
                     const line = src.slice(0, m.index).split('\n').length;
-                    findings.push({ file: path.relative(pluginDir, full), line, level, label });
+                    findings.push({ file: _path.relative(pluginDir, full), line, level, label });
                 }
             }
         }

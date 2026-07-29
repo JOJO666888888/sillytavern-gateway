@@ -80,19 +80,25 @@ export class EventPipeline {
                 continue;
             }
 
-            // 构建上下文
-            const ctx = new PluginContext({
-                message,
-                gateway: services.gateway,
-                sessionManager: services.sessionManager,
-                configManager: services.configManager,
-                gatewayConfig: services.getGatewayConfigFor?.(listener.pluginName),
-                llm: services.getLLMFor?.(listener.pluginName),
-                fs: services.getFsFor?.(listener.pluginName),
-                assets: services.getAssetsFor?.(listener.pluginName),
-                agent: services.getAgentFor?.(listener.pluginName),
-                pluginName: listener.pluginName,
-            });
+            // 构建上下文（服务装配若失败，记录并跳过该监听器，不致整条管线崩溃）
+            let ctx;
+            try {
+                ctx = new PluginContext({
+                    message,
+                    gateway: services.gateway,
+                    sessionManager: services.sessionManager,
+                    configManager: services.configManager,
+                    gatewayConfig: services.getGatewayConfigFor?.(listener.pluginName),
+                    llm: services.getLLMFor?.(listener.pluginName),
+                    fs: services.getFsFor?.(listener.pluginName),
+                    assets: services.getAssetsFor?.(listener.pluginName),
+                    agent: services.getAgentFor?.(listener.pluginName),
+                    pluginName: listener.pluginName,
+                });
+            } catch (error) {
+                logger.error(`插件 ${listener.pluginName} 上下文装配失败，已跳过: ${error.message}`);
+                continue;
+            }
 
             try {
                 await listener.handler(ctx);

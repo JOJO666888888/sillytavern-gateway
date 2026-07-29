@@ -33,7 +33,9 @@ const DEFAULT_ORDER = [
 const DEFAULT_SAMPLING = {
     temperature: 0.9,
     top_p: 1,
-    max_tokens: 1024,
+    // 推理模型（如 deepseek-v4-pro）会先消耗思维链 token 再产出正文，
+    // 1024 易被思维链吃光导致空回复。4096 对绝大多数 RP 场景够用且不浪费。
+    max_tokens: 4096,
     frequency_penalty: 0,
     presence_penalty: 0,
 };

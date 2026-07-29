@@ -62,6 +62,14 @@ describe('请求构造（三 provider）', () => {
         const r = buildRequest({ provider: 'openai', baseUrl: 'http://127.0.0.1:11434/v1', model: 'llama' }, msgs, {});
         assert.match(r.url, /^http:\/\/127\.0\.0\.1:11434\/v1/);
     });
+
+    test('OpenAI 缺省 max_tokens 回退到推理模型安全值（不传 undefined）', () => {
+        // 真机事故：openai buildRequest 原直接传 sampling.max_tokens，未给默认值；
+        // 预设未指定时为 undefined，部分本地后端拒绝 undefined 或推理模型吃光小预算。
+        const r = buildRequest({ provider: 'openai', model: 'm' }, msgs, {});
+        assert.ok(r.body.max_tokens && r.body.max_tokens >= 4096,
+            `推理模型需足够 max_tokens，实际: ${r.body.max_tokens}`);
+    });
 });
 
 describe('模型列表（buildListModelsRequest + extractModelIds）', () => {

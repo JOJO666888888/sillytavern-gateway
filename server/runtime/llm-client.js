@@ -285,7 +285,7 @@ export function buildRequest(cfg, messages, sampling = {}, stream = false) {
             messages: messages.map(m => toOpenAIMessage(m)),
             temperature: sampling.temperature,
             top_p: sampling.top_p,
-            max_tokens: sampling.max_tokens,
+            max_tokens: sampling.max_tokens ?? 4096,
             frequency_penalty: sampling.frequency_penalty,
             presence_penalty: sampling.presence_penalty,
             stream: stream || undefined,

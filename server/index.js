@@ -165,8 +165,14 @@ function setupMessageHandling() {
 
         // 优先交给插件系统处理（命令路由 + 事件管线）
         // 命令必须在记录会话历史之前处理，避免 /help 等命令文本污染 AI 上下文
+        // 包裹 try/catch：插件管线自身崩溃不得阻断自建推理管线回复用户
         if (pluginManager) {
-            const handled = await pluginManager.handleMessage(message);
+            let handled = false;
+            try {
+                handled = await pluginManager.handleMessage(message);
+            } catch (error) {
+                logger.error(`[plugin] 消息处理异常（已跳过，继续走推理管线）: ${error.message}`);
+            }
             if (handled) {
                 return; // 插件已处理（命令执行完毕），不记录历史、不转发到 ST
             }

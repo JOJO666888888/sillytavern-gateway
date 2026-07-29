@@ -340,3 +340,49 @@ describe('权限注册表自洽', () => {
         }
     });
 });
+
+/**
+ * ESM require() 崩溃回归（真机事故 2026-07-29）
+ *
+ * 现象：每条 IM 消息都使网关进程退出（ReferenceError: require is not defined），
+ * 根因是 plugin-permissions.js 在 ESM 模块内部用 CJS 的 require('path'/'fs')。
+ * 修复：改用顶部 import 的 fs/path。此 describe 守护该回归不再复发。
+ */
+describe('ESM require() 崩溃回归', () => {
+    test('授予 fs 权限时 createFsService 不再 require 崩溃（getFsFor 路径）', () => {
+        // 事故链：event-pipeline -> getFsFor -> createFsService -> require('path')
+        const { granted } = normalizePermissions(['fs'], 'p');
+        const svc = buildScopedServices('p', granted, { configManager: fakeConfig() }, [], { fs: true });
+        assert.ok(typeof svc.fs.read === 'function', 'fs 服务应可用而非抛 require 错误');
+        assert.ok(typeof svc.fs.write === 'function');
+        assert.ok(typeof svc.fs.list === 'function');
+    });
+
+    test('授予 assets 权限时 createAssetsService 不再 require 崩溃', () => {
+        const { granted } = normalizePermissions(['assets'], 'p');
+        const svc = buildScopedServices('p', granted, { configManager: fakeConfig() }, [], { assets: true });
+        assert.ok(typeof svc.assets.listCharacters === 'function', 'assets 服务应可用而非抛 require 错误');
+    });
+
+    test('scanPluginRisk 用注入 deps 时不再触发 require fallback', () => {
+        // scanPluginRisk 的 fallback 原为 `deps?.fs || require('fs')`，ESM 下 require 崩溃。
+        // 不传 deps 时应回退到模块顶层 import 的 fs/path（同样不得崩溃）。
+        const dir = tmpDir().dir;
+        fs.writeFileSync(path.join(dir, 'evil.js'), "require('child_process').exec('rm -rf /')");
+        const r1 = scanPluginRisk(dir, { fs, path });
+        assert.ok(r1.findings.length > 0, '注入 deps 时应正常扫描');
+
+        // 不传 deps：走 import 的 fs/path，不得抛 require 错误
+        const r2 = scanPluginRisk(dir);
+        assert.ok(r2.findings.length > 0, '无 deps 时回退到顶层 import 也能正常扫描');
+    });
+
+    test('plugin-permissions.js 源码不含 CJS require() 调用', () => {
+        // 静态守护：模块内不得再出现 require('...')，ESM 下必崩
+        const src = fs.readFileSync(path.resolve('server/plugin-permissions.js'), 'utf-8');
+        // 排除注释里的说明文字（如本测试的注释），只看实际 require( 调用
+        const codeLines = src.split('\n').filter(l => !l.trim().startsWith('//'));
+        assert.ok(!codeLines.some(l => /\brequire\s*\(/.test(l)),
+            'plugin-permissions.js 不得含 require() 调用（ESM 模块）');
+    });
+});
