@@ -9,6 +9,7 @@ set -euo pipefail
 
 # ── 全局变量 ──
 GATEWAY_REPO="https://github.com/JOJO666888888/sillytavern-gateway"
+ENV_FILE="$HOME/.gateway_env"
 INSTALL_DIR=""
 PID_FILE=""
 CONFIG_DIR=""
@@ -19,7 +20,41 @@ PORT=3210
 OS_TYPE=""
 DISTRO=""
 PKG_MANAGER=""
-SCRIPT_VERSION="1.0.0"
+SCRIPT_VERSION="1.0.1"
+
+# ── 路径记忆：加载/保存环境文件 ──
+load_env() {
+    if [ -f "$ENV_FILE" ]; then
+        # 安全加载：逐行读取，只接受已知 key
+        while IFS='=' read -r key val; do
+            [ -z "$key" ] && continue
+            case "$key" in
+                INSTALL_DIR) INSTALL_DIR="$val" ;;
+                PLUGINS_DIR) PLUGINS_DIR="$val" ;;
+                PORT)        PORT="$val" ;;
+            esac
+        done < "$ENV_FILE" 2>/dev/null
+        # 如果加载到了 INSTALL_DIR，设置派生变量
+        if [ -n "$INSTALL_DIR" ]; then
+            CONFIG_DIR="$INSTALL_DIR/config"
+            LOG_DIR="$INSTALL_DIR/logs"
+            DATA_DIR="$INSTALL_DIR/data"
+            PLUGINS_DIR="${PLUGINS_DIR:-$INSTALL_DIR/plugins}"
+            PID_FILE="$CONFIG_DIR/gateway.pid"
+        fi
+    fi
+}
+
+save_env() {
+    cat > "$ENV_FILE" << EOF
+# SillyTavern Gateway 管理脚本环境文件
+# 自动生成，请勿手动编辑
+INSTALL_DIR=$INSTALL_DIR
+PLUGINS_DIR=$PLUGINS_DIR
+PORT=$PORT
+EOF
+    chmod 600 "$ENV_FILE" 2>/dev/null || true
+}
 
 # ── 颜色输出 ──
 info()    { printf '\033[36m[INFO]\033[0m %s\n' "$*"; }
@@ -29,26 +64,31 @@ success() { printf '\033[32m[OK]\033[0m %s\n' "$*"; }
 dim()     { printf '\033[2m%s\033[0m\n' "$*"; }
 
 # ── 检测安装目录 ──
+# 优先级: 环境文件 > 脚本父目录 > 当前目录
 detect_install_dir() {
+    # 1. 先从 ~/.gateway_env 加载（脚本可能从家目录运行）
+    if [ -n "${INSTALL_DIR:-}" ] && [ -f "$INSTALL_DIR/package.json" ]; then
+        return 0
+    fi
+
+    # 2. 脚本在 scripts/ 下，上级是项目根目录
     local script_dir
     script_dir="$(cd "$(dirname "$0")" && pwd)"
-    # 脚本在 scripts/ 下，上级是项目根目录
     local parent="$(dirname "$script_dir")"
     if [ -f "$parent/package.json" ] && [ -f "$parent/server/index.js" ]; then
         INSTALL_DIR="$parent"
+    elif [ -f "./package.json" ] && [ -f "./server/index.js" ]; then
+        # 3. 当前目录
+        INSTALL_DIR="$(pwd)"
     else
-        # 尝试当前目录
-        if [ -f "./package.json" ] && [ -f "./server/index.js" ]; then
-            INSTALL_DIR="$(pwd)"
-        else
-            INSTALL_DIR=""
-        fi
+        INSTALL_DIR=""
     fi
+    # 设置派生变量
     if [ -n "$INSTALL_DIR" ]; then
         CONFIG_DIR="$INSTALL_DIR/config"
         LOG_DIR="$INSTALL_DIR/logs"
         DATA_DIR="$INSTALL_DIR/data"
-        PLUGINS_DIR="$INSTALL_DIR/plugins"
+        PLUGINS_DIR="${PLUGINS_DIR:-$INSTALL_DIR/plugins}"
         PID_FILE="$CONFIG_DIR/gateway.pid"
     fi
 }
@@ -169,11 +209,58 @@ json_set() {
     " 2>/dev/null
 }
 
-# ── HTTP API 调用 ──
+# ── Token 获取 ──
+# 从 .env 环境变量优先读取，再从配置文件读取
 get_auth_token() {
     if [ -z "${INSTALL_DIR:-}" ]; then detect_install_dir; fi
-    [ -n "$INSTALL_DIR" ] && [ -f "$CONFIG_DIR/gateway.json" ] || return 0
+    [ -n "$INSTALL_DIR" ] || return 0
+
+    # 1. 优先从 .env 读环境变量 GATEWAY_AUTH_TOKEN
+    if [ -f "$INSTALL_DIR/.env" ]; then
+        local env_token
+        env_token="$(grep '^GATEWAY_AUTH_TOKEN=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d'=' -f2- || true)"
+        if [ -n "$env_token" ]; then
+            echo "$env_token"
+            return 0
+        fi
+    fi
+    # 2. 从配置文件读
+    [ -f "$CONFIG_DIR/gateway.json" ] || return 0
     json_get "$CONFIG_DIR/gateway.json" "server.authToken"
+}
+
+# 带重试的 token 获取（等待网关写入）
+get_auth_token_retry() {
+    local max_retries="${1:-15}"
+    local i=0
+    while [ $i -lt $max_retries ]; do
+        # 先检查网关进程是否存活
+        local pid=""
+        [ -f "$PID_FILE" ] && pid="$(cat "$PID_FILE" 2>/dev/null)"
+        if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+            return 1  # 进程已死，不再等待
+        fi
+        local token
+        token="$(get_auth_token)"
+        if [ -n "$token" ]; then
+            echo "$token"
+            return 0
+        fi
+        sleep 1
+        i=$((i + 1))
+    done
+    return 1
+}
+
+# 确保 INSTALL_DIR 发现后，派生变量都正确设置
+detect_install_helper() {
+    if [ -n "${INSTALL_DIR:-}" ]; then
+        CONFIG_DIR="${CONFIG_DIR:-$INSTALL_DIR/config}"
+        LOG_DIR="${LOG_DIR:-$INSTALL_DIR/logs}"
+        DATA_DIR="${DATA_DIR:-$INSTALL_DIR/data}"
+        PLUGINS_DIR="${PLUGINS_DIR:-$INSTALL_DIR/plugins}"
+        PID_FILE="${PID_FILE:-$CONFIG_DIR/gateway.pid}"
+    fi
 }
 
 api_call() {
@@ -193,7 +280,76 @@ api_call() {
 
 # ── 端口检测 ──
 check_port() {
-    curl -s -o /dev/null -w "%{http_code}" "http://localhost:${PORT}/api/gateway/health" 2>/dev/null || echo "000"
+    local port="${1:-$PORT}"
+    curl -s -o /dev/null -w "%{http_code}" "http://localhost:${port}/api/gateway/health" 2>/dev/null || echo "000"
+}
+
+# 检查端口是否真正空闲（系统级别，不依赖 HTTP）
+is_port_free() {
+    local port="${1:-$PORT}"
+    # 方式1: /proc 扫描（Linux/Termux）
+    if [ -d /proc ]; then
+        local found=0
+        for f in /proc/*/fd/*; do
+            [ -L "$f" ] || continue
+            local link
+            link="$(readlink "$f" 2>/dev/null || echo "")"
+            case "$link" in
+                *socket:*)
+                    local inode
+                    inode="${link#socket:}"
+                    [ "$inode" = "$link" ] && continue
+                    # 检查 TCP 是否监听该 inode
+                    if grep -q "$inode" /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
+                        # 检查端口匹配
+                        local hex_port
+                        hex_port=$(printf '%04X' "$port" 2>/dev/null || echo "")
+                        if [ -n "$hex_port" ] && grep -q ":$hex_port " /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
+                            found=1
+                            break
+                        fi
+                    fi
+                    ;;
+            esac
+        done
+        [ "$found" -eq 0 ] && return 0
+        return 1
+    fi
+    # 方式2: lsof
+    if command -v lsof &>/dev/null; then
+        lsof -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | grep -q . && return 1
+        return 0
+    fi
+    # 方式3: ss
+    if command -v ss &>/dev/null; then
+        ss -tlnp 2>/dev/null | grep -q ":$port " && return 1
+        return 0
+    fi
+    # 方式4: netstat
+    if command -v netstat &>/dev/null; then
+        netstat -tlnp 2>/dev/null | grep -q ":$port " && return 1
+        return 0
+    fi
+    # 都没有，用 bash 尝试绑定
+    (exec 3<>/dev/tcp/127.0.0.1/"$port") 2>/dev/null
+    if [ $? -eq 0 ]; then
+        exec 3>&- 3<&-
+        return 1  # 能连接说明端口被占
+    fi
+    return 0
+}
+
+# 找一个空闲端口，从 $1 开始（默认 3210），最多试 10 个
+find_port() {
+    local start="${1:-3210}"
+    for ((p=start; p<start+10; p++)); do
+        if is_port_free "$p"; then
+            echo "$p"
+            return 0
+        fi
+    done
+    echo ""
+    return 1
 }
 
 # ── 日志记录 ──
@@ -440,6 +596,9 @@ cmd_install() {
     # 引导配置
     guided_config
 
+    # 保存环境文件（路径记忆）
+    save_env
+
     # 首次启动
     info "首次启动网关..."
     start_gateway
@@ -448,10 +607,9 @@ cmd_install() {
     local manager_link="$HOME/gateway-manager.sh"
     cp "$INSTALL_DIR/scripts/gateway-manager.sh" "$manager_link" 2>/dev/null && chmod +x "$manager_link"
 
-    # 显示 token
-    local token
-    sleep 2
-    token="$(get_auth_token)"
+    # 显示 token（带重试，等待网关写入）
+    local token=""
+    token="$(get_auth_token_retry 15)"
     echo ""
     success "安装完成！"
     echo ""
@@ -459,8 +617,10 @@ cmd_install() {
         info "鉴权 Token: $token"
         echo ""
     else
-        warn "未能自动获取 Token，请查看日志: $LOG_DIR/gateway-stdout.log"
+        warn "未能自动获取 Token"
+        dim "  请查看日志: $LOG_DIR/gateway-stdout.log"
         dim "  或运行: cd $dest && node scripts/show-token.js"
+        dim "  或在管理脚本中: ~/gateway-manager.sh status"
     fi
     echo "  ┌─────────────────────────────────────────────┐"
     echo "  │  后续管理命令:                                │"
@@ -699,17 +859,44 @@ start_gateway() {
             return 0
         fi
     fi
-    # 端口检测
-    local code
-    code="$(check_port)"
-    if [ "$code" != "000" ] && [ "$code" != "" ]; then
-        warn "端口 ${PORT} 已被占用，网关可能已在运行"
-        return 0
+
+    # 端口检测：系统级别
+    if ! is_port_free "$PORT"; then
+        # 端口被占 -- 是不是我们自己的进程在监听？
+        local code
+        code="$(check_port)"
+        if [ "$code" != "000" ] && [ "$code" != "" ]; then
+            # HTTP 有响应 -- 可能是之前的网关或别的服务
+            warn "端口 ${PORT} 已被占用"
+            dim "  检查是否已有网关进程: ps aux | grep server/index.js"
+            dim "  或手动指定端口: 修改 .env 中的 GATEWAY_PORT"
+        else
+            # 被占但不是 HTTP -- 是别的程序
+            warn "端口 ${PORT} 被其他程序占用"
+        fi
+        # 自动找空闲端口
+        local new_port
+        new_port="$(find_port $((PORT + 1)))"
+        if [ -n "$new_port" ] && [ "$new_port" != "$PORT" ]; then
+            info "自动切换到备用端口: $new_port"
+            PORT="$new_port"
+            # 写入 .env 让网关也用这个端口
+            if [ -f "$INSTALL_DIR/.env" ]; then
+                sed -i "/^GATEWAY_PORT=/d" "$INSTALL_DIR/.env" 2>/dev/null || true
+                echo "GATEWAY_PORT=$PORT" >> "$INSTALL_DIR/.env"
+            else
+                echo "GATEWAY_PORT=$PORT" > "$INSTALL_DIR/.env"
+            fi
+            save_env  # 更新环境文件中的端口
+        else
+            error "无法找到可用端口"
+            return 1
+        fi
     fi
 
     mkdir -p "$LOG_DIR" "$CONFIG_DIR"
 
-    info "启动网关..."
+    info "启动网关 (端口: $PORT)..."
     nohup node server/index.js > "$LOG_DIR/gateway-stdout.log" 2>&1 &
     local pid=$!
     echo "$pid" > "$PID_FILE"
@@ -723,13 +910,14 @@ start_gateway() {
     # 等待启动
     info "等待启动..."
     local i=0
-    while [ $i -lt 10 ]; do
+    while [ $i -lt 15 ]; do
         sleep 1
         local c
         c="$(check_port)"
         if [ "$c" != "000" ] && [ "$c" != "" ]; then
             success "网关已启动 (PID: $pid, 端口: $PORT)"
-            log_action "INFO" "网关启动 PID=$pid"
+            save_env
+            log_action "INFO" "网关启动 PID=$pid 端口=$PORT"
             return 0
         fi
         # 检查进程是否还活着
@@ -742,7 +930,7 @@ start_gateway() {
         i=$((i + 1))
     done
 
-    warn "启动超时（10秒），网关可能仍在初始化中"
+    warn "启动超时（15秒），网关可能仍在初始化中"
     dim "  查看日志: $LOG_DIR/gateway-stdout.log"
     log_action "WARN" "网关启动超时"
 }
@@ -1553,7 +1741,9 @@ main() {
     detect_os
     detect_distro
     get_package_manager
-    detect_install_dir
+    load_env           # 先从 ~/.gateway_env 加载路径记忆
+    detect_install_dir  # 再从脚本位置/当前目录检测
+    detect_install_helper  # 确保 PLUGINS_DIR 等派生变量正确
 
     local cmd="${1:-}"
     case "$cmd" in
