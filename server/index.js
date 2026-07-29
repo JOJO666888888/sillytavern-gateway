@@ -472,6 +472,61 @@ app.post('/api/runtime/llm/models', async (req, res) => {
     }
 });
 
+// ==================== Agent 框架 API ====================
+
+app.get('/api/agents', (req, res) => {
+    const af = pluginManager?.loader.getPlugin('agent-framework');
+    if (!af) return res.json({ agents: [], error: 'Agent框架未启用' });
+    res.json({ agents: af.agentLoader.list() });
+});
+
+app.get('/api/agents/tools', (req, res) => {
+    const af = pluginManager?.loader.getPlugin('agent-framework');
+    if (!af) return res.json({ tools: [] });
+    res.json({ tools: af.toolRegistry.list() });
+});
+
+app.get('/api/agents/logs', (req, res) => {
+    const af = pluginManager?.loader.getPlugin('agent-framework');
+    if (!af) return res.json({ logs: [] });
+    res.json({ logs: af.agentRunner.getLogs(50) });
+});
+
+app.get('/api/agents/:name', (req, res) => {
+    const af = pluginManager?.loader.getPlugin('agent-framework');
+    if (!af) return res.status(404).json({ error: 'Agent框架未启用' });
+    const def = af.agentLoader.get(req.params.name);
+    if (!def) return res.status(404).json({ error: 'Agent不存在' });
+    res.json(def);
+});
+
+app.post('/api/agents', async (req, res) => {
+    const af = pluginManager?.loader.getPlugin('agent-framework');
+    if (!af) return res.status(503).json({ error: 'Agent框架未启用' });
+    try {
+        const { yaml } = req.body;
+        if (!yaml) return res.status(400).json({ error: '缺少yaml字段' });
+        const def = af.agentLoader.save(req.body.name || '', yaml);
+        res.json({ success: true, agent: def });
+    } catch (e) {
+        res.status(400).json({ error: e.message });
+    }
+});
+
+app.delete('/api/agents/:name', (req, res) => {
+    const af = pluginManager?.loader.getPlugin('agent-framework');
+    if (!af) return res.status(503).json({ error: 'Agent框架未启用' });
+    af.agentLoader.delete(req.params.name);
+    res.json({ success: true });
+});
+
+app.post('/api/agents/:name/run', async (req, res) => {
+    const af = pluginManager?.loader.getPlugin('agent-framework');
+    if (!af) return res.status(503).json({ error: 'Agent框架未启用' });
+    // 这里只返回提示，实际执行通过 IM 命令 /agent run
+    res.json({ success: true, message: `请在IM中发送 /agent run ${req.params.name} 来启动Agent` });
+});
+
 /**
  * 获取会话列表
  */

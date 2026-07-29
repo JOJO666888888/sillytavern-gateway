@@ -132,6 +132,7 @@ export class CommandRouter {
             llm: services.getLLMFor?.(cmd.pluginName),
             fs: services.getFsFor?.(cmd.pluginName),
             assets: services.getAssetsFor?.(cmd.pluginName),
+            agent: services.getAgentFor?.(cmd.pluginName),
             pluginName: cmd.pluginName,
             commandArgs: args,
         });

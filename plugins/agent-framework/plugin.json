@@ -1,0 +1,16 @@
+{
+    "name": "agent-framework",
+    "displayName": "Agent 框架",
+    "version": "0.1.0",
+    "author": "gateway-team",
+    "description": "终端 Agent 框架：YAML 定义工作流、工具注册表、子代理调度、多阶段流水线。让用户在网关内实现多 Agent 创作流水线。",
+    "main": "index.js",
+    "priority": 40,
+    "enabled": false,
+    "dependencies": [],
+    "permissions": ["llm", "fs", "assets", "agent", "gateway.inbound", "sessions", "gateway.send"],
+    "config": {
+        "defaultMaxSteps": { "type": "number", "default": 10, "min": 1, "max": 50, "description": "Agent 默认最大工具调用步数" },
+        "summaryInterval": { "type": "number", "default": 10, "min": 0, "max": 50, "description": "每N轮自动生成剧情摘要（0=禁用）" }
+    }
+}

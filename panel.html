@@ -437,6 +437,58 @@
             </div>
         </div>
 
+        <!-- Agent 框架 -->
+        <div class="gateway-section gateway-collapsible">
+            <div class="gateway-section-title gateway-collapse-toggle" data-toggle="gateway_agent_body">
+                <i class="fa-solid fa-chevron-right gateway-collapse-arrow"></i>
+                <i class="fa-solid fa-robot"></i> Agent 框架
+            </div>
+            <div id="gateway_agent_body" class="gateway-collapse-body" style="display:none;">
+
+                <!-- Agent 列表 -->
+                <div class="gateway-section-subtitle">
+                    🤖 Agent 列表
+                    <button id="gateway_agent_refresh" class="menu_button" title="刷新"><i class="fa-solid fa-rotate-right"></i></button>
+                    <button id="gateway_agent_new" class="menu_button" title="新建Agent"><i class="fa-solid fa-plus"></i> 新建Agent</button>
+                </div>
+                <div id="gateway_agent_list" class="gateway-adapters-status">
+                    <div class="gateway-empty-hint">未加载</div>
+                </div>
+
+                <!-- 工具注册表 -->
+                <div class="gateway-section-subtitle">
+                    🔧 工具注册表
+                    <button id="gateway_agent_tools_refresh" class="menu_button" title="刷新工具"><i class="fa-solid fa-rotate-right"></i></button>
+                </div>
+                <div id="gateway_agent_tools" class="gateway-adapters-status">
+                    <div class="gateway-empty-hint">未加载</div>
+                </div>
+
+                <!-- 运行日志 -->
+                <div class="gateway-section-subtitle">
+                    📋 运行日志（最近10条）
+                    <button id="gateway_agent_logs_refresh" class="menu_button" title="刷新日志"><i class="fa-solid fa-rotate-right"></i></button>
+                </div>
+                <div id="gateway_agent_logs" class="gateway-adapters-status">
+                    <div class="gateway-empty-hint">暂无执行记录</div>
+                </div>
+
+                <!-- Agent YAML 编辑器 -->
+                <div id="gateway_agent_editor" class="gateway-agent-editor" style="display:none;">
+                    <div class="gateway-section-subtitle">
+                        ✏️ Agent YAML 编辑器
+                        <span id="gateway_agent_editing_name" class="gateway-hint"></span>
+                    </div>
+                    <textarea id="gateway_agent_yaml" class="text_pole gateway-agent-yaml" rows="16" placeholder="name: my-agent&#10;displayName: 我的Agent&#10;description: ...&#10;tools:&#10;  - ...&#10;model:&#10;  temperature: 0.8&#10;  maxTokens: 2048&#10;maxSteps: 10"></textarea>
+                    <div class="gateway-field-row" style="margin-top:8px;">
+                        <button id="gateway_agent_save" class="menu_button gateway-save-btn"><i class="fa-solid fa-floppy-disk"></i> 保存</button>
+                        <button id="gateway_agent_cancel" class="menu_button"><i class="fa-solid fa-xmark"></i> 取消</button>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
         <!-- 插件管理 -->
         <div class="gateway-section gateway-collapsible">
             <div class="gateway-section-title gateway-collapse-toggle" data-toggle="gateway_plugin_body">
@@ -610,3 +662,325 @@
         </div>
     </div>
 </div>
+
+<script>
+(function () {
+    'use strict';
+
+    // ── 辅助：从 DOM 读取网关地址与鉴权 token，发起 API 请求 ──
+    function gwFetch(endpoint, options) {
+        options = options || {};
+        var url = ($('#gateway_panel_url').val() || 'http://127.0.0.1:3210').trim() + endpoint;
+        var token = ($('#gateway_panel_auth_token').val() || '').trim();
+        return fetch(url, Object.assign({}, options, {
+            headers: Object.assign(
+                { 'Content-Type': 'application/json' },
+                token ? { 'X-Gateway-Token': token } : {},
+                options.headers || {}
+            )
+        })).then(function (resp) {
+            if (!resp.ok) {
+                return resp.json().catch(function () { return {}; }).then(function (body) {
+                    throw new Error(body.error || ('HTTP ' + resp.status));
+                });
+            }
+            return resp.json();
+        });
+    }
+
+    function esc(str) {
+        return String(str == null ? '' : str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    function fmtTime(ts) {
+        if (!ts) return '-';
+        var d = new Date(ts);
+        return d.toLocaleTimeString();
+    }
+
+    function fmtDuration(ms) {
+        if (!ms && ms !== 0) return '-';
+        if (ms < 1000) return ms + 'ms';
+        return (ms / 1000).toFixed(1) + 's';
+    }
+
+    // ── 简易对象 → YAML 序列化（用于编辑器回填） ──
+    function toYaml(obj, indent = 0) {
+        var pad = '  '.repeat(indent);
+        var lines = [];
+        if (obj === null || obj === undefined) return '';
+        if (typeof obj !== 'object') return String(obj);
+        if (Array.isArray(obj)) {
+            for (var i = 0; i < obj.length; i++) {
+                var item = obj[i];
+                if (item !== null && typeof item === 'object' && !Array.isArray(item)) {
+                    var entries = Object.entries(item);
+                    if (entries.length > 0) {
+                        lines.push(pad + '- ' + entries[0][0] + ': ' + yamlVal(entries[0][1], indent + 1));
+                        for (var j = 1; j < entries.length; j++) {
+                            lines.push(pad + '  ' + entries[j][0] + ': ' + yamlVal(entries[j][1], indent + 1));
+                        }
+                    }
+                } else {
+                    lines.push(pad + '- ' + yamlVal(item, indent));
+                }
+            }
+            return lines.join('\n');
+        }
+        for (var key in obj) {
+            if (!obj.hasOwnProperty(key)) continue;
+            var val = obj[key];
+            if (val !== null && typeof val === 'object') {
+                var sub = toYaml(val, indent + 1);
+                lines.push(pad + key + ':');
+                if (sub) lines.push(sub);
+            } else {
+                lines.push(pad + key + ': ' + yamlVal(val, indent));
+            }
+        }
+        return lines.join('\n');
+    }
+
+    function yamlVal(v) {
+        if (v === null || v === undefined) return 'null';
+        if (typeof v === 'string') return v;
+        if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+        if (Array.isArray(v) || typeof v === 'object') {
+            return '\n' + toYaml(v, 1);
+        }
+        return String(v);
+    }
+
+    // ── 加载 Agent 列表 ──
+    function loadAgents() {
+        var el = $('#gateway_agent_list');
+        el.html('<div class="gateway-empty-hint">加载中...</div>');
+        gwFetch('/api/agents').then(function (data) {
+            if (data.error) {
+                el.html('<div class="gateway-empty-hint">' + esc(data.error) + '</div>');
+                return;
+            }
+            var agents = data.agents || [];
+            if (!agents.length) {
+                el.html('<div class="gateway-empty-hint">暂无 Agent，点击「新建Agent」创建</div>');
+                return;
+            }
+            var html = '<table class="gateway-agent-table"><thead><tr>' +
+                '<th>名称</th><th>描述</th><th>工具数</th><th>子代理数</th><th>操作</th>' +
+                '</tr></thead><tbody>';
+            agents.forEach(function (a) {
+                var desc = a.description || a.displayName || '';
+                html += '<tr>' +
+                    '<td><b>' + esc(a.name) + '</b></td>' +
+                    '<td>' + esc(desc) + '</td>' +
+                    '<td>' + (a.tools ? a.tools.length : 0) + '</td>' +
+                    '<td>' + (a.subAgents ? a.subAgents.length : 0) + '</td>' +
+                    '<td class="gateway-agent-actions">' +
+                        '<button class="menu_button gateway-agent-run-btn" data-name="' + esc(a.name) + '" title="运行"><i class="fa-solid fa-play"></i></button>' +
+                        '<button class="menu_button gateway-agent-edit-btn" data-name="' + esc(a.name) + '" title="编辑"><i class="fa-solid fa-pen"></i></button>' +
+                        '<button class="menu_button gateway-agent-del-btn" data-name="' + esc(a.name) + '" title="删除"><i class="fa-solid fa-trash"></i></button>' +
+                    '</td>' +
+                '</tr>';
+            });
+            html += '</tbody></table>';
+            el.html(html);
+        }).catch(function (e) {
+            el.html('<div class="gateway-empty-hint">加载失败: ' + esc(e.message) + '</div>');
+        });
+    }
+
+    // ── 加载工具注册表 ──
+    function loadAgentTools() {
+        var el = $('#gateway_agent_tools');
+        el.html('<div class="gateway-empty-hint">加载中...</div>');
+        gwFetch('/api/agents/tools').then(function (data) {
+            var tools = data.tools || [];
+            if (!tools.length) {
+                el.html('<div class="gateway-empty-hint">暂无注册工具</div>');
+                return;
+            }
+            var html = '<table class="gateway-agent-table"><thead><tr>' +
+                '<th>工具名</th><th>描述</th><th>来源</th>' +
+                '</tr></thead><tbody>';
+            tools.forEach(function (t) {
+                html += '<tr>' +
+                    '<td><code>' + esc(t.name) + '</code></td>' +
+                    '<td>' + esc(t.description || '') + '</td>' +
+                    '<td>' + esc(t.source || '') + '</td>' +
+                '</tr>';
+            });
+            html += '</tbody></table>';
+            el.html(html);
+        }).catch(function (e) {
+            el.html('<div class="gateway-empty-hint">加载失败: ' + esc(e.message) + '</div>');
+        });
+    }
+
+    // ── 加载运行日志 ──
+    function loadAgentLogs() {
+        var el = $('#gateway_agent_logs');
+        el.html('<div class="gateway-empty-hint">加载中...</div>');
+        gwFetch('/api/agents/logs').then(function (data) {
+            var logs = data.logs || [];
+            if (!logs.length) {
+                el.html('<div class="gateway-empty-hint">暂无执行记录</div>');
+                return;
+            }
+            // 只显示最近 10 条
+            logs = logs.slice(-10).reverse();
+            var html = '<table class="gateway-agent-table"><thead><tr>' +
+                '<th>Agent</th><th>开始时间</th><th>耗时</th><th>步数</th><th>状态</th>' +
+                '</tr></thead><tbody>';
+            logs.forEach(function (l) {
+                var status = l.success
+                    ? '<span class="gateway-status-badge connected">成功</span>'
+                    : '<span class="gateway-status-badge disconnected">失败</span>';
+                html += '<tr>' +
+                    '<td>' + esc(l.agent || '-') + '</td>' +
+                    '<td>' + fmtTime(l.startTime) + '</td>' +
+                    '<td>' + fmtDuration(l.duration) + '</td>' +
+                    '<td>' + (l.steps != null ? l.steps : '-') + '</td>' +
+                    '<td>' + status + '</td>' +
+                '</tr>';
+            });
+            html += '</tbody></table>';
+            el.html(html);
+        }).catch(function (e) {
+            el.html('<div class="gateway-empty-hint">加载失败: ' + esc(e.message) + '</div>');
+        });
+    }
+
+    // ── 编辑 Agent ──
+    function editAgent(name) {
+        gwFetch('/api/agents/' + encodeURIComponent(name)).then(function (def) {
+            var yaml = toYaml(def);
+            $('#gateway_agent_yaml').val(yaml);
+            $('#gateway_agent_editing_name').text('编辑: ' + name);
+            $('#gateway_agent_editor').show();
+            $('#gateway_agent_body').find('.gateway-agent-yaml').focus();
+        }).catch(function (e) {
+            if (typeof toastr !== 'undefined') toastr.error('加载Agent失败: ' + e.message);
+        });
+    }
+
+    // ── 保存 Agent ──
+    function saveAgent() {
+        var yaml = $('#gateway_agent_yaml').val().trim();
+        if (!yaml) {
+            if (typeof toastr !== 'undefined') toastr.warning('YAML 内容不能为空');
+            return;
+        }
+        gwFetch('/api/agents', {
+            method: 'POST',
+            body: JSON.stringify({ yaml: yaml })
+        }).then(function (data) {
+            if (typeof toastr !== 'undefined') toastr.success('Agent 已保存');
+            $('#gateway_agent_editor').hide();
+            $('#gateway_agent_yaml').val('');
+            $('#gateway_agent_editing_name').text('');
+            loadAgents();
+        }).catch(function (e) {
+            if (typeof toastr !== 'undefined') toastr.error('保存失败: ' + e.message);
+        });
+    }
+
+    // ── 运行 Agent（提示用户在 IM 中执行） ──
+    function runAgent(name) {
+        gwFetch('/api/agents/' + encodeURIComponent(name) + '/run', {
+            method: 'POST',
+            body: JSON.stringify({})
+        }).then(function (data) {
+            if (typeof toastr !== 'undefined') toastr.info(data.message || '请在IM中运行');
+        }).catch(function (e) {
+            if (typeof toastr !== 'undefined') toastr.error('操作失败: ' + e.message);
+        });
+    }
+
+    // ── 删除 Agent ──
+    function deleteAgent(name) {
+        if (!confirm('确定删除 Agent "' + name + '"？此操作不可撤销。')) return;
+        gwFetch('/api/agents/' + encodeURIComponent(name), {
+            method: 'DELETE'
+        }).then(function () {
+            if (typeof toastr !== 'undefined') toastr.success('Agent 已删除');
+            loadAgents();
+        }).catch(function (e) {
+            if (typeof toastr !== 'undefined') toastr.error('删除失败: ' + e.message);
+        });
+    }
+
+    // ── 新建 Agent（填充模板） ──
+    function newAgent() {
+        var template = [
+            'name: new-agent',
+            'displayName: 新Agent',
+            'description: 在此填写Agent描述',
+            'tools:',
+            '  - state.set',
+            '  - memory.recall',
+            'model:',
+            '  temperature: 0.8',
+            '  maxTokens: 2048',
+            'maxSteps: 10',
+            'context:',
+            '  historyLimit: 20',
+            ''
+        ].join('\n');
+        $('#gateway_agent_yaml').val(template);
+        $('#gateway_agent_editing_name').text('新建 Agent');
+        $('#gateway_agent_editor').show();
+    }
+
+    // ── 绑定事件 ──
+    function bindAgentEvents() {
+        // 刷新 / 新建
+        $('#gateway_agent_refresh').on('click', loadAgents);
+        $('#gateway_agent_new').on('click', newAgent);
+        $('#gateway_agent_tools_refresh').on('click', loadAgentTools);
+        $('#gateway_agent_logs_refresh').on('click', loadAgentLogs);
+
+        // 保存 / 取消
+        $('#gateway_agent_save').on('click', saveAgent);
+        $('#gateway_agent_cancel').on('click', function () {
+            $('#gateway_agent_editor').hide();
+            $('#gateway_agent_yaml').val('');
+            $('#gateway_agent_editing_name').text('');
+        });
+
+        // 事件委托：运行 / 编辑 / 删除（HTML 重渲染后仍生效）
+        $('#gateway_agent_list')
+            .on('click', '.gateway-agent-run-btn', function () { runAgent($(this).data('name')); })
+            .on('click', '.gateway-agent-edit-btn', function () { editAgent($(this).data('name')); })
+            .on('click', '.gateway-agent-del-btn', function () { deleteAgent($(this).data('name')); });
+    }
+
+    // ── 监听 Agent 区块展开，首次展开时自动加载数据 ──
+    var agentLoaded = false;
+    function tryAutoLoad() {
+        if (agentLoaded) return;
+        var body = document.getElementById('gateway_agent_body');
+        if (body && body.style.display !== 'none') {
+            agentLoaded = true;
+            loadAgents();
+            loadAgentTools();
+            loadAgentLogs();
+        }
+    }
+
+    // 绑定事件（元素已在 DOM 中）
+    bindAgentEvents();
+
+    // 用 MutationObserver 监听折叠区块的 display 变化
+    var agentBody = document.getElementById('gateway_agent_body');
+    if (agentBody) {
+        var observer = new MutationObserver(function () { tryAutoLoad(); });
+        observer.observe(agentBody, { attributes: true, attributeFilter: ['style'] });
+        // 页面加载时若已展开，直接加载
+        tryAutoLoad();
+    }
+})();
+</script>

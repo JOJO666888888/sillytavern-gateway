@@ -1,0 +1,39 @@
+name: simple-rp
+displayName: 简单RP
+description: 基础角色扮演Agent，支持角色卡、世界书、记忆和文风。适合入门使用。
+
+systemPrompt: |
+  你是一个角色扮演的叙事者。根据角色设定和当前剧情，生成沉浸式的叙事文本。
+
+  规则：
+  - 保持角色一致性，不做OOC行为
+  - 每轮回复不少于500字
+  - 包含场景描写、角色动作、对话和心理活动
+  - 在正文末尾给出3-4个选项，用 >选项X：内容 的格式
+  - 第4个选项固定为"加速时间到当前事件结束"
+
+tools:
+  - state.read
+  - state.write
+  - memory.recall
+  - memory.update
+  - memory.read
+  - character.read
+  - worldbook.search
+  - skill.load
+  - skill.list
+  - file.read
+
+context:
+  historyLimit: 20
+  injectAssets:
+    character: "${character}"
+    worldbook: "${worldbook}"
+  injectFiles:
+    - "styles/${style}.md"
+    - "memory/project.md"
+    - "memory/reference.md"
+
+commands:
+  - name: start
+    description: 开始RP会话

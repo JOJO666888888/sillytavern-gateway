@@ -93,6 +93,11 @@ export const PERMISSIONS = {
         desc: '只读访问 ST 资产（角色卡/世界书/预设）',
         default: false,
     },
+    'agent': {
+        risk: 'medium',
+        desc: '使用 Agent 框架（注册工具/调度子代理）',
+        default: false,
+    },
 };
 
 /** 默认授予的权限集合（向后兼容：老插件不声明也能正常工作） */
@@ -220,7 +225,7 @@ const LLM_METHODS = ['chat', 'chatStream', 'chatWithTools', 'runTools', 'verify'
  * @param {Set<string>} granted - 已授予的权限
  * @param {object} raw - 原始服务 { gateway, sessionManager, configManager, savePluginConfig, llmService }
  * @param {Function[]} managedUnregister - 收集出站过滤器注销函数（框架代管回收）
- * @param {object} extra - 额外选项 { fs?: boolean, assets?: boolean, pluginName?: string }
+ * @param {object} extra - 额外选项 { fs?: boolean, assets?: boolean, agentService?: object, pluginName?: string }
  * @returns {object} 收窄后的 services
  */
 export function buildScopedServices(pluginName, granted, raw, managedUnregister = [], extra = {}) {
@@ -297,6 +302,8 @@ export function buildScopedServices(pluginName, granted, raw, managedUnregister 
         fs: (granted.has('fs') && extra.fs) ? createFsService(pluginName) : deniedStub(pluginName, 'fs', ['read', 'write', 'list', 'exists']),
         // ST 资产只读服务：角色卡/世界书/预设。未授予 assets 权限（或未请求）时为拒绝桩。
         assets: (granted.has('assets') && extra.assets) ? createAssetsService() : deniedStub(pluginName, 'assets', ['listCharacters', 'readCharacter', 'listWorldbooks', 'readWorldbook', 'listPresets', 'readPreset']),
+        // Agent 框架服务：注册工具/调度子代理。未授予 agent 权限（或 agent-framework 未加载）时为拒绝桩。
+        agent: (granted.has('agent') && extra.agentService) ? createAgentService(extra.agentService, pluginName) : deniedStub(pluginName, 'agent', ['registerTool', 'dispatch', 'registerAgent', 'getStatus']),
         // 供插件系统内部使用（不供插件业务逻辑访问凭据）
         _permissions: granted,
         _pluginName: pluginName,
@@ -396,6 +403,21 @@ function createAssetsService() {
             if (!fs.existsSync(full)) return null;
             return JSON.parse(fs.readFileSync(full, 'utf-8'));
         },
+    };
+}
+
+/**
+ * 创建插件专属的 Agent 框架服务。
+ * 委托给全局 agent-framework 插件提供的 agentService，自动标注工具来源插件。
+ * @param {object} agentService - agent-framework 插件暴露的 agent 服务实例
+ * @param {string} pluginName - 当前插件名（用于标注工具来源）
+ */
+function createAgentService(agentService, pluginName) {
+    return {
+        registerTool: (toolDef) => agentService.registerTool({ ...toolDef, source: pluginName }),
+        dispatch: (agentName, task, options) => agentService.dispatch(agentName, task, options),
+        registerAgent: (agentDef) => agentService.registerAgent(agentDef),
+        getStatus: () => agentService.getStatus(),
     };
 }
 

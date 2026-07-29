@@ -268,6 +268,7 @@ export class PluginManager {
             llm: this.getLLMFor(pluginName),
             fs: this.getFsFor(pluginName),
             assets: this.getAssetsFor(pluginName),
+            agent: this.getAgentFor(pluginName),
             pluginName,
         });
     }
@@ -358,6 +359,26 @@ export class PluginManager {
         }, [], { assets: true, pluginName }).assets;
     }
 
+    /**
+     * 为指定插件返回按其权限收窄的 Agent 框架服务。
+     * 未声明 "agent" 权限或 agent-framework 插件未加载时返回拒绝桩（调用即抛错）。
+     * @param {string} pluginName
+     */
+    getAgentFor(pluginName) {
+        // agent-framework 插件自身提供 agent 服务
+        // 其他插件通过 ctx.agent 访问时，需要 agent-framework 已加载
+        const frameworkInstance = this.loader.getPlugin('agent-framework');
+        if (!frameworkInstance?._instance?._agentService) return null;
+
+        const instance = this.loader.getPlugin(pluginName);
+        const granted = new Set(instance?._grantedPermissions || []);
+        if (!granted.has('agent')) return null;
+
+        return buildScopedServices(pluginName, granted, {
+            gateway: null, sessionManager: null, configManager: this.configManager,
+        }, [], { agent: true, agentService: frameworkInstance._instance._agentService, pluginName }).agent;
+    }
+
     /** 传给命令路由/事件管线的服务集合 */
     _dispatchServices() {
         return {
@@ -368,6 +389,7 @@ export class PluginManager {
             getLLMFor: (name) => this.getLLMFor(name),
             getFsFor: (name) => this.getFsFor(name),
             getAssetsFor: (name) => this.getAssetsFor(name),
+            getAgentFor: (name) => this.getAgentFor(name),
         };
     }
 

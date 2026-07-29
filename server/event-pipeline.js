@@ -90,6 +90,7 @@ export class EventPipeline {
                 llm: services.getLLMFor?.(listener.pluginName),
                 fs: services.getFsFor?.(listener.pluginName),
                 assets: services.getAssetsFor?.(listener.pluginName),
+                agent: services.getAgentFor?.(listener.pluginName),
                 pluginName: listener.pluginName,
             });
 

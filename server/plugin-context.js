@@ -23,7 +23,7 @@ export class PluginContext {
     constructor(options = {}) {
         const {
             message, gateway, sessionManager, configManager, pluginName, commandArgs,
-            gatewayConfig, llm, fs, assets,
+            gatewayConfig, llm, fs, assets, agent,
         } = options;
 
         // 消息信息
@@ -60,6 +60,9 @@ export class PluginContext {
         // 按插件权限收窄的 ST 资产只读服务。由 PluginManager 注入；
         // 未声明 "assets" 权限时为拒绝桩，调用即抛错。缺失时 ctx.assets 抛提示。
         this._assets = assets || null;
+        // 按插件权限收窄的 Agent 框架服务。由 PluginManager 注入；
+        // 未声明 "agent" 权限时为拒绝桩，调用即抛错。缺失时 ctx.agent 抛提示。
+        this._agent = agent || null;
         this._pluginName = pluginName || '';
     }
 
@@ -277,6 +280,26 @@ export class PluginContext {
             );
         }
         return this._assets;
+    }
+
+    /**
+     * Agent 框架服务（受 "agent" 权限约束）。
+     *
+     * 用法：
+     *   ctx.agent.registerTool({ name, description, handler });
+     *   const result = await ctx.agent.dispatch('researcher', '调查 X 的最新进展');
+     *   ctx.agent.registerAgent({ name, systemPrompt, tools });
+     *   const status = ctx.agent.getStatus();
+     *
+     * 未声明 "agent" 权限时，调用任何方法会抛出清晰错误。
+     */
+    get agent() {
+        if (!this._agent) {
+            throw new Error(
+                `插件 ${this._pluginName || '?'} 使用 ctx.agent 需要 "agent" 权限，请在 plugin.json 的 permissions 中声明`,
+            );
+        }
+        return this._agent;
     }
 
     /**
