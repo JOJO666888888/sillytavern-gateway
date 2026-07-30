@@ -444,6 +444,40 @@ export function describeEmptyCompletion(provider, data) {
 }
 
 /**
+ * 诊断"正文非空但被 max_tokens 截断"的情况（finish_reason=length 等价信号）。
+ *
+ * 与 describeEmptyCompletion 互补：本函数处理"已经输出了一部分正文、但没输出完"
+ * 的半截回复。体验优先原则下，这种情况绝不能静默返回——回复不完整会破坏 RP 体验，
+ * 且用户无从得知原因。返回可读说明供调用方记 WARN 日志，提醒调大下限。
+ *
+ * @param {string} provider
+ * @param {object} data - 非流式响应体；流式则传 { choices:[{finish_reason}], usage }
+ * @returns {string} 诊断说明（无法判断时返回空串）
+ */
+export function describeTruncation(provider, data) {
+    const p = (provider || 'openai').toLowerCase();
+    const usage = data?.usage || {};
+    const reasoningTokens = usage.completion_tokens_details?.reasoning_tokens ?? 0;
+
+    let truncated = false;
+    let used = usage.completion_tokens ?? null;
+    if (p === 'claude') {
+        truncated = data?.stop_reason === 'max_tokens';
+    } else if (p === 'gemini') {
+        truncated = data?.candidates?.[0]?.finishReason === 'MAX_TOKENS';
+    } else {
+        // openai 及兼容后端（含本地 ds2api / Ollama / vLLM 等）
+        truncated = data?.choices?.[0]?.finish_reason === 'length';
+    }
+    if (!truncated) return '';
+
+    const usedText = used != null ? `在 ${used} token 处` : '';
+    const reasoningText = reasoningTokens > 0 ? `(其中思维链约 ${reasoningTokens}，挤压了正文额度)` : '';
+    return `正文${usedText}被 max_tokens 截断${reasoningText}，回复不完整。`
+        + '请调大 runtime.llm.maxTokens 下限（或预设 max_tokens），确保长思考+长输出。';
+}
+
+/**
  * 从一条 SSE data 事件中提取增量文本
  * @param {string} provider
  * @param {object} evt - 已 JSON.parse 的事件对象
@@ -532,6 +566,9 @@ export class LLMClient {
             const data = await resp.json();
             const text = extractText(cfg.provider, data);
             if (!text) throw new Error(`LLM 返回空内容${describeEmptyCompletion(cfg.provider, data)}`);
+            // 正文非空却触达长度上限 = 半截回复，绝不静默：记 WARN 让运维发现并调大下限。
+            const trunc = describeTruncation(cfg.provider, data);
+            if (trunc) logger.warn(`[LLM] 回复被截断：${trunc}`);
             return text;
         } finally {
             clearTimeout(timer);
@@ -689,6 +726,11 @@ export class LLMClient {
                 });
                 throw new Error(`LLM 流式返回空内容${why}`);
             }
+            // 流式同样检测半截截断：lastFinish=length 说明在收完前因 max_tokens 被切断
+            const trunc = describeTruncation(cfg.provider, {
+                choices: [{ finish_reason: lastFinish }], usage: lastUsage,
+            });
+            if (trunc) logger.warn(`[LLM] 流式回复被截断：${trunc}`);
             return full;
         } finally {
             clearTimeout(timer);
@@ -706,4 +748,4 @@ export class LLMClient {
     }
 }
 
-export default { LLMClient, buildRequest, extractText, extractToolCalls, extractDelta, parseSSEStream, buildMultimodalContent, buildToolsSpec, describeEmptyCompletion };
+export default { LLMClient, buildRequest, extractText, extractToolCalls, extractDelta, parseSSEStream, buildMultimodalContent, buildToolsSpec, describeEmptyCompletion, describeTruncation };

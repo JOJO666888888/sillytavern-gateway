@@ -232,3 +232,59 @@ describe('buildPrompt 组装结果', () => {
         assert.ok(messages.every(m => m.content && String(m.content).trim().length > 0), '不应有空消息');
     });
 });
+
+describe('max_tokens 下限抬升（体验优先：防思维链吃光 / 正文截断）', () => {
+    const smallPreset = () => normalizePreset(stPreset({ openai_max_tokens: 100 }));
+    const bigPreset = () => normalizePreset(stPreset({ openai_max_tokens: 50000 }));
+
+    test('不设下限时沿用预设值', () => {
+        const { sampling } = buildPrompt({
+            card: { name: 'C' }, preset: smallPreset(), userInput: 'hi',
+        });
+        assert.strictEqual(sampling.max_tokens, 100);
+    });
+
+    test('下限高于预设值时抬升到下限', () => {
+        const { sampling } = buildPrompt({
+            card: { name: 'C' }, preset: smallPreset(), userInput: 'hi',
+            minMaxTokens: 32768,
+        });
+        assert.strictEqual(sampling.max_tokens, 32768, '应被下限抬升');
+    });
+
+    test('预设值高于下限时保留预设值（预设优先，不被下限压低）', () => {
+        const { sampling } = buildPrompt({
+            card: { name: 'C' }, preset: bigPreset(), userInput: 'hi',
+            minMaxTokens: 32768,
+        });
+        assert.strictEqual(sampling.max_tokens, 50000, '预设更大时保留预设值');
+    });
+
+    test('minMaxTokens=0 等同不设下限', () => {
+        const { sampling } = buildPrompt({
+            card: { name: 'C' }, preset: smallPreset(), userInput: 'hi',
+            minMaxTokens: 0,
+        });
+        assert.strictEqual(sampling.max_tokens, 100);
+    });
+
+    test('抬升后的 max_tokens 一致用于历史截断预留额度', () => {
+        // 预设只预留 100 -> 不抬升时预算够、历史全留；
+        // 抬升到 5000 后回复预留吃掉大部分预算 -> 历史被截断。
+        // 这证明"请求用的 max_tokens"与"为回复预留的额度"用的是同一个抬升后的值。
+        const history = [
+            { role: 'user', content: '一'.repeat(1000) },
+            { role: 'assistant', content: '二'.repeat(1000) },
+        ];
+        const noFloor = buildPrompt({
+            card: { name: 'C' }, preset: smallPreset(), history, userInput: 'x', tokenBudget: 6000,
+        });
+        const withFloor = buildPrompt({
+            card: { name: 'C' }, preset: smallPreset(), history, userInput: 'x', tokenBudget: 6000,
+            minMaxTokens: 5000,
+        });
+        const count = (r) => r.messages.filter(m => m.role === 'user' || m.role === 'assistant').length;
+        assert.ok(count(withFloor) < count(noFloor), '抬升 max_tokens 后应为回复预留更多额度、历史截断更狠');
+        assert.strictEqual(withFloor.sampling.max_tokens, 5000, '返回的采样参数也应是抬升后的值');
+    });
+});

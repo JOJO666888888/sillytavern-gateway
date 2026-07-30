@@ -34,7 +34,9 @@ const DEFAULT_SAMPLING = {
     temperature: 0.9,
     top_p: 1,
     // 推理模型（如 deepseek-v4-pro）会先消耗思维链 token 再产出正文，
-    // 1024 易被思维链吃光导致空回复。4096 对绝大多数 RP 场景够用且不浪费。
+    // max_tokens 过小会被思维链吃光导致空回复或正文截断。
+    // 这里是"无下限配置时的兜底"；真实下限由 runtime.llm.maxTokens 控制
+    // (buildPrompt 会取 max(预设值, 下限))。RP 场景务必把下限调大(≥32768)。
     max_tokens: 4096,
     frequency_penalty: 0,
     presence_penalty: 0,
@@ -263,8 +265,23 @@ export function buildPrompt(ctx) {
         card = {}, preset = defaultPreset(), persona, world,
         history = [], userInput = '', userName = 'User', tokenBudget = 0,
         enableMacros = true,
+        minMaxTokens = 0,
     } = ctx;
     const charName = card.name || 'Assistant';
+
+    // 体验优先：回复 token 预算必须充足，否则推理模型的思维链会吃光 max_tokens
+    // 导致空回复，或正文半途截断(finish_reason=length)。minMaxTokens 为配置层下限：
+    // 预设自带更小值时抬升到下限，预设自带更大值时保留预设值(预设优先)。
+    // 此 sampling 同时用于 (1) 历史截断时为回复预留额度 (2) 实际请求参数，保证二者一致，
+    // 不至于出现"为回复预留了 800，实际却请求 32768"或反过来的不一致。
+    const sampling = { ...(preset.sampling || {}) };
+    if (minMaxTokens > 0) {
+        const before = sampling.max_tokens ?? 0;
+        sampling.max_tokens = Math.max(before, minMaxTokens);
+        if (before < minMaxTokens) {
+            logger.debug(`max_tokens 下限抬升: ${before} -> ${sampling.max_tokens} (下限 ${minMaxTokens})`);
+        }
+    }
 
     // 宏引擎：处理 ST 宏 (setvar/getvar/roll/random/注释) + {{char}}/{{user}}
     // 每次调用 buildPrompt 初始化新的变量表 (单次请求级别作用域)
@@ -300,7 +317,7 @@ export function buildPrompt(ctx) {
     if (tokenBudget > 0) {
         const fixedCost = Object.values(segments).reduce((s, v) => s + estimateTokens(v), 0)
             + estimateTokens(userInput)
-            + (preset.sampling?.max_tokens || 0); // 为回复预留
+            + (sampling.max_tokens || 0); // 为回复预留（已含下限抬升）
         const historyBudget = tokenBudget - fixedCost;
         effectiveHistory = truncateHistoryByTokens(history, historyBudget);
         if (effectiveHistory.length < history.length) {
@@ -353,7 +370,7 @@ export function buildPrompt(ctx) {
     // 当前用户输入
     if (userInput) messages.push({ role: 'user', content: userInput });
 
-    return { messages, sampling: preset.sampling };
+    return { messages, sampling };
 }
 
 export default { loadPreset, normalizePreset, defaultPreset, buildPrompt, parseSTPromptOrder, listPresetEntries, estimateTokens, estimateMessagesTokens, truncateHistoryByTokens };

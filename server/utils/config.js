@@ -137,6 +137,12 @@ const DEFAULT_CONFIG = {
             apiKey: '',
             model: '',
             timeout: 120000,
+            // 回复 token 预算下限（体验优先）。推理模型(RP 必备)会先消耗思维链再产出正文，
+            // 若 max_tokens 过小：思维链吃光预算 -> 空回复，或正文半途截断 finish_reason=length。
+            // 该下限会被应用到实际请求与历史截断预留额度上(见 preset-engine.buildPrompt)，
+            // 当预设自带更大的 max_tokens 时保留预设值(预设优先)。0 表示不设下限。
+            // 源码默认 16384 是大多数模型的安全值；RP 场景建议在实例配置里调到 32768+。
+            maxTokens: 16384,
         },
         defaults: {                       // 新会话的默认 Profile
             character: '',

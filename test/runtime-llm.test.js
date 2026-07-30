@@ -7,7 +7,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 import http from 'http';
-import { LLMClient, buildRequest, extractText, extractDelta, buildMultimodalContent, describeEmptyCompletion, buildToolsSpec, extractToolCalls, buildListModelsRequest, extractModelIds } from '../server/runtime/llm-client.js';
+import { LLMClient, buildRequest, extractText, extractDelta, buildMultimodalContent, describeEmptyCompletion, describeTruncation, buildToolsSpec, extractToolCalls, buildListModelsRequest, extractModelIds } from '../server/runtime/llm-client.js';
 
 /** 起一个返回固定 SSE 流的本地服务器 */
 function sseServer(chunks, { splitAt } = {}) {
@@ -316,6 +316,56 @@ describe('空回复的诊断（推理模型 max_tokens 被思维链吃光）', (
             usage: { completion_tokens: 60, completion_tokens_details: { reasoning_tokens: 60 } },
         });
         assert.match(msg, /思维链/);
+    });
+});
+
+describe('半截截断诊断（正文非空但触达 max_tokens 上限）', () => {
+    /**
+     * 与 describeEmptyCompletion 互补：这里正文已经输出了一部分、但没输出完
+     * （finish_reason=length / stop_reason=max_tokens / MAX_TOKENS）。
+     * 体验优先原则下绝不能静默返回半截回复——必须能被诊断、提醒调大下限。
+     */
+    test('describeTruncation 识别 openai 长度截断并带思维链占比', () => {
+        const msg = describeTruncation('openai', {
+            choices: [{ finish_reason: 'length', message: { content: '半截正文…' } }],
+            usage: { completion_tokens: 4096, completion_tokens_details: { reasoning_tokens: 3000 } },
+        });
+        assert.match(msg, /截断/);
+        assert.match(msg, /4096/, '应带上实际用掉的 token 数');
+        assert.match(msg, /思维链/);
+        assert.match(msg, /max_tokens/);
+    });
+
+    test('finish_reason=stop 不误报截断', () => {
+        assert.strictEqual(describeTruncation('openai', { choices: [{ finish_reason: 'stop' }] }), '');
+        assert.strictEqual(describeTruncation('openai', {}), '');
+    });
+
+    test('claude stop_reason=max_tokens 识别', () => {
+        assert.match(describeTruncation('claude', { stop_reason: 'max_tokens' }), /截断/);
+        assert.strictEqual(describeTruncation('claude', { stop_reason: 'end_turn' }), '');
+    });
+
+    test('gemini finishReason=MAX_TOKENS 识别', () => {
+        assert.match(describeTruncation('gemini', { candidates: [{ finishReason: 'MAX_TOKENS' }] }), /截断/);
+        assert.strictEqual(describeTruncation('gemini', { candidates: [{ finishReason: 'STOP' }] }), '');
+    });
+
+    test('generate 对半截正文不抛错、原样返回（仅记 WARN 不阻断）', async () => {
+        const { srv, port } = await scriptedServer([{
+            choices: [{ finish_reason: 'length', message: { content: '被截断的半截回复' } }],
+            usage: { completion_tokens: 4096 },
+        }]);
+        try {
+            const client = new LLMClient({
+                provider: 'openai', baseUrl: `http://127.0.0.1:${port}/v1`,
+                apiKey: 'k', model: 'm', timeout: 5000,
+            });
+            const text = await client.generate([{ role: 'user', content: 'hi' }], { max_tokens: 4096 });
+            assert.strictEqual(text, '被截断的半截回复', '半截正文应原样返回，不得当空回复抛错');
+        } finally {
+            srv.close();
+        }
     });
 });
 

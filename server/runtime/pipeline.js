@@ -386,6 +386,8 @@ export class NativeRuntime {
             userName: profile.persona?.name || 'User',
             tokenBudget: this.config.tokenBudget ?? 0,
             enableMacros: this.config.enableMacros !== false,
+            // 体验优先：回复预算下限，防止推理模型思维链吃光 max_tokens 或正文截断
+            minMaxTokens: this.config.llm?.maxTokens ?? 0,
         });
 
         return { messages, sampling, card, archive, profile, world };
