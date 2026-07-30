@@ -20,7 +20,9 @@ PORT=3210
 OS_TYPE=""
 DISTRO=""
 PKG_MANAGER=""
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.1.1"
+# 保存脚本启动时的原始参数，供更新后 exec 重启使用
+CLI_ARGS=()
 
 # ── 路径记忆：加载/保存环境文件 ──
 load_env() {
@@ -384,7 +386,7 @@ confirm_action() {
 
 # ── 配置备份/恢复 ──
 backup_config() {
-    [ -z "${INSTALL_DIR:-}" ] && return 1
+    [ -z "${INSTALL_DIR:-}" ] && return 0  # 没有安装目录不算错误，跳过即可
     local ts
     ts="$(date '+%Y%m%d_%H%M%S')"
     local backup="$CONFIG_DIR/config-backup-${ts}.tar.gz"
@@ -397,7 +399,10 @@ backup_config() {
         # 保留最近 5 个备份
         ls -t "$CONFIG_DIR"/config-backup-*.tar.gz 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true
         info "配置已备份: $backup"
+    else
+        dim "  无需备份（config/ 和 .env 均不存在）"
     fi
+    return 0  # 始终返回成功：没有文件可备份不是错误
 }
 
 restore_config() {
@@ -593,13 +598,12 @@ cmd_install() {
     # 前端扩展必须在 ST 的 third-party 目录才能被加载
     link_to_st_extensions "$dest"
 
-    # 引导配置
-    guided_config
-
     # 保存环境文件（路径记忆）
     save_env
 
-    # 首次启动
+    # ── 先写入最小 .env（仅时区），启动网关以生成鉴权 Token ──
+    echo "TZ=Asia/Shanghai" > "$INSTALL_DIR/.env"
+
     info "首次启动网关..."
     start_gateway
 
@@ -607,25 +611,77 @@ cmd_install() {
     local manager_link="$HOME/gateway-manager.sh"
     cp "$INSTALL_DIR/scripts/gateway-manager.sh" "$manager_link" 2>/dev/null && chmod +x "$manager_link"
 
-    # 显示 token（带重试，等待网关写入）
+    # ── 获取并显示鉴权 Token，引导用户填入 SillyTavern ──
     local token=""
     token="$(get_auth_token_retry 15)"
     echo ""
-    success "安装完成！"
+    echo "  ════════════════════════════════════════════════════════"
+    echo "  ║              鉴权 Token 获取与配置引导                  ║"
+    echo "  ════════════════════════════════════════════════════════"
     echo ""
     if [ -n "$token" ]; then
-        info "鉴权 Token: $token"
+        printf "  \033[33m鉴权 Token:\033[0m %s\n" "$token"
         echo ""
+        echo "  ┌─────────────────────────────────────────────────────┐"
+        echo "  │  请按以下步骤将 Token 填入 SillyTavern:               │"
+        echo "  │                                                      │"
+        echo "  │  1. 打开 SillyTavern 浏览器页面                        │"
+        echo "  │  2. 点击拼图图标 🧩 打开扩展面板                        │"
+        echo "  │  3. 找到「Multi-Platform Gateway」并勾选启用            │"
+        echo "  │  4. 顶部设置栏会出现网关图标，点击打开面板               │"
+        printf "  │  5. 网关地址填: http://localhost:%-19s│\n" "$PORT"
+        echo "  │  6. 鉴权 Token 填入上方显示的 Token                     │"
+        echo "  │  7. 点击「连接」按钮                                    │"
+        echo "  │                                                      │"
+        echo "  │  ⚠ Token 是网关访问凭证，请勿泄露给他人                 │"
+        echo "  └─────────────────────────────────────────────────────┘"
+        echo ""
+        warn "请现在完成上述操作，确认 Token 已填入 SillyTavern 后继续"
+        echo ""
+        printf "  已完成 Token 配置？(y)继续 / (n)跳过后续平台配置 [y]: "
+        local confirmed; read -r confirmed
+        confirmed="${confirmed:-y}"
+        if [ "$confirmed" != "y" ] && [ "$confirmed" != "Y" ]; then
+            echo ""
+            info "跳过平台适配器配置，稍后可通过管理菜单配置"
+            dim "  运行 ~/gateway-manager.sh → 选 9) 平台"
+        fi
     else
-        warn "未能自动获取 Token"
-        dim "  请查看日志: $LOG_DIR/gateway-stdout.log"
-        dim "  或运行: cd $dest && node scripts/show-token.js"
-        dim "  或在管理脚本中: ~/gateway-manager.sh status"
+        warn "未能自动获取 Token（网关可能需要更多时间启动）"
+        echo ""
+        dim "  手动获取 Token 的方式:"
+        dim "    cd $dest && node scripts/show-token.js"
+        dim "    或运行: ~/gateway-manager.sh token"
+        dim "    或查看: $CONFIG_DIR/gateway.json 中 server.authToken"
+        echo ""
+        printf "  是否继续进行平台适配器配置？(y/n) [y]: "
+        local cont; read -r cont
+        cont="${cont:-y}"
+        if [ "$cont" != "y" ] && [ "$cont" != "Y" ]; then
+            confirmed="n"
+        else
+            confirmed="y"
+        fi
     fi
+
+    # ── 用户确认后，进行平台适配器和推理管线配置 ──
+    if [ "${confirmed:-y}" = "y" ] || [ "${confirmed:-Y}" = "Y" ]; then
+        guided_config
+
+        # 如果有平台配置变更，重启网关使配置生效
+        info "重启网关以加载平台配置..."
+        restart_gateway || true
+    fi
+
+    # ── 安装完成总结 ──
+    echo ""
+    success "安装完成！"
+    echo ""
     echo "  ┌─────────────────────────────────────────────┐"
     echo "  │  后续管理命令:                                │"
     echo "  │  ~/gateway-manager.sh          交互式菜单      │"
     echo "  │  ~/gateway-manager.sh status   查看状态       │"
+    echo "  │  ~/gateway-manager.sh token    获取Token      │"
     echo "  │  ~/gateway-manager.sh restart  重启网关       │"
     echo "  │  ~/gateway-manager.sh --help   查看所有命令    │"
     echo "  └─────────────────────────────────────────────┘"
@@ -644,11 +700,10 @@ guided_config() {
     [ -z "${INSTALL_DIR:-}" ] && return 1
     local env_file="$INSTALL_DIR/.env"
     echo ""
-    info "引导配置 -- 按需启用平台，留空跳过"
+    info "平台适配器配置 -- 按需启用，留空跳过"
     echo ""
 
-    # 写入时区
-    echo "TZ=Asia/Shanghai" > "$env_file"
+    # 注意：TZ 已在启动网关前写入 .env，这里只追加平台配置
 
     # Telegram
     printf "启用 Telegram？(y/n) [n]: "
@@ -679,6 +734,42 @@ guided_config() {
         printf "Discord Bot Token: "; read -r token
         echo "GATEWAY_DISCORD_BOT_TOKEN=$token" >> "$env_file"
         success "Discord 已配置"
+    fi
+
+    # 飞书
+    printf "启用飞书？(y/n) [n]: "
+    read -r r
+    if [ "$r" = "y" ] || [ "$r" = "Y" ]; then
+        echo "GATEWAY_FEISHU_ENABLED=true" >> "$env_file"
+        printf "飞书 App ID: "; read -r feishu_appid
+        echo "GATEWAY_FEISHU_APP_ID=$feishu_appid" >> "$env_file"
+        printf "飞书 App Secret: "; read -r feishu_secret
+        echo "GATEWAY_FEISHU_APP_SECRET=$feishu_secret" >> "$env_file"
+        success "飞书已配置"
+    fi
+
+    # 钉钉
+    printf "启用钉钉？(y/n) [n]: "
+    read -r r
+    if [ "$r" = "y" ] || [ "$r" = "Y" ]; then
+        echo "GATEWAY_DINGTALK_ENABLED=true" >> "$env_file"
+        printf "钉钉 ClientId (AppKey): "; read -r dt_clientid
+        echo "GATEWAY_DINGTALK_CLIENT_ID=$dt_clientid" >> "$env_file"
+        printf "钉钉 ClientSecret (AppSecret): "; read -r dt_secret
+        echo "GATEWAY_DINGTALK_CLIENT_SECRET=$dt_secret" >> "$env_file"
+        success "钉钉已配置"
+    fi
+
+    # QQ官方
+    printf "启用 QQ官方机器人？(y/n) [n]: "
+    read -r r
+    if [ "$r" = "y" ] || [ "$r" = "Y" ]; then
+        echo "GATEWAY_QQOFFICIAL_ENABLED=true" >> "$env_file"
+        printf "QQ官方 AppID: "; read -r qqo_appid
+        echo "GATEWAY_QQOFFICIAL_APP_ID=$qqo_appid" >> "$env_file"
+        printf "QQ官方 AppSecret: "; read -r qqo_secret
+        echo "GATEWAY_QQOFFICIAL_SECRET=$qqo_secret" >> "$env_file"
+        success "QQ官方已配置"
     fi
 
     # 自建推理管线
@@ -784,11 +875,18 @@ cmd_update() {
         return 0
     fi
 
-    # 备份
+    # 备份（backup_config 始终返回 0，不会触发 set -e 退出）
     backup_config
 
     # 记录更新前 HEAD（用于回滚）
     git rev-parse HEAD > "$CONFIG_DIR/.pre-update-head" 2>/dev/null || true
+
+    # 记录更新前的脚本路径和自身哈希，用于判断脚本是否被更新
+    local self_path="$0"
+    local self_hash_before=""
+    if [ -f "$self_path" ]; then
+        self_hash_before="$(md5sum "$self_path" 2>/dev/null | cut -d' ' -f1 || echo '')"
+    fi
 
     # 更新
     info "拉取代码..."
@@ -799,11 +897,32 @@ cmd_update() {
     # 如运行中则重启
     if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE" 2>/dev/null)" 2>/dev/null; then
         info "网关运行中，正在重启..."
-        restart_gateway
+        restart_gateway || true
+    fi
+
+    # 同步更新用户目录下的管理脚本副本
+    local home_manager="$HOME/gateway-manager.sh"
+    if [ -f "$INSTALL_DIR/scripts/gateway-manager.sh" ] && [ -f "$home_manager" ]; then
+        cp "$INSTALL_DIR/scripts/gateway-manager.sh" "$home_manager" 2>/dev/null && chmod +x "$home_manager"
+        dim "  已同步管理脚本到 $home_manager"
     fi
 
     success "更新完成"
     log_action "INFO" "网关已更新到 $(git rev-parse --short HEAD)"
+
+    # 检查脚本自身是否被更新，若是则提示并自动重启脚本
+    local self_hash_after=""
+    if [ -f "$self_path" ]; then
+        self_hash_after="$(md5sum "$self_path" 2>/dev/null | cut -d' ' -f1 || echo '')"
+    fi
+    if [ -n "$self_hash_before" ] && [ -n "$self_hash_after" ] && [ "$self_hash_before" != "$self_hash_after" ]; then
+        echo ""
+        warn "管理脚本自身已更新，正在重新启动脚本以加载新版本..."
+        echo ""
+        # 用 exec 替换当前进程，加载新版脚本
+        # ${CLI_ARGS[@]+"${CLI_ARGS[@]}"} 兼容 set -u 下的空数组
+        exec "$self_path" ${CLI_ARGS[@]+"${CLI_ARGS[@]}"}
+    fi
 }
 
 # ── 回滚 ──
@@ -2130,7 +2249,7 @@ cmd_show_token() {
 
 show_help() {
     cat << 'EOF'
-SillyTavern Gateway 管理工具 v1.1.0
+SillyTavern Gateway 管理工具 v1.1.1
 
 用法: gateway-manager.sh [命令]
 
@@ -2252,6 +2371,9 @@ show_logs() {
 # ═══════════════════════════════════════════════════════════
 
 main() {
+    # 保存原始参数（供 cmd_update 中 exec 重启脚本使用）
+    CLI_ARGS=("$@")
+
     # 初始化
     detect_os
     detect_distro
