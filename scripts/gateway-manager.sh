@@ -20,7 +20,7 @@ PORT=3210
 OS_TYPE=""
 DISTRO=""
 PKG_MANAGER=""
-SCRIPT_VERSION="1.0.1"
+SCRIPT_VERSION="1.1.0"
 
 # ── 路径记忆：加载/保存环境文件 ──
 load_env() {
@@ -1220,6 +1220,193 @@ manage_plugins() {
 }
 
 # ═══════════════════════════════════════════════════════════
+# 可选适配器管理（钉钉 / 飞书 / QQ官方）
+# 这三个平台的 SDK 在 optionalDependencies 中，
+# 默认 npm install 会装上，但某些环境（--no-optional）会跳过。
+# ═══════════════════════════════════════════════════════════
+
+# 可选适配器列表（所有支持的可选平台）
+OPT_ADAPTER_PLATFORMS=("feishu" "dingtalk" "qqofficial")
+
+# 获取适配器的 npm 包名（兼容 bash 3.x，不用关联数组）
+get_adapter_pkg() {
+    case "$1" in
+        feishu)     echo "@larksuiteoapi/node-sdk" ;;
+        dingtalk)   echo "dingtalk-stream" ;;
+        qqofficial) echo "qq-official-bot" ;;
+        *)          echo "" ;;
+    esac
+}
+
+# 获取适配器的中文名
+get_adapter_name() {
+    case "$1" in
+        feishu)     echo "飞书" ;;
+        dingtalk)   echo "钉钉" ;;
+        qqofficial) echo "QQ官方" ;;
+        *)          echo "" ;;
+    esac
+}
+
+# 检查某个可选适配器 SDK 是否已安装
+# 用法: check_adapter_installed <platform>
+# 返回: 0=已安装, 1=未安装
+check_adapter_installed() {
+    local platform="$1"
+    local pkg
+    pkg="$(get_adapter_pkg "$platform")"
+    [ -z "$pkg" ] && return 1
+    [ -z "${INSTALL_DIR:-}" ] && return 1
+    # 检查 node_modules 目录是否存在该包
+    local check_path="$INSTALL_DIR/node_modules/$pkg"
+    [ -f "$check_path/package.json" ] && return 0
+    # 兜底：尝试用 node 检测（兼容 symlink / pnpm 等结构）
+    (cd "$INSTALL_DIR" && node -e "
+        try { require.resolve('$pkg'); process.exit(0); }
+        catch { process.exit(1); }
+    " 2>/dev/null) && return 0
+    return 1
+}
+
+# 扫描所有可选适配器，输出安装状态
+# 用法: scan_optional_adapters  →  在 stdout 输出 "platform|pkg|name|installed(0/1)" 每行一个
+scan_optional_adapters() {
+    for p in "${OPT_ADAPTER_PLATFORMS[@]}"; do
+        local pkg name
+        pkg="$(get_adapter_pkg "$p")"
+        name="$(get_adapter_name "$p")"
+        local installed=1
+        if check_adapter_installed "$p"; then installed=0; fi
+        echo "${p}|${pkg}|${name}|${installed}"
+    done
+}
+
+# 安装某个可选适配器 SDK（带进度提示与状态反馈）
+# 用法: install_adapter <platform>
+install_adapter() {
+    local platform="$1"
+    local pkg name
+    pkg="$(get_adapter_pkg "$platform")"
+    name="$(get_adapter_name "$platform")"
+    [ -z "$pkg" ] && { error "未知平台: $platform"; return 1; }
+    [ -z "${INSTALL_DIR:-}" ] && { error "未检测到安装目录"; return 1; }
+
+    echo ""
+    info "安装 ${name} 适配器 SDK: $pkg"
+    echo ""
+
+    # 进度提示：步骤标记
+    local step=1 total=3
+    printf "  [%d/%d] 检查当前安装状态...\n" "$step" "$total"
+    if check_adapter_installed "$platform"; then
+        success "  → ${name} SDK 已安装，无需重复安装"
+        return 0
+    fi
+    dim "  → 未安装，开始安装"
+    step=$((step + 1))
+
+    # 执行 npm install
+    printf "  [%d/%d] 正在通过 npm 安装 %s...\n" "$step" "$total" "$pkg"
+    dim "  → npm install $pkg （这可能需要几十秒，请耐心等待）"
+    echo ""
+    cd "$INSTALL_DIR"
+    # 用 stderr 显示进度，stdout 捕获结果
+    local npm_output npm_exit
+    npm_output="$(npm install "$pkg" 2>&1)" && npm_exit=0 || npm_exit=$?
+
+    step=$((step + 1))
+    if [ "$npm_exit" -ne 0 ]; then
+        printf "  [%d/%d] 安装失败\n" "$step" "$total"
+        echo ""
+        error "${name} 适配器 SDK 安装失败 (exit code: $npm_exit)"
+        dim "  npm 输出（最后 10 行）:"
+        echo "$npm_output" | tail -10 | while IFS= read -r line; do
+            printf "    %s\n" "$line"
+        done
+        echo ""
+        warn "  排查建议:"
+        dim "  - 检查网络连接是否正常"
+        dim "  - 尝试切换 npm 源: npm config set registry https://registry.npmmirror.com"
+        dim "  - 手动安装: cd $INSTALL_DIR && npm install $pkg"
+        log_action "ERROR" "安装适配器 $platform ($pkg) 失败"
+        return 1
+    fi
+
+    # 验证安装
+    if check_adapter_installed "$platform"; then
+        printf "  [%d/%d] 安装成功，已验证\n" "$step" "$total"
+        echo ""
+        success "${name} 适配器 SDK 安装成功！"
+        echo ""
+        info "后续步骤:"
+        dim "  1. 在平台管理中配置 ${name} 的凭据（App ID / Secret 等）"
+        dim "  2. 启用 ${name} 平台"
+        dim "  3. 重启网关使适配器生效"
+        log_action "INFO" "安装适配器 $platform ($pkg) 成功"
+        return 0
+    else
+        printf "  [%d/%d] 安装后验证失败\n" "$step" "$total"
+        echo ""
+        error "${name} SDK 安装命令执行完毕，但未检测到包目录"
+        dim "  可能是 npm 使用了非标准结构（如 pnpm），请手动验证:"
+        dim "  cd $INSTALL_DIR && node -e \"require.resolve('$pkg')\""
+        return 1
+    fi
+}
+
+# 一键安装所有未安装的可选适配器
+install_all_missing_adapters() {
+    [ -z "${INSTALL_DIR:-}" ] && { error "未检测到安装目录"; return 1; }
+    echo ""
+    info "扫描未安装的可选适配器..."
+    echo ""
+
+    local missing=()
+    for p in "${OPT_ADAPTER_PLATFORMS[@]}"; do
+        local name
+        name="$(get_adapter_name "$p")"
+        if ! check_adapter_installed "$p"; then
+            missing+=("$p")
+            printf "  ❌ %s (%s) - 未安装\n" "$name" "$p"
+        else
+            printf "  ✅ %s (%s) - 已安装\n" "$name" "$p"
+        fi
+    done
+
+    echo ""
+    if [ ${#missing[@]} -eq 0 ]; then
+        success "所有官方平台适配器均已安装"
+        return 0
+    fi
+
+    warn "检测到 ${#missing[@]} 个未安装的适配器"
+    printf "是否全部安装？(y/n) [y]: "
+    local r; read -r r
+    r="${r:-y}"
+    if [ "$r" != "y" ] && [ "$r" != "Y" ]; then
+        info "已取消"
+        return 0
+    fi
+
+    echo ""
+    local ok=0 fail=0
+    for p in "${missing[@]}"; do
+        if install_adapter "$p"; then
+            ok=$((ok + 1))
+        else
+            fail=$((fail + 1))
+        fi
+        echo ""
+    done
+
+    echo ""
+    info "批量安装完成: 成功 $ok 个, 失败 $fail 个"
+    if [ "$fail" -gt 0 ]; then
+        warn "有 $fail 个适配器安装失败，请查看上方错误信息"
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════
 # 平台管理
 # ═══════════════════════════════════════════════════════════
 
@@ -1253,7 +1440,24 @@ manage_platforms() {
         else
             echo "  (网关未运行，无法获取平台状态)"
         fi
+
+        # ── 可选适配器 SDK 安装状态扫描 ──
         echo ""
+        echo "  ── 官方平台适配器 SDK 状态 ──"
+        local has_missing=false
+        for p in "${OPT_ADAPTER_PLATFORMS[@]}"; do
+            local name pkg
+            name="$(get_adapter_name "$p")"
+            pkg="$(get_adapter_pkg "$p")"
+            if check_adapter_installed "$p"; then
+                printf "  ✅ %-10s 已安装  (%s)\n" "$name" "$pkg"
+            else
+                printf "  ❌ %-10s 未安装  (%s)  [可用: 安装]\n" "$name" "$pkg"
+                has_missing=true
+            fi
+        done
+        echo ""
+
         echo "  1) 配置 Telegram"
         echo "  2) 配置 QQ (OneBot)"
         echo "  3) 配置 Discord"
@@ -1261,6 +1465,13 @@ manage_platforms() {
         echo "  5) 配置 QQ官方"
         echo "  6) 配置钉钉"
         echo "  7) 重连已断开平台"
+        if [ "$has_missing" = "true" ]; then
+            echo "  ── 适配器安装 ──"
+            echo "  i) 安装飞书适配器"
+            echo "  j) 安装钉钉适配器"
+            echo "  k) 安装QQ官方适配器"
+            echo "  a) 一键安装所有未安装适配器"
+        fi
         echo "  q) 返回"
         printf "选择: "
         local choice; read -r choice
@@ -1272,6 +1483,10 @@ manage_platforms() {
             5) config_platform "qqofficial" "GATEWAY_QQOFFICIAL" "appId" ;;
             6) config_platform "dingtalk" "GATEWAY_DINGTALK" "clientId" ;;
             7) reconnect_platforms ;;
+            i|I) install_adapter "feishu" ;;
+            j|J) install_adapter "dingtalk" ;;
+            k|K) install_adapter "qqofficial" ;;
+            a|A) install_all_missing_adapters ;;
             q|Q) break ;;
             *) warn "无效选择" ;;
         esac
@@ -1333,6 +1548,183 @@ reconnect_platforms() {
 # Skill 管理
 # ═══════════════════════════════════════════════════════════
 
+# 检测系统可用的终端文本编辑器
+# 优先级: $EDITOR > nano > vim > vi > micro > emacs > notepad
+# 返回: 编辑器命令字符串（stdout）, 失败返回非0
+detect_editor() {
+    # 1. 环境变量 EDITOR（可能带参数如 "code -w"）
+    if [ -n "${EDITOR:-}" ]; then
+        local ed_bin="${EDITOR%% *}"
+        if command -v "$ed_bin" &>/dev/null; then
+            echo "$EDITOR"
+            return 0
+        fi
+    fi
+    # 2. 按优先级检测常见编辑器
+    local editors=("nano" "vim" "vi" "micro" "emacs")
+    for ed in "${editors[@]}"; do
+        if command -v "$ed" &>/dev/null; then
+            echo "$ed"
+            return 0
+        fi
+    done
+    # 3. Windows: notepad（Git Bash 环境）
+    if [ "$OS_TYPE" = "windows-gitbash" ] || [ "$OS_TYPE" = "windows-wsl" ]; then
+        if command -v notepad &>/dev/null; then
+            echo "notepad"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# 显示编辑器操作提示（根据编辑器类型显示对应快捷键）
+# 用法: show_editor_tips <editor_command>
+show_editor_tips() {
+    local editor="$1"
+    local editor_name
+    editor_name="$(basename "${editor%% *}")"
+
+    echo ""
+    echo "  ┌──────────────────────────────────────────────────────────┐"
+    echo "  │              编辑器操作快捷键速查                         │"
+    echo "  ├──────────────────────────────────────────────────────────┤"
+
+    case "$editor_name" in
+        nano)
+            echo "  │  编辑器: nano                                             │"
+            echo "  │                                                          │"
+            echo "  │  保存并退出:  Ctrl+O → Enter → Ctrl+X                    │"
+            echo "  │               （或直接 Ctrl+X → Y → Enter）               │"
+            echo "  │  放弃编辑:    Ctrl+X → N （不保存退出）                   │"
+            echo "  │  查找:        Ctrl+W → 输入内容 → Enter                   │"
+            echo "  │               （继续找下一个: 再次 Ctrl+W → Enter）        │"
+            echo "  │  替换:        Ctrl+\ → 输入查找内容 → Enter               │"
+            echo "  │                    → 输入替换内容 → Enter                 │"
+            echo "  │                    → Y 替换 / A 全部替换 / N 跳过         │"
+            echo "  │                                                          │"
+            echo "  │  基本导航:                                               │"
+            echo "  │    方向键 ↑↓←→ 移动光标                                   │"
+            echo "  │    Ctrl+Y / Ctrl+V  上一页 / 下一页                        │"
+            echo "  │    Ctrl+A / Ctrl+E  行首 / 行末                           │"
+            echo "  │    Home / End       文件头 / 文件尾                       │"
+            ;;
+        vim|vi)
+            echo "  │  编辑器: vim/vi                                           │"
+            echo "  │                                                          │"
+            echo "  │  保存并退出:  :wq → Enter  （或 :x → Enter）              │"
+            echo "  │  放弃编辑:    :q! → Enter （强制不保存退出）              │"
+            echo "  │  查找:        /关键词 → Enter                              │"
+            echo "  │               （n 找下一个 / N 找上一个）                  │"
+            echo "  │  替换:        :%s/旧/新/g → Enter （全文替换）            │"
+            echo "  │               :%s/旧/新/gc → Enter （逐个确认）           │"
+            echo "  │                                                          │"
+            echo "  │  基本导航:                                               │"
+            echo "  │    h/j/k/l  左/下/上/右 （或方向键）                      │"
+            echo "  │    gg / G    文件头 / 文件尾                              │"
+            echo "  │    Ctrl+f / Ctrl+b  下翻页 / 上翻页                       │"
+            echo "  │    0 / $     行首 / 行末                                  │"
+            echo "  │    按 i 进入插入模式, Esc 回到命令模式                     │"
+            ;;
+        micro)
+            echo "  │  编辑器: micro                                             │"
+            echo "  │                                                          │"
+            echo "  │  保存并退出:  Ctrl+S → Ctrl+Q                            │"
+            echo "  │  放弃编辑:    Ctrl+Q （有改动时会提示是否保存）            │"
+            echo "  │  查找:        Ctrl+F → 输入内容 → Enter                   │"
+            echo "  │  替换:        Ctrl+F → 输入查找 → Enter                   │"
+            echo "  │                    → Tab 切到替换框 → 输入 → Enter        │"
+            echo "  │                                                          │"
+            echo "  │  基本导航:                                               │"
+            echo "  │    方向键 ↑↓←→ 移动光标                                   │"
+            echo "  │    PageUp / PageDown  翻页                                │"
+            echo "  │    Ctrl+Home / Ctrl+End  文件头 / 文件尾                  │"
+            ;;
+        emacs)
+            echo "  │  编辑器: emacs                                             │"
+            echo "  │                                                          │"
+            echo "  │  保存并退出:  Ctrl+X → Ctrl+S (保存) → Ctrl+X → Ctrl+C   │"
+            echo "  │  放弃编辑:    Ctrl+X → Ctrl+C （有改动时选不保存）         │"
+            echo "  │  查找:        Ctrl+S → 输入内容                           │"
+            echo "  │  替换:        Alt+% → 输入查找 → Enter → 输入替换 → Enter │"
+            echo "  │                                                          │"
+            echo "  │  基本导航:                                               │"
+            echo "  │    方向键 ↑↓←→ 移动光标                                   │"
+            echo "  │    Ctrl+V / Alt+V  下翻页 / 上翻页                        │"
+            echo "  │    Ctrl+A / Ctrl+E  行首 / 行末                           │"
+            ;;
+        notepad)
+            echo "  │  编辑器: notepad (Windows 记事本)                         │"
+            echo "  │                                                          │"
+            echo "  │  保存并退出:  Ctrl+S → 关闭窗口 (点× 或 Alt+F4)          │"
+            echo "  │  放弃编辑:    直接关闭窗口 → 选「不保存」                 │"
+            echo "  │  查找:        Ctrl+F → 输入内容 → Enter                   │"
+            echo "  │  替换:        Ctrl+H → 输入查找/替换 → 替换/全部替换      │"
+            echo "  │                                                          │"
+            echo "  │  基本导航:                                               │"
+            echo "  │    方向键 ↑↓←→ 移动光标                                   │"
+            echo "  │    PageUp / PageDown  翻页                                │"
+            echo "  │    Ctrl+Home / Ctrl+End  文件头 / 文件尾                  │"
+            ;;
+        *)
+            echo "  │  编辑器: $editor_name                                     │"
+            echo "  │                                                          │"
+            echo "  │  请参考该编辑器的文档了解操作快捷键。                      │"
+            echo "  │  通用提示:                                               │"
+            echo "  │    大多数编辑器用 Ctrl+S 保存, Esc 或 Ctrl+Q 退出         │"
+            ;;
+    esac
+
+    echo "  └──────────────────────────────────────────────────────────┘"
+    echo ""
+}
+
+# 用系统终端编辑器编辑文件
+# 用法: edit_skill <file_path>
+edit_skill() {
+    local file="$1"
+    [ -z "$file" ] && { error "未指定文件"; return 1; }
+    [ -f "$file" ] || { error "文件不存在: $file"; return 1; }
+
+    # 检测可用编辑器
+    local editor
+    editor="$(detect_editor)"
+    if [ -z "$editor" ]; then
+        error "未检测到可用的终端文本编辑器"
+        echo ""
+        warn "请安装 nano 或 vim，或设置 EDITOR 环境变量:"
+        dim "  Debian/Ubuntu: sudo apt install nano"
+        dim "  CentOS/RHEL:  sudo dnf install nano"
+        dim "  macOS:         brew install nano"
+        dim "  Termux:        pkg install nano"
+        echo ""
+        dim "  或设置环境变量: export EDITOR=nano"
+        return 1
+    fi
+
+    # 显示操作提示
+    echo ""
+    info "即将用 ${editor} 编辑: $(basename "$file")"
+    show_editor_tips "$editor"
+    echo "  按 Enter 打开编辑器（编辑完成后关闭编辑器即可返回）..."
+    read -r
+
+    # 启动编辑器
+    log_action "INFO" "编辑 skill: $file (编辑器: $editor)"
+    # shellcheck disable=SC2086
+    $editor "$file"
+    local ed_exit=$?
+
+    if [ "$ed_exit" -eq 0 ]; then
+        echo ""
+        success "编辑完成，已返回管理菜单"
+    else
+        echo ""
+        warn "编辑器退出码: $ed_exit （文件可能已保存，请确认）"
+    fi
+    log_action "INFO" "编辑器退出: $file (exit=$ed_exit)"
+}
+
 manage_skills() {
     [ -z "${DATA_DIR:-}" ] && { error "未检测到数据目录"; return 1; }
     while true; do
@@ -1366,12 +1758,25 @@ manage_skills() {
         fi
 
         echo ""
-        echo "  n) 新建 skill  v) 查看  d) 删除  q) 返回"
+        echo "  n) 新建 skill  e) 编辑  v) 查看  d) 删除  q) 返回"
         printf "选择: "
         local choice; read -r choice
 
         case "$choice" in
             n|N) create_skill ;;
+            e|E)
+                if [ ${#skills[@]} -eq 0 ]; then
+                    warn "暂无 skill 文件，请先新建"
+                else
+                    printf "编号: "; local n; read -r n
+                    if [ "$n" -ge 1 ] 2>/dev/null && [ "$n" -le "${#skills[@]}" ]; then
+                        local f="${skills[$((n - 1))]}"
+                        edit_skill "$f"
+                    else
+                        warn "无效编号"
+                    fi
+                fi
+                ;;
             v|V)
                 printf "编号: "; local n; read -r n
                 if [ "$n" -ge 1 ] 2>/dev/null && [ "$n" -le "${#skills[@]}" ]; then
@@ -1478,8 +1883,16 @@ TEMPLATE
     esac
 
     success "已创建: $target_file"
-    dim "  编辑文件: nano $target_file"
     log_action "INFO" "创建 skill $name ($type)"
+    echo ""
+    printf "是否立即编辑该文件？(y/n) [y]: "
+    local r; read -r r
+    r="${r:-y}"
+    if [ "$r" = "y" ] || [ "$r" = "Y" ]; then
+        edit_skill "$target_file"
+    else
+        dim "  后续编辑: 在 Skill 管理中选「e) 编辑」"
+    fi
 }
 
 # ═══════════════════════════════════════════════════════════
@@ -1614,12 +2027,110 @@ check_and_restart() {
 }
 
 # ═══════════════════════════════════════════════════════════
+# 鉴权 Token 获取
+# ═══════════════════════════════════════════════════════════
+
+# 显示网关鉴权 Token（独立选项，方便用户随时获取）
+# 优先级: .env 中 GATEWAY_AUTH_TOKEN > config/gateway.json 中 server.authToken
+# 若网关运行中但 token 尚未写入，会用重试机制等待
+cmd_show_token() {
+    [ -z "${INSTALL_DIR:-}" ] && { error "未检测到安装目录"; return 1; }
+
+    echo ""
+    printf "  ╔══════════════════════════════════════════╗\n"
+    printf "  ║       网关鉴权 Token 获取                 ║\n"
+    printf "  ╠══════════════════════════════════════════╣\n"
+
+    local token=""
+    local token_source=""
+
+    # 1. 尝试直接获取（.env 优先，再配置文件）
+    token="$(get_auth_token)"
+    if [ -n "$token" ]; then
+        # 判断来源
+        if [ -f "$INSTALL_DIR/.env" ] && grep -q "^GATEWAY_AUTH_TOKEN=" "$INSTALL_DIR/.env" 2>/dev/null; then
+            token_source="环境变量 (.env: GATEWAY_AUTH_TOKEN)"
+        else
+            token_source="配置文件 (config/gateway.json: server.authToken)"
+        fi
+    fi
+
+    # 2. 如果没取到，检查网关是否运行中 —— 运行中可能 token 尚未落盘
+    if [ -z "$token" ]; then
+        local running=false
+        if [ -f "$PID_FILE" ]; then
+            local pid
+            pid="$(cat "$PID_FILE" 2>/dev/null)"
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                running=true
+            fi
+        fi
+
+        if [ "$running" = "true" ]; then
+            info "网关运行中，正在等待 Token 写入..."
+            token="$(get_auth_token_retry 10)"
+            if [ -n "$token" ]; then
+                token_source="配置文件 (网关运行中已写入)"
+            fi
+        fi
+    fi
+
+    # 3. 输出结果
+    if [ -n "$token" ]; then
+        printf "  ║  状态: \033[32m✅ 已获取\033[0m                    ║\n"
+        printf "  ╠══════════════════════════════════════════╣\n"
+        printf "  ║                                          ║\n"
+        printf "  ║  Token:                                  ║\n"
+        printf "  ║  \033[33m%s\033[0m\n" "$token"
+        printf "  ║                                          ║\n"
+        printf "  ║  来源: %-34s║\n" "${token_source:0:34}"
+        printf "  ║  端口: %-34s║\n" "$PORT"
+        printf "  ║                                          ║\n"
+        printf "  ║  连接地址: http://localhost:%-12s║\n" "$PORT"
+        printf "  ║                                          ║\n"
+        printf "  ╚══════════════════════════════════════════╝\n"
+        echo ""
+        info "在 SillyTavern 中使用:"
+        dim "  1. 打开 SillyTavern → 扩展 → Multi-Platform Gateway"
+        dim "  2. 网关地址填: http://localhost:${PORT}"
+        dim "  3. 鉴权 Token 填上方显示的 Token"
+        dim "  4. 点击「连接」"
+        echo ""
+        warn "⚠ Token 是网关的访问凭证，请勿泄露给他人"
+        log_action "INFO" "用户获取了鉴权 Token"
+    else
+        printf "  ║  状态: \033[31m❌ 未获取\033[0m                    ║\n"
+        printf "  ╚══════════════════════════════════════════╝\n"
+        echo ""
+        error "未能获取鉴权 Token"
+        echo ""
+        warn "可能原因与解决方案:"
+        echo ""
+        dim "  1. 网关尚未启动 → 首次启动会自动生成 Token"
+        dim "     解决: 选菜单 4) 启动网关，或运行: $0 start"
+        echo ""
+        dim "  2. 配置文件不存在 → 需要启动一次网关才会生成"
+        dim "     配置文件位置: $CONFIG_DIR/gateway.json"
+        echo ""
+        dim "  3. 鉴权已关闭 (requireAuth=false) → 无需 Token"
+        dim "     检查: config/gateway.json 中 server.requireAuth"
+        echo ""
+        dim "  4. 手动查看 Token 的方法:"
+        dim "     cd $INSTALL_DIR && node scripts/show-token.js"
+        dim "     或查看: $CONFIG_DIR/gateway.json 中的 server.authToken"
+        echo ""
+        log_action "WARN" "获取 Token 失败"
+        return 1
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════
 # 交互式 CLI
 # ═══════════════════════════════════════════════════════════
 
 show_help() {
     cat << 'EOF'
-SillyTavern Gateway 管理工具 v1.0.0
+SillyTavern Gateway 管理工具 v1.1.0
 
 用法: gateway-manager.sh [命令]
 
@@ -1632,9 +2143,10 @@ SillyTavern Gateway 管理工具 v1.0.0
   stop            停止网关
   restart         重启网关
   status          查看运行状态
+  token           获取鉴权 Token
   plugins         插件管理
-  platforms       平台管理
-  skills          Skill 管理
+  platforms       平台管理（含适配器一键安装）
+  skills          Skill 管理（含编辑功能）
   keepalive       Termux 保活设置
   rollback        回滚上次更新
   check-restart   检查并自动重启（供 cron/bashrc 调用）
@@ -1644,7 +2156,9 @@ SillyTavern Gateway 管理工具 v1.0.0
   ./gateway-manager.sh                    # 交互式菜单
   ./gateway-manager.sh install            # 安装
   ./gateway-manager.sh start              # 启动
-  ./gateway-manager.sh plugins            # 插件管理
+  ./gateway-manager.sh token              # 获取鉴权 Token
+  ./gateway-manager.sh platforms          # 平台管理（可安装飞书/钉钉/QQ官方适配器）
+  ./gateway-manager.sh skills             # Skill 管理（可编辑文档）
 
 详细文档: scripts/gateway-manager.README.md
 EOF
@@ -1673,8 +2187,8 @@ main_menu() {
         printf "  ║  1) 安装      2) 更新      3) 卸载   ║\n"
         printf "  ║  4) 启动      5) 停止      6) 重启   ║\n"
         printf "  ║  7) 状态      8) 插件      9) 平台   ║\n"
-        printf "  ║ 10) Skill     11) 保活     12) 日志  ║\n"
-        printf "  ║ 13) 回滚      14) systemd           ║\n"
+        printf "  ║ 10) Skill    11) 保活     12) 日志  ║\n"
+        printf "  ║ 13) 回滚     14) systemd  15) Token ║\n"
         printf "  ║  0) 退出                              ║\n"
         printf "  ╚══════════════════════════════════════╝\n"
         printf "  选择: "
@@ -1696,6 +2210,7 @@ main_menu() {
             12) show_logs ;;
             13) cmd_rollback ;;
             14) generate_systemd_unit ;;
+            15) cmd_show_token ;;
             0|q|Q)
                 echo "再见！"
                 break
@@ -1754,6 +2269,7 @@ main() {
         stop)        stop_gateway ;;
         restart)     restart_gateway ;;
         status)      get_status ;;
+        token)       cmd_show_token ;;
         plugins)     manage_plugins ;;
         platforms)   manage_platforms ;;
         skills)      manage_skills ;;

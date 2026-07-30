@@ -2685,8 +2685,19 @@ function renderRuntimeAssets(assets) {
 }
 
 /** 加载并渲染会话绑定（Profile） */
+let _rtProfilesLoading = false; // 防重复点击锁
 async function loadRuntimeProfiles() {
     const el = $('#gateway_rt_profiles');
+    if (_rtProfilesLoading) return; // 防止刷新过程中重复点击
+    _rtProfilesLoading = true;
+
+    // 切换刷新按钮为加载状态
+    const refreshBtn = $('#gateway_rt_profiles_refresh');
+    const refreshIcon = refreshBtn.find('i');
+    const wasDisabled = refreshBtn.prop('disabled');
+    refreshBtn.prop('disabled', true).addClass('gateway-rt-refresh-loading');
+    refreshIcon.addClass('fa-spin');
+
     try {
         const data = await apiRequest('/api/runtime/profiles');
         const profiles = data.profiles || [];
@@ -2775,8 +2786,21 @@ async function loadRuntimeProfiles() {
                 toastr.error(`删除失败: ${e.message}`);
             }
         });
-    } catch (_) {
-        el.html('<div class="gateway-empty-hint">无法加载会话绑定</div>');
+    } catch (err) {
+        const msg = err && err.message ? err.message : String(err || '未知错误');
+        el.html(`
+            <div class="gateway-empty-hint gateway-rt-profiles-error">
+                <span>无法加载会话绑定：${escapeHtml(msg)}</span>
+                <button class="menu_button gateway-rt-profiles-retry" title="重试加载">
+                    <i class="fa-solid fa-rotate-right"></i> 重试
+                </button>
+            </div>`);
+        // 绑定重试按钮
+        el.find('.gateway-rt-profiles-retry').on('click', loadRuntimeProfiles);
+    } finally {
+        _rtProfilesLoading = false;
+        refreshBtn.prop('disabled', wasDisabled).removeClass('gateway-rt-refresh-loading');
+        refreshIcon.removeClass('fa-spin');
     }
 }
 
@@ -2882,6 +2906,8 @@ async function previewRuntimePrompt() {
 function bindRuntimeEvents() {
     $('#gateway_rt_save').on('click', saveRuntimeConfig);
     $('#gateway_rt_refresh').on('click', loadRuntimePanel);
+    // 会话绑定区域：独立刷新按钮（只重载 profiles，不影响其他面板状态）
+    $('#gateway_rt_profiles_refresh').on('click', loadRuntimeProfiles);
     $('#gateway_rt_preview').on('click', previewRuntimePrompt);
     $('#gateway_rt_fetch_models').on('click', fetchRuntimeModels);
     // 资产导入
