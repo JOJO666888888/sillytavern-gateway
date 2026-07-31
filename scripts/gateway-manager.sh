@@ -385,17 +385,28 @@ confirm_action() {
 }
 
 # ── 配置备份/恢复 ──
+# macOS 的 sed -i 需要额外参数，封装一下
+sed_inplace() {
+    local pattern="$1" file="$2"
+    if [ "$(uname -s)" = "Darwin" ]; then
+        sed -i '' "$pattern" "$file" 2>/dev/null || true
+    else
+        sed -i "$pattern" "$file" 2>/dev/null || true
+    fi
+}
+
 backup_config() {
     [ -z "${INSTALL_DIR:-}" ] && return 0  # 没有安装目录不算错误，跳过即可
     local ts
     ts="$(date '+%Y%m%d_%H%M%S')"
+    mkdir -p "$CONFIG_DIR" 2>/dev/null || true
     local backup="$CONFIG_DIR/config-backup-${ts}.tar.gz"
-    cd "$INSTALL_DIR"
+    cd "$INSTALL_DIR" 2>/dev/null || return 0
     local files=()
     [ -d config ] && files+=("config")
     [ -f .env ] && files+=(".env")
     if [ ${#files[@]} -gt 0 ]; then
-        tar czf "$backup" "${files[@]}" 2>/dev/null
+        tar czf "$backup" "${files[@]}" 2>/dev/null || true
         # 保留最近 5 个备份
         ls -t "$CONFIG_DIR"/config-backup-*.tar.gz 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true
         info "配置已备份: $backup"
@@ -903,7 +914,7 @@ cmd_update() {
     # 同步更新用户目录下的管理脚本副本
     local home_manager="$HOME/gateway-manager.sh"
     if [ -f "$INSTALL_DIR/scripts/gateway-manager.sh" ] && [ -f "$home_manager" ]; then
-        cp "$INSTALL_DIR/scripts/gateway-manager.sh" "$home_manager" 2>/dev/null && chmod +x "$home_manager"
+        cp "$INSTALL_DIR/scripts/gateway-manager.sh" "$home_manager" 2>/dev/null && chmod +x "$home_manager" || true
         dim "  已同步管理脚本到 $home_manager"
     fi
 
@@ -1001,7 +1012,7 @@ start_gateway() {
             PORT="$new_port"
             # 写入 .env 让网关也用这个端口
             if [ -f "$INSTALL_DIR/.env" ]; then
-                sed -i "/^GATEWAY_PORT=/d" "$INSTALL_DIR/.env" 2>/dev/null || true
+                sed_inplace "/^GATEWAY_PORT=/d" "$INSTALL_DIR/.env"
                 echo "GATEWAY_PORT=$PORT" >> "$INSTALL_DIR/.env"
             else
                 echo "GATEWAY_PORT=$PORT" > "$INSTALL_DIR/.env"
@@ -1109,8 +1120,24 @@ stop_gateway() {
 restart_gateway() {
     info "重启网关..."
     stop_gateway 2>/dev/null || true
-    sleep 1
-    start_gateway
+    # 等待端口释放（最多 8 秒）
+    local i=0
+    while [ $i -lt 8 ]; do
+        if is_port_free "$PORT"; then
+            break
+        fi
+        sleep 1
+        i=$((i + 1))
+    done
+    if [ $i -ge 8 ]; then
+        warn "端口 $PORT 仍未释放，尝试强制释放..."
+        # 尝试杀掉残留进程
+        local stale_pid
+        stale_pid="$(lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || echo "")"
+        [ -n "$stale_pid" ] && kill -9 "$stale_pid" 2>/dev/null || true
+        sleep 1
+    fi
+    start_gateway || { error "重启失败：网关启动失败"; return 1; }
 }
 
 get_status() {
@@ -1595,12 +1622,12 @@ manage_platforms() {
         printf "选择: "
         local choice; read -r choice
         case "$choice" in
-            1) config_platform "telegram" "GATEWAY_TELEGRAM" "botToken" ;;
-            2) config_platform "qq" "GATEWAY_QQ" "wsUrl" ;;
-            3) config_platform "discord" "GATEWAY_DISCORD" "botToken" ;;
-            4) config_platform "feishu" "GATEWAY_FEISHU" "appId" ;;
-            5) config_platform "qqofficial" "GATEWAY_QQOFFICIAL" "appId" ;;
-            6) config_platform "dingtalk" "GATEWAY_DINGTALK" "clientId" ;;
+            1) config_platform "telegram" "GATEWAY_TELEGRAM" ;;
+            2) config_platform "qq" "GATEWAY_QQ" ;;
+            3) config_platform "discord" "GATEWAY_DISCORD" ;;
+            4) config_platform "feishu" "GATEWAY_FEISHU" ;;
+            5) config_platform "qqofficial" "GATEWAY_QQOFFICIAL" ;;
+            6) config_platform "dingtalk" "GATEWAY_DINGTALK" ;;
             7) reconnect_platforms ;;
             i|I) install_adapter "feishu" ;;
             j|J) install_adapter "dingtalk" ;;
@@ -1613,25 +1640,62 @@ manage_platforms() {
 }
 
 config_platform() {
-    local platform="$1" env_prefix="$2" token_field="$3"
+    local platform="$1" env_prefix="$2"
     local env_file="$INSTALL_DIR/.env"
 
     printf "启用 $platform？(y/n): "
     local r; read -r r
-    if [ "$r" = "y" ] || [ "$r" = "Y" ]; then
-        # 更新 .env
-        sed -i "/${env_prefix}_ENABLED=/d" "$env_file" 2>/dev/null || true
-        echo "${env_prefix}_ENABLED=true" >> "$env_file"
-
-        printf "请输入 ${token_field}: "
-        local val; read -r val
-        if [ -n "$val" ]; then
-            sed -i "/${env_prefix}_$(echo "$token_field" | tr '[:lower:]' '[:upper:]')=/d" "$env_file" 2>/dev/null || true
-            echo "${env_prefix}_$(echo "$token_field" | tr '[:lower:]' '[:upper:]')=$val" >> "$env_file"
-        fi
-        success "$platform 配置已更新，重启网关生效"
-        log_action "INFO" "配置平台 $platform"
+    if [ "$r" != "y" ] && [ "$r" != "Y" ]; then
+        info "跳过 $platform"
+        return 0
     fi
+
+    # 删除旧的启用行，写入新的
+    sed_inplace "/${env_prefix}_ENABLED=/d" "$env_file"
+    echo "${env_prefix}_ENABLED=true" >> "$env_file"
+
+    # 根据平台提示输入对应凭据
+    case "$platform" in
+        telegram)
+            printf "请输入 Bot Token: "; local v; read -r v
+            [ -n "$v" ] && { sed_inplace "/${env_prefix}_BOT_TOKEN=/d" "$env_file"; echo "${env_prefix}_BOT_TOKEN=$v" >> "$env_file"; }
+            ;;
+        qq)
+            printf "请输入 NapCat WS 地址 [ws://127.0.0.1:8080]: "; local v; read -r v
+            v="${v:-ws://127.0.0.1:8080}"
+            sed_inplace "/${env_prefix}_WS_URL=/d" "$env_file"
+            echo "${env_prefix}_WS_URL=$v" >> "$env_file"
+            printf "请输入 OneBot Access Token (可留空): "; local t; read -r t
+            [ -n "$t" ] && { sed_inplace "/${env_prefix}_ACCESS_TOKEN=/d" "$env_file"; echo "${env_prefix}_ACCESS_TOKEN=$t" >> "$env_file"; }
+            ;;
+        discord)
+            printf "请输入 Bot Token: "; local v; read -r v
+            [ -n "$v" ] && { sed_inplace "/${env_prefix}_BOT_TOKEN=/d" "$env_file"; echo "${env_prefix}_BOT_TOKEN=$v" >> "$env_file"; }
+            ;;
+        feishu)
+            printf "请输入飞书 App ID: "; local v; read -r v
+            [ -n "$v" ] && { sed_inplace "/${env_prefix}_APP_ID=/d" "$env_file"; echo "${env_prefix}_APP_ID=$v" >> "$env_file"; }
+            printf "请输入飞书 App Secret: "; local s; read -r s
+            [ -n "$s" ] && { sed_inplace "/${env_prefix}_APP_SECRET=/d" "$env_file"; echo "${env_prefix}_APP_SECRET=$s" >> "$env_file"; }
+            ;;
+        qqofficial)
+            printf "请输入 QQ官方 AppID: "; local v; read -r v
+            [ -n "$v" ] && { sed_inplace "/${env_prefix}_APP_ID=/d" "$env_file"; echo "${env_prefix}_APP_ID=$v" >> "$env_file"; }
+            printf "请输入 QQ官方 AppSecret: "; local s; read -r s
+            [ -n "$s" ] && { sed_inplace "/${env_prefix}_SECRET=/d" "$env_file"; echo "${env_prefix}_SECRET=$s" >> "$env_file"; }
+            printf "请输入 QQ官方 Token (可留空): "; local t; read -r t
+            [ -n "$t" ] && { sed_inplace "/${env_prefix}_TOKEN=/d" "$env_file"; echo "${env_prefix}_TOKEN=$t" >> "$env_file"; }
+            ;;
+        dingtalk)
+            printf "请输入钉钉 ClientId (AppKey): "; local v; read -r v
+            [ -n "$v" ] && { sed_inplace "/${env_prefix}_CLIENT_ID=/d" "$env_file"; echo "${env_prefix}_CLIENT_ID=$v" >> "$env_file"; }
+            printf "请输入钉钉 ClientSecret (AppSecret): "; local s; read -r s
+            [ -n "$s" ] && { sed_inplace "/${env_prefix}_CLIENT_SECRET=/d" "$env_file"; echo "${env_prefix}_CLIENT_SECRET=$s" >> "$env_file"; }
+            ;;
+    esac
+
+    success "$platform 配置已写入 .env，重启网关后生效"
+    log_action "INFO" "配置平台 $platform"
 }
 
 reconnect_platforms() {
@@ -2318,9 +2382,9 @@ main_menu() {
             1) cmd_install ;;
             2) cmd_update ;;
             3) cmd_uninstall ;;
-            4) start_gateway ;;
-            5) stop_gateway ;;
-            6) restart_gateway ;;
+            4) start_gateway || warn "启动失败" ;;
+            5) stop_gateway || warn "停止失败" ;;
+            6) restart_gateway || warn "重启失败" ;;
             7) get_status ;;
             8) manage_plugins ;;
             9) manage_platforms ;;
