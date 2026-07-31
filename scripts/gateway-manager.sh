@@ -980,6 +980,13 @@ start_gateway() {
     [ -z "${INSTALL_DIR:-}" ] && { error "未检测到安装目录"; return 1; }
     cd "$INSTALL_DIR"
 
+    # 依赖检查：确保 node_modules 存在且 dotenv 可用
+    # （更新代码后可能新增了依赖，但用户还没跑 npm install）
+    if [ ! -d "node_modules/dotenv" ]; then
+        info "检测到缺失依赖，自动安装..."
+        npm install 2>/dev/null || { warn "npm install 失败，部分功能可能不可用"; }
+    fi
+
     # 检测是否已运行
     if [ -f "$PID_FILE" ]; then
         local pid

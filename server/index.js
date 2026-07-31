@@ -1,3 +1,7 @@
+// dotenv 必须在所有其他模块之前加载，确保 process.env 包含 .env 中的变量
+// 管理脚本（gateway-manager.sh）通过 .env 注入适配器配置和 runtime 开关，
+// 不加载 .env 会导致这些配置完全不生效。
+import 'dotenv/config';
 import express from 'express';
 import http from 'http';
 import fs from 'fs';
