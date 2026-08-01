@@ -8,7 +8,7 @@
     "priority": 40,
     "enabled": false,
     "dependencies": [],
-    "permissions": ["llm", "fs", "assets", "agent", "gateway.inbound", "sessions", "gateway.send"],
+    "permissions": ["llm", "fs", "assets", "agent", "gateway.inbound", "sessions", "gateway.send", "surface"],
     "config": {
         "defaultMaxSteps": { "type": "number", "default": 10, "min": 1, "max": 50, "description": "Agent 默认最大工具调用步数" },
         "summaryInterval": { "type": "number", "default": 10, "min": 0, "max": 50, "description": "每N轮自动生成剧情摘要（0=禁用）" }

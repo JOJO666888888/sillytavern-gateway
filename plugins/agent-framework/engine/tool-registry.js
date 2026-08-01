@@ -2,6 +2,8 @@
  * 全局工具注册表
  * 框架内置工具和第三方插件注册的工具都存放在这里
  */
+import { RecoverableToolError } from './tool-errors.js';
+
 export class ToolRegistry {
     constructor() {
         this.tools = new Map();
@@ -9,7 +11,7 @@ export class ToolRegistry {
 
     /**
      * 注册工具
-     * @param {Object} tool - { name, description, parameters, handler }
+     * @param {Object} tool - { name, description, parameters, handler, validate? }
      */
     register(tool) {
         if (!tool.name) throw new Error('工具必须包含 name');
@@ -21,6 +23,7 @@ export class ToolRegistry {
             description: tool.description || '',
             parameters: tool.parameters || { type: 'object', properties: {} },
             handler: tool.handler || (async () => '未实现'),
+            validate: typeof tool.validate === 'function' ? tool.validate : undefined,
             source: tool.source || 'unknown',
         });
     }
@@ -73,9 +76,24 @@ export class ToolRegistry {
             return { error: `工具 "${name}" 不存在` };
         }
         try {
+            // 领域工具校验钩子：handler 前先 validate，不通过抛 RecoverableToolError
+            // （错误信息应具体可读，如列出可用项，供 Agent loop 自我纠正）
+            if (typeof tool.validate === 'function') {
+                const v = await tool.validate(args, context);
+                if (!v || !v.ok) {
+                    throw new RecoverableToolError(
+                        v?.error || `工具 "${name}" 参数校验失败`,
+                        v?.details,
+                    );
+                }
+            }
             const result = await tool.handler(args, context);
             return { result };
         } catch (e) {
+            // 可恢复错误：保留 details 一并回传模型（列出可用项等）
+            if (e instanceof RecoverableToolError) {
+                return { error: e.message, recoverable: true, details: e.details };
+            }
             return { error: e.message };
         }
     }
@@ -86,7 +104,12 @@ export class ToolRegistry {
     createExecutor(context) {
         return async (name, args) => {
             const ret = await this.execute(name, args, context);
-            if (ret.error) return JSON.stringify({ error: ret.error });
+            if (ret.error) {
+                const payload = { error: ret.error };
+                if (ret.details !== undefined) payload.details = ret.details;
+                if (ret.recoverable) payload.recoverable = true;
+                return JSON.stringify(payload);
+            }
             return typeof ret.result === 'string' ? ret.result : JSON.stringify(ret.result);
         };
     }

@@ -15,6 +15,7 @@
 - **长文本自动分段**：根据各平台字符限制自动切割（QQ 4500 / Telegram 4096 / Discord 2000）
 - **REST API**：完整的 HTTP API 供外部集成
 - **SillyTavern 扩展**：提供设置面板、状态监控、消息控制台、斜杠命令
+- **Agent 平台化**：表现层抽象（一套引擎驱动 IM / ST / Native 三界面）+ Workspace/Journal（可审计可回滚）+ 开箱即用初始方案，详见 [Agent 平台化能力](#agent-平台化能力) 与 [docs/AGENT_FRAMEWORK_GUIDE.md](docs/AGENT_FRAMEWORK_GUIDE.md)
 
 ## 架构设计
 
@@ -381,6 +382,42 @@ curl -X POST http://127.0.0.1:3210/api/gateway/send \
 - 检查 NapCat 进程是否稳定运行
 - 适当增大 `heartbeatInterval`（如 45000）
 - 检查网络环境是否有 WebSocket 干扰
+
+## Agent 平台化能力
+
+网关内置一套 Agent 平台化能力（`plugins/agent-framework/` + `plugins/agent-rp/` + `server/agent/`），把"引擎产出"与"界面渲染"解耦，一套 Agent 引擎驱动三套界面，并借鉴 TauriTavern 的 Workspace-as-Truth 抑制长期 RP 的状态漂移。完整设计与开发指南见 [docs/AGENT_FRAMEWORK_GUIDE.md](docs/AGENT_FRAMEWORK_GUIDE.md)，架构设计见 [docs/AGENT_PLATFORM_ARCHITECTURE.md](docs/AGENT_PLATFORM_ARCHITECTURE.md)。
+
+### 表现层抽象（Presentation Surface）
+
+Agent 引擎不再直接 `ctx.reply(text)`，而是产出结构化的 `AgentRunResult`（artifacts / options / state / events / meta），由表现层适配器决定如何渲染：
+
+| 界面 | 适配器 | 能力 |
+|------|--------|------|
+| **IM 增强** | `agent-rp`（`/rp start`） | 正文分段 + `>选项X：` 交互按钮（复用 option-splitter）+ 实时状态图（复用 message-to-image）+ 群聊多 Bot 协同 |
+| **ST 兼容桥** | `server/index.js` 路由 shim | 真实 ST 前端直连网关，复用 ST 成熟 UI（立绘 / macro / 正则 / QuickReply）+ Agent 引擎 |
+| **Agent 专用前端** | `panel.html` "Agent 剧场" | SSE 订阅 AgentRunResult 流，实时正文流 + 状态面板 + 时间线 + 边玩边改（YAML 热重载） |
+
+插件通过 `ctx.surface.register(adapter)` 注册适配器（需声明 `surface` 权限），一个会话可绑定一个主适配器 + 多个旁路适配器。
+
+### Workspace + Journal（可审计可回滚）
+
+所有 Agent 变更先写 run 级 workspace（`data/plugins/agent-framework/runs/<run-id>/`），追加 append-only 事件流到 `events.jsonl`（seq 单调递增），关键节点自动 checkpoint；run 成功 `commit` 才 promote 产物到会话级稳定层，失败 / 取消不污染。支持 `rollback` 从 checkpoint 恢复，时间线 UI 可查看完整工具调用链定位"幽灵事实"。
+
+写入性能优化：`appendEvent` 按内存缓冲批处理（100 次 ~3ms），seq 内存计数器不重读文件。
+
+### 权限隔离
+
+| 权限 | 说明 | 默认 |
+|------|------|------|
+| `agent` | 使用 Agent 框架（注册工具 / 调度子代理 / 触发 run） | 否 |
+| `surface` | 注册表现层适配器 | 否 |
+| `workspace` | 跨插件共享 workspace（多 Bot 协同） | 否 |
+
+三项权限均非默认授予，未声明时调用即抛清晰错误；不同插件各自按自身权限收窄，互不影响。
+
+### 开箱即用
+
+`/rp start` 一条命令即可开玩（默认 GM + 可选 Critic + 四层记忆 + 去八股文风）。进阶模板（multi-critic / director-mode / state-engine）与独立角色模式见 `plugins/agent-framework/templates/`。
 
 ## 开发指南
 

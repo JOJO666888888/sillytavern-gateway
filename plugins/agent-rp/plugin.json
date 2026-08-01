@@ -1,16 +1,17 @@
 {
     "name": "agent-rp",
-    "displayName": "Agent 角色扮演",
-    "version": "0.1.0",
+    "displayName": "Agent 角色扮演（IM 适配器）",
+    "version": "0.2.0",
     "author": "gateway-team",
-    "description": "AI 角色扮演插件：通过 /rp 命令启动 RP 会话，支持角色卡导入、视角模式切换、文风加载。不依赖 SillyTavern 前端，直接用网关 LLM 生成回复。",
+    "description": "AI 角色扮演插件（IM 界面适配器）：通过 /rp 命令启动 RP 会话，消费 AgentRunResult 渲染为 IM 富文本（正文分段 + 选项按钮 + 实时状态图）。支持群聊多 Bot 协同。agent-framework 未启用时自动回退到 chatStream 直调模式。",
     "main": "index.js",
     "priority": 50,
     "enabled": false,
     "dependencies": [],
-    "permissions": ["llm", "fs", "assets", "gateway.inbound", "sessions"],
+    "permissions": ["llm", "fs", "assets", "gateway.inbound", "sessions", "agent", "surface", "workspace"],
     "config": {
-        "defaultCharacter": { "type": "string", "default": "", "description": "默认角色卡名称（留空则启动时选择）" },
+        "defaultCharacter": { "type": "string", "default": "", "description": "默认角色卡名称（兜底模式用，留空则启动时选择）" },
+        "defaultProfile": { "type": "string", "default": "", "description": "默认 Agent Profile 名（引擎模式用，对应 data/plugins/agent-framework/agents/*.yaml）" },
         "defaultViewMode": { "type": "string", "default": "actor", "description": "默认视角模式：actor（扮演）/ director（导演）" },
         "defaultStyle": { "type": "string", "default": "", "description": "默认文风文件名（留空则不加载文风）" },
         "historyLimit": { "type": "number", "default": 20, "min": 0, "max": 100, "description": "带入模型的历史消息轮数" },
@@ -18,6 +19,7 @@
         "maxTokens": { "type": "number", "default": 2048, "min": 256, "max": 8192, "description": "最大生成 token 数" },
         "systemPromptTemplate": { "type": "string", "default": "", "description": "自定义 system prompt 模板（留空用内置默认）" },
         "stripOptions": { "type": "boolean", "default": true, "description": "是否从正文中提取选项（与 option-splitter 协同）" },
-        "summaryInterval": { "type": "number", "default": 10, "min": 3, "max": 50, "description": "每 N 轮自动生成剧情摘要写入 memory/project.md（0=禁用）" }
+        "summaryInterval": { "type": "number", "default": 10, "min": 3, "max": 50, "description": "每 N 轮自动生成剧情摘要写入 memory/project.md（0=禁用）" },
+        "selfBotId": { "type": "string", "default": "", "description": "本 Bot 在平台上的 ID（群聊多 Bot 协同用，留空则按 botProfileMap 唯一绑定推断）" }
     }
 }

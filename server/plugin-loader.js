@@ -144,6 +144,13 @@ export class PluginLoader {
             const { granted } = normalizePermissions(meta.permissions, meta.name);
             const scopedServices = buildScopedServices(
                 meta.name, granted, this.services, managedUnregister,
+                // extra: 表现层调度器与剧场广播器，按权限收窄后注入插件实例。
+                // agent-framework 依赖 surfaceService 注册 native 适配器；
+                // theatreBroadcaster 不需要权限声明（只读广播，无副作用）。
+                {
+                    surfaceService: this.services.surfaceManager,
+                    theatreBroadcaster: this.services.theatreBroadcaster,
+                },
             );
 
             // 实例化

@@ -25,6 +25,9 @@ import { mediaStore } from './media/media-store.js';
 import { NativeRuntime } from './runtime/pipeline.js';
 import { LLMClient } from './runtime/llm-client.js';
 import { registerRuntimeCommands } from './runtime/runtime-commands.js';
+import { createLLMService } from './llm-service.js';
+import { createStShim } from './compat/st-shim.js';
+import { TheatreBroadcaster } from './agent/theatre-broadcaster.js';
 import multer from 'multer';
 
 const logger = createLogger('server');
@@ -41,6 +44,10 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 
 let pluginManager = null;
 // 自建推理管线（P2）：启用后网关自己组装 prompt 调 LLM，无需挂 ST 前端
 let nativeRuntime = null;
+// Agent 剧场事件广播器（SSE）：单例，进程级
+const theatreBroadcaster = new TheatreBroadcaster();
+// 插件 LLM 服务（runtime.llm 配置后供 agent run / 兼容桥 使用）
+let llmService = null;
 
 /**
  * 判断请求 Origin 是否允许跨域。
@@ -538,6 +545,74 @@ app.post('/api/agents/:name/run', async (req, res) => {
 });
 
 /**
+ * POST /api/agents/from-default - 从默认方案创建副本（SubTask 6.6）
+ *
+ * 复制 default-rp.yaml 为新 Profile，自动改名并去除 isDefault 标记。
+ * 同时把默认记忆模板与文风复制到 agent-rp 数据目录（若不存在），
+ * 保证新副本开箱即用。
+ *
+ * 请求体：{ name: string, displayName?: string }
+ * 响应：{ success: true, agent: def }
+ */
+app.post('/api/agents/from-default', async (req, res) => {
+    const af = pluginManager?.loader.getPlugin('agent-framework');
+    if (!af) return res.status(503).json({ error: 'Agent框架未启用' });
+
+    try {
+        const newName = (req.body?.name || '').trim();
+        if (!newName) return res.status(400).json({ error: '缺少 name 字段' });
+        // 校验 name 合法性（避免路径穿越）
+        if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(newName)) {
+            return res.status(400).json({ error: 'name 仅允许字母数字及 . _ -，且以字母数字开头' });
+        }
+        // 不允许覆盖默认方案
+        if (newName === 'default-rp') {
+            return res.status(400).json({ error: '不能覆盖默认方案，请使用其他名称' });
+        }
+
+        const fsMod = (await import('fs')).default;
+        const pathMod = (await import('path')).default;
+        const { fileURLToPath } = await import('url');
+
+        // 定位 default-rp.yaml 模板源
+        const templatesDir = pathMod.join(
+            pathMod.dirname(fileURLToPath(import.meta.url)),
+            '..', 'plugins', 'agent-framework', 'templates',
+        );
+        const srcPath = pathMod.join(templatesDir, 'default-rp.yaml');
+        if (!fsMod.existsSync(srcPath)) {
+            return res.status(404).json({ error: '默认方案模板 default-rp.yaml 不存在' });
+        }
+
+        let yamlText = fsMod.readFileSync(srcPath, 'utf-8');
+
+        // 替换 name 字段（首行 name: default-rp）
+        yamlText = yamlText.replace(/^name:\s*default-rp\s*$/m, `name: ${newName}`);
+
+        // 移除 isDefault: true 标记（副本不应是默认方案）
+        yamlText = yamlText.replace(/^isDefault:\s*true\s*$/m, '# isDefault: true  # 副本不作为默认方案');
+
+        // 可选：替换 displayName
+        const displayName = (req.body?.displayName || '').trim();
+        if (displayName) {
+            if (/^displayName:\s*.+$/m.test(yamlText)) {
+                yamlText = yamlText.replace(/^displayName:\s*.+$/m, `displayName: ${displayName}`);
+            } else {
+                yamlText = yamlText.replace(/^(name:\s*.+)$/m, `$1\ndisplayName: ${displayName}`);
+            }
+        }
+
+        // 通过 agentLoader.save 保存（会写入 agents 目录并更新内存）
+        const def = af.agentLoader.save(newName, yamlText);
+        logger.info(`[api] 从默认方案创建副本: ${newName}`);
+
+        res.json({ success: true, agent: def });
+    } catch (e) {
+        res.status(400).json({ error: e.message });
+    }
+});
+
+/**
  * 获取会话列表
  */
 app.get('/api/gateway/sessions', (req, res) => {
@@ -753,6 +828,257 @@ app.post('/api/gateway/update/apply', async (req, res) => {
     }
 });
 
+// ==================== ST 兼容前端桥（Task 3） ====================
+//
+// 让真实 SillyTavern 前端直连网关：模拟 ST 的 /api/* 契约，复用 assets/ 资产
+// 与 Agent 引擎。路由处理函数由 createStShim 工厂构造，依赖运行时实例。
+//
+// 注意：这些路由放在 /api/* 鉴权中间件之后，自动复用 X-Gateway-Token 鉴权。
+// 不需要单独的鉴权逻辑。
+
+/**
+ * 取 agent-framework 插件暴露的 agent 服务（含 run 方法）。
+ * agent-framework 已 onLoad 时返回 _agentService，否则返回 null。
+ * @returns {object|null}
+ */
+function getAgentService() {
+    const af = pluginManager?.loader?.getPlugin('agent-framework');
+    return af?._instance?._agentService || null;
+}
+
+/**
+ * 取 ST 兼容桥使用的资产目录。优先用 nativeRuntime.dirs（与自建管线一致），
+ * 否则回退到仓库根的 assets/ + data/chats/。
+ * @returns {{characters:string, worldbooks:string, presets:string, chats:string}}
+ */
+function getStAssetDirs() {
+    if (nativeRuntime) return nativeRuntime.dirs;
+    return {
+        characters: path.join(REPO_ROOT, 'assets', 'characters'),
+        worldbooks: path.join(REPO_ROOT, 'assets', 'worldbooks'),
+        presets: path.join(REPO_ROOT, 'assets', 'presets'),
+        chats: path.join(REPO_ROOT, 'data', 'chats'),
+    };
+}
+
+// 构造 ST shim 处理函数（懒构造：首次请求时按当前依赖重新构造，
+// 避免在 nativeRuntime / agentService 还未就绪时固化依赖）
+function getStShim() {
+    return createStShim({
+        dirs: getStAssetDirs(),
+        nativeRuntime,
+        agentService: getAgentService(),
+        llmService,
+        configManager,
+        logger,
+    });
+}
+
+// —— ST 兼容路由（参考 SillyTavern 实际请求路径） ——
+app.get('/api/characters', (req, res) => getStShim().listCharacters(req, res));
+app.get('/api/characters/:name', (req, res) => getStShim().getCharacter(req, res));
+app.post('/api/characters', (req, res) => getStShim().writeCharacter(req, res));
+// ST 部分版本用 /api/character/get-single，这里一并支持
+app.get('/api/character/get-single', (req, res) => {
+    req.params = { name: req.query.name || req.query.ch_name || '' };
+    getStShim().getCharacter(req, res);
+});
+
+app.get('/api/chats/:characterName', (req, res) => getStShim().listChats(req, res));
+app.get('/api/chats/:characterName/:fileId', (req, res) => getStShim().readChat(req, res));
+app.post('/api/chats/:characterName/:fileId', (req, res) => getStShim().writeChat(req, res));
+// ST 用 /api/chats/get 拉取聊天，/api/chats/rename 重命名，这里映射到 readChat
+app.get('/api/chats/get', (req, res) => {
+    req.params = { characterName: req.query.file_name || '', fileId: req.query.chatId || req.query.file_name || '' };
+    getStShim().readChat(req, res);
+});
+
+app.get('/api/presets', (req, res) => getStShim().listPresets(req, res));
+app.get('/api/presets/:name', (req, res) => getStShim().getPreset(req, res));
+
+app.get('/api/worldinfo', (req, res) => getStShim().listWorldbooks(req, res));
+app.get('/api/worldinfo/:name', (req, res) => getStShim().getWorldbook(req, res));
+app.get('/api/worldinfo/get', (req, res) => {
+    req.params = { name: req.query.name || '' };
+    getStShim().getWorldbook(req, res);
+});
+
+app.post('/api/generate', (req, res) => getStShim().generate(req, res));
+
+app.get('/api/settings', (req, res) => getStShim().getSettings(req, res));
+app.get('/csrf-token', (req, res) => getStShim().getCsrfToken(req, res));
+
+// ==================== Agent 剧场 API（Task 4） ====================
+//
+// SSE 端点 + 输入端点 + 事件查询，供面板内置的 "Agent 剧场" 页面消费。
+// 推送 AgentRunResult 流，不走轮询。
+
+/**
+ * Agent 剧场会话状态（按 sessionKey 维护），用于 /state 端点回显当前会话状态。
+ * 注意：这是面板级临时状态，进程重启后丢失；权威状态在 workspace 与 sessions 目录。
+ * @type {Map<string, {profile:string, lastRunId?:string, lastResult?:object, turn:number}>}
+ */
+const theatreSessions = new Map();
+
+/**
+ * 解析 theatre 请求的 sessionKey：优先用 query.session，否则用 body.session，
+ * 默认 'native:default'。
+ * @param {object} req
+ * @returns {string}
+ */
+function _theatreSessionKey(req) {
+    return (req.query && req.query.session)
+        || (req.body && req.body.session)
+        || 'native:default';
+}
+
+/** GET /api/agent-theatre/stream - SSE 订阅 AgentRunResult 流 */
+app.get('/api/agent-theatre/stream', (req, res) => {
+    const sessionKey = _theatreSessionKey(req);
+    theatreBroadcaster.addClient(res, sessionKey);
+});
+
+/** POST /api/agent-theatre/input - 接收用户输入，触发 ctx.agent.run */
+app.post('/api/agent-theatre/input', async (req, res) => {
+    const sessionKey = _theatreSessionKey(req);
+    const body = req.body || {};
+    const { input, profile, callbackId, character, worldbook, style } = body;
+
+    if (!input && !callbackId) {
+        return res.status(400).json({ success: false, error: '需要 input 或 callbackId' });
+    }
+
+    const agentService = getAgentService();
+    if (!agentService || typeof agentService.run !== 'function') {
+        return res.status(503).json({ success: false, error: 'agent-framework 插件未加载' });
+    }
+    if (!llmService) {
+        return res.status(503).json({ success: false, error: 'runtime.llm 未配置，无法触发 Agent run' });
+    }
+
+    // 维护会话状态
+    const sess = theatreSessions.get(sessionKey) || { profile: profile || 'default-rp', turn: 0 };
+    if (profile) sess.profile = profile;
+    sess.turn += 1;
+    sess.lastInput = input || callbackId;
+    theatreSessions.set(sessionKey, sess);
+
+    // 选项回调：callbackId 形如 "select:option:1"，转成 "选择选项1: <text>" 作为 input
+    let actualInput = input || '';
+    if (!actualInput && callbackId) {
+        actualInput = `[选项回调] ${callbackId}`;
+    }
+
+    // 解析 sessionKey -> platform:chatId
+    const [platform, chatId] = sessionKey.split(':');
+
+    try {
+        // 触发 Agent run
+        const runResult = await agentService.run(
+            sess.profile,
+            actualInput,
+            {
+                platform: platform || 'native',
+                chatId: chatId || 'theatre',
+                character: character || sess.character || '',
+            },
+            {
+                llm: llmService,
+                history: sess.history || [],
+                character: character || sess.character,
+                worldbook: worldbook || sess.worldbook,
+                style: style || sess.style,
+            },
+        );
+
+        sess.lastRunId = runResult.runId;
+        sess.lastResult = runResult.result?.toJSON?.() || null;
+        sess.profile = sess.profile; // 保持
+        // 把本轮结果文本作为 assistant 消息加入历史，便于下一轮续写
+        const mainText = runResult.result?.getMainText?.() || runResult.text || '';
+        sess.history = sess.history || [];
+        if (actualInput) sess.history.push({ role: 'user', content: actualInput });
+        if (mainText) sess.history.push({ role: 'assistant', content: mainText });
+        // 限制历史长度，避免内存膨胀
+        if (sess.history.length > 40) sess.history = sess.history.slice(-40);
+
+        // 广播完整结果 + 状态给所有订阅者
+        theatreBroadcaster.broadcastResult(sessionKey, {
+            runId: runResult.runId,
+            result: sess.lastResult,
+            text: mainText,
+        });
+        theatreBroadcaster.broadcastState(sessionKey, sess.lastResult?.state || {});
+
+        res.json({
+            success: true,
+            runId: runResult.runId,
+            text: mainText,
+            result: sess.lastResult,
+        });
+    } catch (e) {
+        logger.error(`[theatre] Agent run 失败: ${e.message}`);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+/** GET /api/agent-theatre/events/:runId - 查询历史事件（调 workspace-manager.getEvents） */
+app.get('/api/agent-theatre/events/:runId', (req, res) => {
+    const { runId } = req.params;
+    const afterSeq = parseInt(req.query.afterSeq) || 0;
+    const limit = parseInt(req.query.limit) || 100;
+    const af = pluginManager?.loader?.getPlugin('agent-framework');
+    const wm = af?._instance?.workspaceManager;
+    if (!wm || typeof wm.getEvents !== 'function') {
+        return res.status(503).json({ success: false, error: 'workspace-manager 不可用' });
+    }
+    try {
+        const events = wm.getEvents(runId, { afterSeq, limit });
+        res.json({ success: true, runId, events });
+    } catch (e) {
+        res.status(400).json({ success: false, error: e.message });
+    }
+});
+
+/** GET /api/agent-theatre/state - 当前会话状态 */
+app.get('/api/agent-theatre/state', (req, res) => {
+    const sessionKey = _theatreSessionKey(req);
+    const sess = theatreSessions.get(sessionKey);
+    if (!sess) {
+        return res.json({
+            success: true,
+            session: sessionKey,
+            active: false,
+            message: '会话尚未开始',
+        });
+    }
+    res.json({
+        success: true,
+        session: sessionKey,
+        active: true,
+        profile: sess.profile,
+        turn: sess.turn,
+        lastRunId: sess.lastRunId,
+        lastResult: sess.lastResult,
+    });
+});
+
+/**
+ * GET /agent-theatre.js - 公开提供 panel-agent-theatre.js 脚本（无需鉴权）。
+ *
+ * panel.html 在 "Agent 剧场" 区块展开时动态注入此脚本。
+ * 放在 /api/* 之外，绕过鉴权中间件（脚本本身无敏感数据）。
+ */
+app.get('/agent-theatre.js', (req, res) => {
+    const file = path.join(REPO_ROOT, 'panel-agent-theatre.js');
+    if (!fs.existsSync(file)) {
+        return res.status(404).send('// panel-agent-theatre.js not found');
+    }
+    res.type('application/javascript; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache');
+    fs.createReadStream(file).pipe(res);
+});
+
 // ==================== 启动服务 ====================
 
 const PORT = configManager.get('server.port') || 3210;
@@ -784,6 +1110,9 @@ async function startServer() {
         gateway: gatewayCore,
         sessionManager,
         configManager,
+        // 把 theatreBroadcaster 注入插件系统，供 agent-framework 注册
+        // native 表现层适配器（把 AgentRunResult 广播给 Agent 剧场前端）。
+        theatreBroadcaster,
     });
     await pluginManager.init();
     pluginManager.registerRoutes(app);
@@ -806,6 +1135,13 @@ async function startServer() {
             logger.error(`自建推理管线初始化失败: ${error.message}`);
             nativeRuntime = null;
         }
+    }
+
+    // 初始化 LLM 服务（供 ST 兼容桥 / Agent 剧场触发 agent run 用）。
+    // 只要 runtime.llm 配了 model 就创建，不依赖 runtime.enabled 开关。
+    if (runtimeCfg.llm?.model) {
+        llmService = createLLMService(configManager);
+        logger.info('🤖 LLM 服务已就绪（供 ST 兼容桥 / Agent 剧场使用）');
     }
 
     // 设置消息处理
@@ -853,6 +1189,7 @@ async function startServer() {
 // 优雅关闭
 process.on('SIGINT', async () => {
     logger.info('正在关闭...');
+    theatreBroadcaster.shutdown();
     if (pluginManager) await pluginManager.shutdown();
     await gatewayCore.stop();
     sessionManager.stop();
@@ -862,6 +1199,7 @@ process.on('SIGINT', async () => {
 
 process.on('SIGTERM', async () => {
     logger.info('收到终止信号，正在关闭...');
+    theatreBroadcaster.shutdown();
     if (pluginManager) await pluginManager.shutdown();
     await gatewayCore.stop();
     sessionManager.stop();

@@ -99,6 +99,16 @@ export const PERMISSIONS = {
         desc: '使用 Agent 框架（注册工具/调度子代理）',
         default: false,
     },
+    'surface': {
+        risk: 'medium',
+        desc: '注册表现层适配器（消费 AgentRunResult 渲染到界面）',
+        default: false,
+    },
+    'workspace': {
+        risk: 'low',
+        desc: '跨插件共享 workspace（多 Bot 协同场景）',
+        default: false,
+    },
 };
 
 /** 默认授予的权限集合（向后兼容：老插件不声明也能正常工作） */
@@ -303,8 +313,15 @@ export function buildScopedServices(pluginName, granted, raw, managedUnregister 
         fs: (granted.has('fs') && extra.fs) ? createFsService(pluginName) : deniedStub(pluginName, 'fs', ['read', 'write', 'list', 'exists']),
         // ST 资产只读服务：角色卡/世界书/预设。未授予 assets 权限（或未请求）时为拒绝桩。
         assets: (granted.has('assets') && extra.assets) ? createAssetsService() : deniedStub(pluginName, 'assets', ['listCharacters', 'readCharacter', 'listWorldbooks', 'readWorldbook', 'listPresets', 'readPreset']),
-        // Agent 框架服务：注册工具/调度子代理。未授予 agent 权限（或 agent-framework 未加载）时为拒绝桩。
-        agent: (granted.has('agent') && extra.agentService) ? createAgentService(extra.agentService, pluginName) : deniedStub(pluginName, 'agent', ['registerTool', 'dispatch', 'registerAgent', 'getStatus']),
+        // Agent 框架服务：注册工具/调度子代理。未授予 agent 权限或 agent-framework 未加载时为拒绝桩。
+        // 注意方法清单须与 createAgentService 暴露的保持一致，否则未授权调用会得到
+        // "x is not a function" 的 TypeError 而非清晰的权限错误（SubTask 7.3 回归守护）。
+        agent: (granted.has('agent') && extra.agentService) ? createAgentService(extra.agentService, pluginName) : deniedStub(pluginName, 'agent', ['registerTool', 'dispatch', 'registerAgent', 'getStatus', 'run']),
+        // 表现层服务：注册/调度表现层适配器。未授予 surface 权限（或 SurfaceManager 未注入）时为拒绝桩。
+        surface: (granted.has('surface') && extra.surfaceService) ? createSurfaceService(extra.surfaceService, pluginName) : deniedStub(pluginName, 'surface', ['register', 'getAdapters', 'bindPrimary', 'dispatch']),
+        // Agent 剧场广播器（SSE）：把 AgentRunResult 推送给面板前端。
+        // 不需要单独权限声明（只读广播，无副作用），未注入时为 null。
+        theatreBroadcaster: extra.theatreBroadcaster || null,
         // 供插件系统内部使用（不供插件业务逻辑访问凭据）
         _permissions: granted,
         _pluginName: pluginName,
@@ -415,6 +432,24 @@ function createAgentService(agentService, pluginName) {
         dispatch: (agentName, task, options) => agentService.dispatch(agentName, task, options),
         registerAgent: (agentDef) => agentService.registerAgent(agentDef),
         getStatus: () => agentService.getStatus(),
+        // 触发 Agent run，返回 { runId, result: AgentRunResult, text, steps, ... }
+        // 供表现层适配器（如 agent-rp）通过 ctx.agent.run(profile, input, session, ctx) 调用
+        run: (profile, input, session, ctx) => agentService.run(profile, input, session, ctx),
+    };
+}
+
+/**
+ * 创建插件专属的表现层服务。
+ * 委托给全局 SurfaceManager，自动标注适配器来源插件。
+ * @param {import('./agent/surface-manager.js').SurfaceManager} surfaceService - 全局 SurfaceManager 实例
+ * @param {string} pluginName - 当前插件名（用于标注来源）
+ */
+function createSurfaceService(surfaceService, pluginName) {
+    return {
+        register: (adapter) => surfaceService.register({ ...adapter, source: pluginName }),
+        getAdapters: () => surfaceService.getAdapters(),
+        bindPrimary: (sessionKey, adapterName) => surfaceService.bindPrimary(sessionKey, adapterName),
+        dispatch: (result, ctx, options) => surfaceService.dispatch(result, ctx, options),
     };
 }
 

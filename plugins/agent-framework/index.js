@@ -23,6 +23,7 @@ import { AgentRunner } from './engine/agent-runner.js';
 import { SubagentDispatcher } from './engine/subagent-dispatcher.js';
 import { StateManager } from './engine/state-manager.js';
 import { MemoryEngine } from './engine/memory-engine.js';
+import { WorkspaceManager } from './engine/workspace-manager.js';
 import { ContextBuilder } from '../../server/agent/context-builder.js';
 
 // 工具
@@ -62,6 +63,10 @@ export default class AgentFrameworkPlugin extends GatewayPlugin {
             fs.mkdirSync(d, { recursive: true });
         }
 
+        // 1.1 首次启动引导：把 templates/ 下的默认方案模板复制到 agents/ 目录。
+        // 仅在目标文件不存在时复制（不覆盖用户已自定义的版本）。
+        this._seedDefaultTemplates(agentsDir);
+
         // 2. 初始化引擎组件
         this.agentLoader = new AgentLoader(agentsDir);
         this.agentLoader.loadAll();
@@ -72,6 +77,7 @@ export default class AgentFrameworkPlugin extends GatewayPlugin {
             summaryInterval: this.getConfig('summaryInterval') ?? 10,
         });
         this.contextBuilder = new ContextBuilder({ dataDir: DATA_DIR });
+        this.workspaceManager = new WorkspaceManager({ dataRoot: DATA_DIR, logger: this.logger });
         this.subagentDispatcher = new SubagentDispatcher({
             agentLoader: this.agentLoader,
             toolRegistry: this.toolRegistry,
@@ -84,6 +90,7 @@ export default class AgentFrameworkPlugin extends GatewayPlugin {
             stateManager: this.stateManager,
             memoryEngine: this.memoryEngine,
             contextBuilder: this.contextBuilder,
+            workspaceManager: this.workspaceManager,
             logger: this.logger,
         });
 
@@ -106,16 +113,150 @@ export default class AgentFrameworkPlugin extends GatewayPlugin {
                 this.agentLoader.agents.set(agentDef.name, agentDef);
             },
             getStatus: () => this.agentRunner.getStatus(),
+            getWorkspaceManager: () => this.workspaceManager,
+            /**
+             * 触发一次 Agent run，产出 AgentRunResult。
+             *
+             * 供 ctx.agent.run 调用（其他插件如 agent-rp 通过表现层适配器消费结果）。
+             *
+             * @param {string} profile - Agent 定义名（YAML 文件名，对应 agentLoader 的 key）
+             * @param {string} input - 用户输入文本
+             * @param {object} [session] - 会话状态（character/worldbook/style/turn/platform/chatId/id...）
+             * @param {object} [ctx] - 插件上下文（用于取 ctx.llm / ctx.getHistory / ctx.workspace）
+             * @returns {Promise<{runId:string, result:import('../../server/agent/run-result.js').AgentRunResult, text:string, steps:number, subAgentResults:Array, logs:object}>}
+             */
+            run: async (profile, input, session = {}, ctx = null) => {
+                const definition = this.agentLoader.get(profile);
+                if (!definition) {
+                    throw new Error(`Agent profile "${profile}" 不存在，可用: ${this.agentLoader.list().map(a => a.name).join(', ') || '(空)'}`);
+                }
+
+                // 注入 LLM 到记忆引擎（runner 内部会用到）
+                if (ctx?.llm && this.memoryEngine) {
+                    this.memoryEngine.setLLM(ctx.llm);
+                }
+
+                // 拉取历史（优先用 ctx.getHistory，便于按 definition.context.historyLimit 收窄）
+                const historyLimit = definition.context?.historyLimit || 20;
+                const history = (typeof ctx?.getHistory === 'function')
+                    ? (ctx.getHistory(historyLimit) || [])
+                    : (session?.history || []);
+
+                // 组装 agentSession：把传入的 session 补全为 runner 期望的形态
+                const agentSession = {
+                    id: session?.id || `${ctx?.platform || 'unknown'}:${ctx?.chatId || 'unknown'}`,
+                    platform: ctx?.platform || session?.platform || 'unknown',
+                    chatId: ctx?.chatId || session?.chatId || 'unknown',
+                    character: session?.character || this._extractVar(definition, 'character') || '',
+                    worldbook: session?.worldbook || this._extractVar(definition, 'worldbook') || '',
+                    style: session?.style || this._extractVar(definition, 'style') || '',
+                    turn: session?.turn ?? session?.turnCount ?? 0,
+                    ...session,
+                };
+
+                return this.agentRunner.run(definition, agentSession, history, input, ctx);
+            },
         };
 
         // 5. Agent 会话状态（哪些会话处于 Agent 模式）
         this._agentSessions = new Map(); // key: "platform:chatId" -> { agentName, turnCount }
+
+        // 6. 注册 native 表现层适配器（SubTask 6.4）
+        // 把 AgentRunResult 通过 theatre-broadcaster 广播给 Agent 剧场前端。
+        // 适配器在 SurfaceManager 注册后，可被 ctx.surface.dispatch 作为旁路适配器调用，
+        // 也可被其他插件（如 agent-rp）在 IM 端 run 时同步推送到面板。
+        this._registerNativeSurface();
 
         this.logger.info('Agent 框架已加载，工具数: ' + this.toolRegistry.tools.size);
     }
 
     async onUnload() {
         this._agentSessions.clear();
+        if (this._removeNativeSurface) {
+            try { this._removeNativeSurface(); } catch (_) {}
+            this._removeNativeSurface = null;
+        }
+    }
+
+    /**
+     * 首次启动引导：把 templates/ 下的 Agent YAML 模板复制到 agents/ 目录。
+     * 仅在目标文件不存在时复制，不覆盖用户已自定义的版本。
+     * 包含：default-rp.yaml（默认方案）+ multi-critic/director-mode/state-engine/independent-character（进阶模板）。
+     * @param {string} agentsDir - data/plugins/agent-framework/agents/
+     * @private
+     */
+    _seedDefaultTemplates(agentsDir) {
+        const templatesDir = path.join(__dirname, 'templates');
+        if (!fs.existsSync(templatesDir)) return;
+        const seeds = [
+            'default-rp.yaml',
+            'multi-critic.yaml',
+            'director-mode.yaml',
+            'state-engine.yaml',
+            'independent-character.yaml',
+        ];
+        for (const fname of seeds) {
+            const src = path.join(templatesDir, fname);
+            const dst = path.join(agentsDir, fname);
+            if (!fs.existsSync(src)) continue;
+            if (fs.existsSync(dst)) continue; // 不覆盖用户版本
+            try {
+                fs.copyFileSync(src, dst);
+                this.logger.info(`[agent-framework] 已播种默认模板: ${fname}`);
+            } catch (e) {
+                this.logger.warn(`[agent-framework] 播种模板 ${fname} 失败: ${e.message}`);
+            }
+        }
+    }
+
+    /**
+     * 注册 native 表现层适配器（SubTask 6.4）。
+     *
+     * 适配器名：native-default，surfaceType: 'native'。
+     * render 方法把 AgentRunResult 通过 theatre-broadcaster 广播给所有订阅该会话的 SSE 客户端
+     * （Agent 剧场前端通过 EventSource 订阅 /api/agent-theatre/stream?session=<key>）。
+     *
+     * 注意：本适配器不主动发送消息到任何 IM 平台，仅作为旁路通道把引擎产出推送到面板。
+     * IM 端的渲染由 agent-rp 注册的 im-default 适配器负责。
+     *
+     * @private
+     */
+    _registerNativeSurface() {
+        try {
+            const surface = this._services?.surface;
+            const broadcaster = this._services?.theatreBroadcaster;
+            if (!surface || typeof surface.register !== 'function') {
+                this.logger.warn('[agent-framework] surface 服务不可用，跳过 native 适配器注册（请检查 plugin.json 是否声明 surface 权限）');
+                return;
+            }
+            this._removeNativeSurface = surface.register({
+                name: 'native-default',
+                surfaceType: 'native',
+                /**
+                 * @param {import('../../server/agent/run-result.js').AgentRunResult} result
+                 * @param {object} [ctx]
+                 */
+                render: async (result, ctx) => {
+                    if (!broadcaster) return;
+                    // 解析会话 key（与 theatre-broadcaster 的 sessionKey 约定一致：platform:chatId）
+                    const platform = ctx?.platform || ctx?.message?.platform || 'native';
+                    const chatId = ctx?.chatId || ctx?.message?.chatId || 'default';
+                    const sessionKey = `${platform}:${chatId}`;
+                    const payload = {
+                        runId: result?.runId || '',
+                        result: result?.toJSON?.() || null,
+                        text: result?.getMainText?.() || '',
+                    };
+                    broadcaster.broadcastResult(sessionKey, payload);
+                    if (result?.state) {
+                        broadcaster.broadcastState(sessionKey, result.state);
+                    }
+                },
+            });
+            this.logger.info('[agent-framework] native 表现层适配器 native-default 已注册');
+        } catch (e) {
+            this.logger.warn(`[agent-framework] 注册 native 适配器失败: ${e.message}`);
+        }
     }
 
     // /agent 命令路由

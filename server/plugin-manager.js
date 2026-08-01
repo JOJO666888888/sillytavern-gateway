@@ -14,6 +14,7 @@ import { SchedulerService } from './scheduler-service.js';
 import { PluginContext } from './plugin-context.js';
 import { CommandRouter } from './command-router.js';
 import { EventPipeline } from './event-pipeline.js';
+import { SurfaceManager } from './agent/surface-manager.js';
 import { execSync } from 'child_process';
 
 const logger = createLogger('plugin-manager');
@@ -68,6 +69,9 @@ export class PluginManager {
         this.gateway = options.gateway;
         this.sessionManager = options.sessionManager;
         this.configManager = options.configManager;
+        // Agent 剧场广播器（SSE），由 server/index.js 注入。
+        // 供 agent-framework 注册的 native 适配器把 AgentRunResult 推送给面板前端。
+        this.theatreBroadcaster = options.theatreBroadcaster || null;
 
         // LLM 调用服务：供声明了 "llm" 权限的插件调用网关配置的 LLM。
         // 现读 runtime.llm 配置，apiKey 只在服务内部用于拼请求，不流入插件。
@@ -93,6 +97,11 @@ export class PluginManager {
                 + '插件配置本次将无法持久化。修复：在宿主机执行 chown -R $(id -u):$(id -g) data');
         }
 
+        // 表现层调度器：全局单例，供声明 "surface" 权限的插件注册/调度适配器。
+        // 一套引擎驱动多界面（IM / ST / Native）的核心解耦点。
+        // 必须在 PluginLoader 之前创建，以便通过 services 引用注入给插件。
+        this.surfaceManager = new SurfaceManager({ logger: logger.child?.('surface') || logger });
+
         // 插件加载器
         this.loader = new PluginLoader({
             pluginsDir: path.resolve(__dirname, '..', 'plugins'),
@@ -102,6 +111,10 @@ export class PluginManager {
                 configManager: this.configManager,
                 llmService: this.llmService,
                 savePluginConfig: (name, config) => this.savePluginConfig(name, config),
+                // 表现层调度器与剧场广播器：供 agent-framework / agent-rp 等
+                // 声明 "surface" 权限的插件注册适配器、广播 AgentRunResult。
+                surfaceManager: this.surfaceManager,
+                theatreBroadcaster: this.theatreBroadcaster,
             },
         });
 
@@ -379,6 +392,20 @@ export class PluginManager {
         }, [], { agent: true, agentService: frameworkInstance._instance._agentService, pluginName }).agent;
     }
 
+    /**
+     * 为指定插件返回按其权限收窄的表现层服务。
+     * 未声明 "surface" 权限时返回拒绝桩（调用即抛错）。
+     * @param {string} pluginName
+     */
+    getSurfaceFor(pluginName) {
+        const instance = this.loader.getPlugin(pluginName);
+        const granted = new Set(instance?._grantedPermissions || []);
+        if (!granted.has('surface')) return null;
+        return buildScopedServices(pluginName, granted, {
+            gateway: null, sessionManager: null, configManager: this.configManager,
+        }, [], { surface: true, surfaceService: this.surfaceManager, pluginName }).surface;
+    }
+
     /** 传给命令路由/事件管线的服务集合 */
     _dispatchServices() {
         return {
@@ -390,6 +417,10 @@ export class PluginManager {
             getFsFor: (name) => this.getFsFor(name),
             getAssetsFor: (name) => this.getAssetsFor(name),
             getAgentFor: (name) => this.getAgentFor(name),
+            // 表现层调度器：供声明 surface 权限的插件在命令/监听器 ctx 中注册/调度适配器。
+            // SubTask 6.4：agent-rp 的 _runWithAgent 通过 ctx.surface.dispatch 调用
+            // native-default 旁路适配器，把 AgentRunResult 广播到 Agent 剧场前端。
+            getSurfaceFor: (name) => this.getSurfaceFor(name),
         };
     }
 

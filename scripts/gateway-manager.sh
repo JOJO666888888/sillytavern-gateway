@@ -720,9 +720,9 @@ guided_config() {
     printf "启用 Telegram？(y/n) [n]: "
     local r; read -r r
     if [ "$r" = "y" ] || [ "$r" = "Y" ]; then
-        echo "GATEWAY_TELEGRAM_ENABLED=true" >> "$env_file"
+        env_set_val GATEWAY_TELEGRAM_ENABLED true "$env_file"
         printf "Telegram Bot Token: "; read -r token
-        echo "GATEWAY_TELEGRAM_BOT_TOKEN=$token" >> "$env_file"
+        env_set_val GATEWAY_TELEGRAM_BOT_TOKEN "$token" "$env_file"
         success "Telegram 已配置"
     fi
 
@@ -730,10 +730,10 @@ guided_config() {
     printf "启用 QQ (OneBot/NapCat)？(y/n) [n]: "
     read -r r
     if [ "$r" = "y" ] || [ "$r" = "Y" ]; then
-        echo "GATEWAY_QQ_ENABLED=true" >> "$env_file"
+        env_set_val GATEWAY_QQ_ENABLED true "$env_file"
         printf "NapCat WS 地址 [ws://127.0.0.1:8080]: "; read -r ws
         ws="${ws:-ws://127.0.0.1:8080}"
-        echo "GATEWAY_QQ_WS_URL=$ws" >> "$env_file"
+        env_set_val GATEWAY_QQ_WS_URL "$ws" "$env_file"
         success "QQ 已配置"
     fi
 
@@ -741,9 +741,9 @@ guided_config() {
     printf "启用 Discord？(y/n) [n]: "
     read -r r
     if [ "$r" = "y" ] || [ "$r" = "Y" ]; then
-        echo "GATEWAY_DISCORD_ENABLED=true" >> "$env_file"
+        env_set_val GATEWAY_DISCORD_ENABLED true "$env_file"
         printf "Discord Bot Token: "; read -r token
-        echo "GATEWAY_DISCORD_BOT_TOKEN=$token" >> "$env_file"
+        env_set_val GATEWAY_DISCORD_BOT_TOKEN "$token" "$env_file"
         success "Discord 已配置"
     fi
 
@@ -751,11 +751,11 @@ guided_config() {
     printf "启用飞书？(y/n) [n]: "
     read -r r
     if [ "$r" = "y" ] || [ "$r" = "Y" ]; then
-        echo "GATEWAY_FEISHU_ENABLED=true" >> "$env_file"
+        env_set_val GATEWAY_FEISHU_ENABLED true "$env_file"
         printf "飞书 App ID: "; read -r feishu_appid
-        echo "GATEWAY_FEISHU_APP_ID=$feishu_appid" >> "$env_file"
+        env_set_val GATEWAY_FEISHU_APP_ID "$feishu_appid" "$env_file"
         printf "飞书 App Secret: "; read -r feishu_secret
-        echo "GATEWAY_FEISHU_APP_SECRET=$feishu_secret" >> "$env_file"
+        env_set_val GATEWAY_FEISHU_APP_SECRET "$feishu_secret" "$env_file"
         success "飞书已配置"
     fi
 
@@ -763,11 +763,11 @@ guided_config() {
     printf "启用钉钉？(y/n) [n]: "
     read -r r
     if [ "$r" = "y" ] || [ "$r" = "Y" ]; then
-        echo "GATEWAY_DINGTALK_ENABLED=true" >> "$env_file"
+        env_set_val GATEWAY_DINGTALK_ENABLED true "$env_file"
         printf "钉钉 ClientId (AppKey): "; read -r dt_clientid
-        echo "GATEWAY_DINGTALK_CLIENT_ID=$dt_clientid" >> "$env_file"
+        env_set_val GATEWAY_DINGTALK_CLIENT_ID "$dt_clientid" "$env_file"
         printf "钉钉 ClientSecret (AppSecret): "; read -r dt_secret
-        echo "GATEWAY_DINGTALK_CLIENT_SECRET=$dt_secret" >> "$env_file"
+        env_set_val GATEWAY_DINGTALK_CLIENT_SECRET "$dt_secret" "$env_file"
         success "钉钉已配置"
     fi
 
@@ -775,11 +775,11 @@ guided_config() {
     printf "启用 QQ官方机器人？(y/n) [n]: "
     read -r r
     if [ "$r" = "y" ] || [ "$r" = "Y" ]; then
-        echo "GATEWAY_QQOFFICIAL_ENABLED=true" >> "$env_file"
+        env_set_val GATEWAY_QQOFFICIAL_ENABLED true "$env_file"
         printf "QQ官方 AppID: "; read -r qqo_appid
-        echo "GATEWAY_QQOFFICIAL_APP_ID=$qqo_appid" >> "$env_file"
+        env_set_val GATEWAY_QQOFFICIAL_APP_ID "$qqo_appid" "$env_file"
         printf "QQ官方 AppSecret: "; read -r qqo_secret
-        echo "GATEWAY_QQOFFICIAL_SECRET=$qqo_secret" >> "$env_file"
+        env_set_val GATEWAY_QQOFFICIAL_SECRET "$qqo_secret" "$env_file"
         success "QQ官方已配置"
     fi
 
@@ -787,15 +787,15 @@ guided_config() {
     printf "启用自建推理管线（不依赖 ST 前端）？(y/n) [n]: "
     read -r r
     if [ "$r" = "y" ] || [ "$r" = "Y" ]; then
-        echo "GATEWAY_RUNTIME_ENABLED=true" >> "$env_file"
+        env_set_val GATEWAY_RUNTIME_ENABLED true "$env_file"
         printf "LLM Provider [openai]: "; read -r provider
         provider="${provider:-openai}"
-        echo "GATEWAY_LLM_PROVIDER=$provider" >> "$env_file"
+        env_set_val GATEWAY_LLM_PROVIDER "$provider" "$env_file"
         printf "API Key: "; read -r key
-        echo "GATEWAY_LLM_API_KEY=$key" >> "$env_file"
+        env_set_val GATEWAY_LLM_API_KEY "$key" "$env_file"
         printf "模型 [gpt-4o-mini]: "; read -r model
         model="${model:-gpt-4o-mini}"
-        echo "GATEWAY_LLM_MODEL=$model" >> "$env_file"
+        env_set_val GATEWAY_LLM_MODEL "$model" "$env_file"
         success "自建推理管线已配置"
     fi
 
@@ -1657,47 +1657,44 @@ config_platform() {
         return 0
     fi
 
-    # 删除旧的启用行，写入新的
-    sed_inplace "/${env_prefix}_ENABLED=/d" "$env_file"
-    echo "${env_prefix}_ENABLED=true" >> "$env_file"
+    env_set_val "${env_prefix}_ENABLED" true "$env_file"
 
     # 根据平台提示输入对应凭据
     case "$platform" in
         telegram)
             printf "请输入 Bot Token: "; local v; read -r v
-            [ -n "$v" ] && { sed_inplace "/${env_prefix}_BOT_TOKEN=/d" "$env_file"; echo "${env_prefix}_BOT_TOKEN=$v" >> "$env_file"; }
+            [ -n "$v" ] && env_set_val "${env_prefix}_BOT_TOKEN" "$v" "$env_file"
             ;;
         qq)
             printf "请输入 NapCat WS 地址 [ws://127.0.0.1:8080]: "; local v; read -r v
             v="${v:-ws://127.0.0.1:8080}"
-            sed_inplace "/${env_prefix}_WS_URL=/d" "$env_file"
-            echo "${env_prefix}_WS_URL=$v" >> "$env_file"
+            env_set_val "${env_prefix}_WS_URL" "$v" "$env_file"
             printf "请输入 OneBot Access Token (可留空): "; local t; read -r t
-            [ -n "$t" ] && { sed_inplace "/${env_prefix}_ACCESS_TOKEN=/d" "$env_file"; echo "${env_prefix}_ACCESS_TOKEN=$t" >> "$env_file"; }
+            [ -n "$t" ] && env_set_val "${env_prefix}_ACCESS_TOKEN" "$t" "$env_file"
             ;;
         discord)
             printf "请输入 Bot Token: "; local v; read -r v
-            [ -n "$v" ] && { sed_inplace "/${env_prefix}_BOT_TOKEN=/d" "$env_file"; echo "${env_prefix}_BOT_TOKEN=$v" >> "$env_file"; }
+            [ -n "$v" ] && env_set_val "${env_prefix}_BOT_TOKEN" "$v" "$env_file"
             ;;
         feishu)
             printf "请输入飞书 App ID: "; local v; read -r v
-            [ -n "$v" ] && { sed_inplace "/${env_prefix}_APP_ID=/d" "$env_file"; echo "${env_prefix}_APP_ID=$v" >> "$env_file"; }
+            [ -n "$v" ] && env_set_val "${env_prefix}_APP_ID" "$v" "$env_file"
             printf "请输入飞书 App Secret: "; local s; read -r s
-            [ -n "$s" ] && { sed_inplace "/${env_prefix}_APP_SECRET=/d" "$env_file"; echo "${env_prefix}_APP_SECRET=$s" >> "$env_file"; }
+            [ -n "$s" ] && env_set_val "${env_prefix}_APP_SECRET" "$s" "$env_file"
             ;;
         qqofficial)
             printf "请输入 QQ官方 AppID: "; local v; read -r v
-            [ -n "$v" ] && { sed_inplace "/${env_prefix}_APP_ID=/d" "$env_file"; echo "${env_prefix}_APP_ID=$v" >> "$env_file"; }
+            [ -n "$v" ] && env_set_val "${env_prefix}_APP_ID" "$v" "$env_file"
             printf "请输入 QQ官方 AppSecret: "; local s; read -r s
-            [ -n "$s" ] && { sed_inplace "/${env_prefix}_SECRET=/d" "$env_file"; echo "${env_prefix}_SECRET=$s" >> "$env_file"; }
+            [ -n "$s" ] && env_set_val "${env_prefix}_SECRET" "$s" "$env_file"
             printf "请输入 QQ官方 Token (可留空): "; local t; read -r t
-            [ -n "$t" ] && { sed_inplace "/${env_prefix}_TOKEN=/d" "$env_file"; echo "${env_prefix}_TOKEN=$t" >> "$env_file"; }
+            [ -n "$t" ] && env_set_val "${env_prefix}_TOKEN" "$t" "$env_file"
             ;;
         dingtalk)
             printf "请输入钉钉 ClientId (AppKey): "; local v; read -r v
-            [ -n "$v" ] && { sed_inplace "/${env_prefix}_CLIENT_ID=/d" "$env_file"; echo "${env_prefix}_CLIENT_ID=$v" >> "$env_file"; }
+            [ -n "$v" ] && env_set_val "${env_prefix}_CLIENT_ID" "$v" "$env_file"
             printf "请输入钉钉 ClientSecret (AppSecret): "; local s; read -r s
-            [ -n "$s" ] && { sed_inplace "/${env_prefix}_CLIENT_SECRET=/d" "$env_file"; echo "${env_prefix}_CLIENT_SECRET=$s" >> "$env_file"; }
+            [ -n "$s" ] && env_set_val "${env_prefix}_CLIENT_SECRET" "$s" "$env_file"
             ;;
     esac
 
@@ -2217,6 +2214,198 @@ check_and_restart() {
 }
 
 # ═══════════════════════════════════════════════════════════
+# 自建推理管线（Runtime）配置
+# ═══════════════════════════════════════════════════════════
+
+# 从 .env 读取指定变量值（精确匹配 KEY=value 行）
+env_get_val() {
+    local key="$1" file="${2:-$INSTALL_DIR/.env}"
+    [ -f "$file" ] || return 0
+    grep "^${key}=" "$file" 2>/dev/null | head -1 | cut -d'=' -f2- || echo ""
+}
+
+# 向 .env 写入或更新键值对（存在则替换，不存在则追加）
+env_set_val() {
+    local key="$1" val="$2" file="${3:-$INSTALL_DIR/.env}"
+    [ -f "$file" ] || touch "$file"
+    if grep -q "^${key}=" "$file" 2>/dev/null; then
+        # macOS sed 不支持 -i 不带后缀，用临时文件替代
+        local tmp
+        tmp="$(mktemp 2>/dev/null || echo "/tmp/.env_tmp_$$")"
+        sed "s|^${key}=.*|${key}=${val}|" "$file" > "$tmp" 2>/dev/null
+        mv "$tmp" "$file"
+    else
+        echo "${key}=${val}" >> "$file"
+    fi
+}
+
+# 从 .env 删除指定键
+env_del_val() {
+    local key="$1" file="${2:-$INSTALL_DIR/.env}"
+    [ -f "$file" ] || return 0
+    local tmp
+    tmp="$(mktemp 2>/dev/null || echo "/tmp/.env_tmp_$$")"
+    sed "/^${key}=/d" "$file" > "$tmp" 2>/dev/null
+    mv "$tmp" "$file"
+}
+
+cmd_runtime() {
+    [ -z "${INSTALL_DIR:-}" ] && { error "未检测到安装目录"; return 1; }
+
+    local env_file="$INSTALL_DIR/.env"
+    [ -f "$env_file" ] || echo "TZ=Asia/Shanghai" > "$env_file"
+
+    while true; do
+        # 读取当前状态
+        local rt_enabled
+        rt_enabled="$(env_get_val GATEWAY_RUNTIME_ENABLED "$env_file")"
+        local rt_status="未启用"
+        [ "$rt_enabled" = "true" ] && rt_status="已启用"
+
+        local llm_provider llm_model llm_apikey llm_baseurl
+        llm_provider="$(env_get_val GATEWAY_LLM_PROVIDER "$env_file")"
+        llm_model="$(env_get_val GATEWAY_LLM_MODEL "$env_file")"
+        llm_apikey="$(env_get_val GATEWAY_LLM_API_KEY "$env_file")"
+        llm_baseurl="$(env_get_val GATEWAY_LLM_BASE_URL "$env_file")"
+
+        # 尝试从运行中网关获取实时状态
+        local api_status=""
+        local health
+        health="$(check_port)"
+        if [ "$health" = "200" ]; then
+            local api_resp
+            api_resp="$(api_call GET /api/runtime/status 2>/dev/null || echo "")"
+            if echo "$api_resp" | grep -q '"enabled":true' 2>/dev/null; then
+                api_status=" (网关运行中: 已生效)"
+            elif echo "$api_resp" | grep -q '"enabled":false' 2>/dev/null; then
+                api_status=" (网关运行中: 未生效，需重启)"
+            fi
+        fi
+
+        echo ""
+        printf "  ╔══════════════════════════════════════╗\n"
+        printf "  ║     自建推理管线配置                   ║\n"
+        printf "  ╠══════════════════════════════════════╣\n"
+        printf "  ║  状态: %-31s%s║\n" "$rt_status$api_status" ""
+        printf "  ║  LLM Provider: %-23s║\n" "${llm_provider:-未设置}"
+        printf "  ║  LLM Model:    %-23s║\n" "${llm_model:-未设置}"
+        printf "  ║  LLM Base URL: %-23s║\n" "${llm_baseurl:-默认}"
+        if [ -n "$llm_apikey" ]; then
+            local masked_key="***${llm_apikey: -4}"
+            printf "  ║  LLM API Key:  %-23s║\n" "$masked_key"
+        else
+            printf "  ║  LLM API Key:  %-23s║\n" "未设置"
+        fi
+        printf "  ╠══════════════════════════════════════╣\n"
+        printf "  ║  1) 启用推理管线                      ║\n"
+        printf "  ║  2) 禁用推理管线                      ║\n"
+        printf "  ║  3) 配置 LLM                          ║\n"
+        printf "  ║  4) 查看运行状态                      ║\n"
+        printf "  ║  0) 返回                              ║\n"
+        printf "  ╚══════════════════════════════════════╝\n"
+        printf "  选择: "
+
+        local choice
+        read -r choice
+
+        case "$choice" in
+            1)
+                env_set_val GATEWAY_RUNTIME_ENABLED true "$env_file"
+                success "自建推理管线已启用（写入 .env）"
+                # 如果 LLM 未配置，提示配置
+                if [ -z "$llm_model" ] || [ -z "$llm_apikey" ]; then
+                    warn "LLM 配置不完整，建议立即配置（选 3）"
+                fi
+                # 检查网关是否运行中，提示重启
+                if [ "$health" = "200" ]; then
+                    info "网关正在运行，需重启使配置生效"
+                    printf "立即重启？(y/n) [y]: "
+                    read -r reply
+                    if [ "$reply" != "n" ] && [ "$reply" != "N" ]; then
+                        restart_gateway || warn "重启失败，请手动重启"
+                    fi
+                fi
+                log_action "INFO" "Runtime 已启用"
+                ;;
+            2)
+                env_set_val GATEWAY_RUNTIME_ENABLED false "$env_file"
+                success "自建推理管线已禁用（写入 .env）"
+                if [ "$health" = "200" ]; then
+                    info "网关正在运行，需重启使配置生效"
+                    printf "立即重启？(y/n) [y]: "
+                    read -r reply
+                    if [ "$reply" != "n" ] && [ "$reply" != "N" ]; then
+                        restart_gateway || warn "重启失败，请手动重启"
+                    fi
+                fi
+                log_action "INFO" "Runtime 已禁用"
+                ;;
+            3)
+                echo ""
+                printf "LLM Provider [openai]: "
+                read -r provider
+                provider="${provider:-openai}"
+                env_set_val GATEWAY_LLM_PROVIDER "$provider" "$env_file"
+
+                printf "API Base URL (留空用默认): "
+                read -r baseurl
+                if [ -n "$baseurl" ]; then
+                    env_set_val GATEWAY_LLM_BASE_URL "$baseurl" "$env_file"
+                fi
+
+                printf "API Key: "
+                read -r apikey
+                if [ -n "$apikey" ]; then
+                    env_set_val GATEWAY_LLM_API_KEY "$apikey" "$env_file"
+                fi
+
+                printf "模型名 [gpt-4o-mini]: "
+                read -r model
+                model="${model:-gpt-4o-mini}"
+                env_set_val GATEWAY_LLM_MODEL "$model" "$env_file"
+
+                success "LLM 配置已写入 .env"
+                log_action "INFO" "Runtime LLM 配置已更新"
+                ;;
+            4)
+                echo ""
+                if [ "$health" = "200" ]; then
+                    info "网关运行中，查询 runtime 状态..."
+                    local resp
+                    resp="$(api_call GET /api/runtime/status 2>/dev/null || echo "")"
+                    if [ -n "$resp" ]; then
+                        echo "$resp" | node -e "
+                            try {
+                                const d = JSON.parse(require('fs').readFileSync(0,'utf8'));
+                                console.log('  enabled: ' + d.enabled);
+                                if (d.assets) {
+                                    console.log('  角色卡: ' + d.assets.characters);
+                                    console.log('  世界书: ' + d.assets.worldbooks);
+                                    console.log('  预设:   ' + d.assets.presets);
+                                    console.log('  存档:   ' + d.assets.archives);
+                                }
+                                if (d.profiles !== undefined) console.log('  Profiles: ' + d.profiles);
+                                if (d.message) console.log('  消息: ' + d.message);
+                            } catch(e) { console.log('  (解析失败)'); }
+                        " 2>/dev/null
+                    else
+                        warn "无法获取 runtime 状态"
+                    fi
+                else
+                    warn "网关未运行，无法查询 API 状态"
+                    info "当前 .env 配置: runtime=$rt_status, model=$llm_model"
+                fi
+                echo ""
+                printf "按回车继续..."
+                read -r
+                ;;
+            0|q|Q) break ;;
+            *) warn "无效选择" ;;
+        esac
+    done
+}
+
+# ═══════════════════════════════════════════════════════════
 # 鉴权 Token 获取
 # ═══════════════════════════════════════════════════════════
 
@@ -2337,6 +2526,8 @@ SillyTavern Gateway 管理工具 v1.1.1
   plugins         插件管理
   platforms       平台管理（含适配器一键安装）
   skills          Skill 管理（含编辑功能）
+  runtime         自建推理管线配置（启用/禁用/LLM配置）
+  log             查看日志（网关输出/管理日志/保活日志）
   keepalive       Termux 保活设置
   rollback        回滚上次更新
   check-restart   检查并自动重启（供 cron/bashrc 调用）
@@ -2347,6 +2538,8 @@ SillyTavern Gateway 管理工具 v1.1.1
   ./gateway-manager.sh install            # 安装
   ./gateway-manager.sh start              # 启动
   ./gateway-manager.sh token              # 获取鉴权 Token
+  ./gateway-manager.sh runtime            # 配置自建推理管线
+  ./gateway-manager.sh log                # 查看日志
   ./gateway-manager.sh platforms          # 平台管理（可安装飞书/钉钉/QQ官方适配器）
   ./gateway-manager.sh skills             # Skill 管理（可编辑文档）
 
@@ -2379,7 +2572,7 @@ main_menu() {
         printf "  ║  7) 状态      8) 插件      9) 平台   ║\n"
         printf "  ║ 10) Skill    11) 保活     12) 日志  ║\n"
         printf "  ║ 13) 回滚     14) systemd  15) Token ║\n"
-        printf "  ║  0) 退出                              ║\n"
+        printf "  ║ 16) Runtime  0) 退出                ║\n"
         printf "  ╚══════════════════════════════════════╝\n"
         printf "  选择: "
 
@@ -2401,6 +2594,7 @@ main_menu() {
             13) cmd_rollback ;;
             14) generate_systemd_unit ;;
             15) cmd_show_token ;;
+            16) cmd_runtime ;;
             0|q|Q)
                 echo "再见！"
                 break
@@ -2463,6 +2657,8 @@ main() {
         restart)     restart_gateway ;;
         status)      get_status ;;
         token)       cmd_show_token ;;
+        log)         show_logs ;;
+        runtime)     cmd_runtime ;;
         plugins)     manage_plugins ;;
         platforms)   manage_platforms ;;
         skills)      manage_skills ;;

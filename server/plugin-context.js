@@ -23,7 +23,7 @@ export class PluginContext {
     constructor(options = {}) {
         const {
             message, gateway, sessionManager, configManager, pluginName, commandArgs,
-            gatewayConfig, llm, fs, assets, agent,
+            gatewayConfig, llm, fs, assets, agent, surface,
         } = options;
 
         // 消息信息
@@ -63,6 +63,9 @@ export class PluginContext {
         // 按插件权限收窄的 Agent 框架服务。由 PluginManager 注入；
         // 未声明 "agent" 权限时为拒绝桩，调用即抛错。缺失时 ctx.agent 抛提示。
         this._agent = agent || null;
+        // 按插件权限收窄的表现层服务。由 PluginManager 注入；
+        // 未声明 "surface" 权限时为拒绝桩，调用即抛错。缺失时 ctx.surface 抛提示。
+        this._surface = surface || null;
         this._pluginName = pluginName || '';
     }
 
@@ -300,6 +303,26 @@ export class PluginContext {
             );
         }
         return this._agent;
+    }
+
+    /**
+     * 表现层服务（受 "surface" 权限约束）。
+     *
+     * 用法：
+     *   ctx.surface.register({ name, surfaceType, render(result, ctx) {...} });
+     *   ctx.surface.bindPrimary(`${platform}:${chatId}`, 'im-default');
+     *   await ctx.surface.dispatch(agentRunResult, ctx, { primarySurfaceType: 'im' });
+     *   const adapters = ctx.surface.getAdapters();
+     *
+     * 未声明 "surface" 权限时，调用任何方法会抛出清晰错误。
+     */
+    get surface() {
+        if (!this._surface) {
+            throw new Error(
+                `插件 ${this._pluginName || '?'} 使用 ctx.surface 需要 "surface" 权限，请在 plugin.json 的 permissions 中声明`,
+            );
+        }
+        return this._surface;
     }
 
     /**

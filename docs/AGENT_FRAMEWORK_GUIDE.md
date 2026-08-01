@@ -20,6 +20,10 @@
 10. [从 ST 卡片迁移](#10-从-st-卡片迁移)
 11. [示例](#11-示例)
 12. [故障排除](#12-故障排除)
+13. [表现层抽象 ctx.surface](#13-表现层抽象-ctxsurface)
+14. [Workspace + Journal（可审计可回滚）](#14-workspace--journal可审计可回滚)
+15. [权限扩展（surface / workspace / agent）](#15-权限扩展surface--workspace--agent)
+16. [整合验证与性能（Task 7）](#16-整合验证与性能task-7)
 
 ---
 
@@ -948,6 +952,167 @@ export default class MyToolsPlugin extends GatewayPlugin {
 
 ---
 
+## 13. 表现层抽象 ctx.surface
+
+> 对应 spec `design-agent-platform` Task 1/2/3/4。把"引擎产出"与"界面渲染"解耦，一套 Agent 引擎驱动 IM / ST / Native 三套界面。
+
+### 13.1 AgentRunResult 数据契约
+
+Agent 一次 run 完成后产出 `AgentRunResult`（`server/agent/run-result.js`），由表现层适配器消费：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `artifacts` | `Array<{id?,type?,text}>` | 正文 / 大纲 / 草稿等产物 |
+| `options` | `Array<{label,text,callbackId?}>` | 玩家行动选项 |
+| `state` | `{visible,private}` | 本轮状态快照（可见层 + 私有层） |
+| `events` | `Array<{type,payload,seq}>` | 本轮事件流（工具调用 / 子代理 / 状态变更） |
+| `meta` | `{viewMode,style,turn,referencedMemory}` | 视角模式 / 文风 / 轮次 / 引用记忆 |
+
+```js
+import { AgentRunResult, AgentEventType } from '../../server/agent/run-result.js';
+const result = AgentRunResult.fromRunResult('正文…', 3, 'run-123', { viewMode: 'actor', turn: 5 });
+result.addEvent(AgentEventType.TOOL_CALL, { tool: 'state.write', args: { scene: '酒馆' } });
+```
+
+### 13.2 注册表现层适配器
+
+插件在 `onLoad()` 中通过 `ctx.surface.register(adapter)` 注册适配器（需声明 `surface` 权限）：
+
+```js
+async onLoad() {
+  this._unregister = ctx.surface.register({
+    name: 'im-default',
+    surfaceType: 'im',           // 'im' | 'st' | 'native' | 自定义
+    async render(agentRunResult, ctx) {
+      // 把 AgentRunResult 渲染为 IM 文字 + 选项 + 状态图
+      return { ok: true };
+    },
+  });
+}
+async onUnload() { this._unregister?.(); }
+```
+
+### 13.3 主适配器 + 旁路适配器
+
+一个会话可绑定**一个主适配器**（必调）+ **多个旁路适配器**（可选，互不影响）：
+
+```js
+await ctx.surface.dispatch(agentRunResult, ctx, {
+  primarySurfaceType: 'im',          // 主渲染（IM 文字）
+  bypassSurfaceTypes: ['native'],    // 旁路（推送到 Agent 剧场面板）
+});
+```
+
+也可为会话绑定固定主适配器：`ctx.surface.bindPrimary(`${platform}:${chatId}`, 'im-default')`。
+
+### 13.4 三套内置界面
+
+| 界面 | 适配器 | 说明 |
+|------|--------|------|
+| IM 增强 | `agent-rp`（`surfaceType: 'im'`） | 正文分段 + `>选项X：` 按钮（复用 option-splitter）+ 状态图（复用 message-to-image） |
+| ST 兼容桥 | `server/index.js` 路由 shim | `/api/generate` 触发 `ctx.agent.run`，回传 artifacts 给真实 ST 前端 |
+| Agent 专用前端 | `panel.html` "Agent 剧场" | SSE 订阅 AgentRunResult 流，时间线 + 状态面板 + 边玩边改 |
+
+---
+
+## 14. Workspace + Journal（可审计可回滚）
+
+> 对应 spec Task 5 / 借鉴 TauriTavern 的 Workspace-as-Truth。所有变更先写 run 级 workspace，commit 才 promote 到会话级稳定层，失败 / 取消不污染。
+
+### 14.1 目录结构
+
+```
+data/plugins/agent-framework/
+├── runs/<run-id>/
+│   ├── manifest.json       run 元信息（agent / sessionId / tools）
+│   ├── events.jsonl        append-only 事件流（seq 单调递增）
+│   ├── output/             run 级产物（commit 时 promote）
+│   ├── scratch/            run 级临时文件
+│   └── checkpoints/<cp-id>/  关键节点快照
+└── sessions/<session-id>/persist/  会话级稳定层（commit 合并目标）
+```
+
+### 14.2 事件流与 seq
+
+每次工具调用 / 状态变更 / 子代理触发都 `appendEvent` 到 `events.jsonl`，seq 从 1 起单调递增。`getEvents(runId, { afterSeq, limit })` 供时间线 UI 重建。
+
+**性能（SubTask 7.2）**：`appendEvent` 不每次 `fs.appendFileSync`，而是按 run 聚合到内存写入缓冲，每 100ms 或读取 / 检查点 / commit 前 flush。100 次 `appendEvent` 约 3ms（基准测试守护：`test/performance.test.js`）。
+
+### 14.3 Checkpoint / Commit / Rollback
+
+```js
+// 关键节点自动 checkpoint（init / after-draft / before-commit）
+ws.createCheckpoint(runId, 'after-draft');
+
+// 成功才 commit：output/ promote 到会话级 persist/（合并覆盖）
+const promoted = ws.commit(runId);  // ['state.json', 'inventory.json']
+
+// 失败 / 取消 rollback：从 checkpoint 恢复 output/，events.jsonl 保持 append-only
+ws.rollback(runId, checkpointId);
+```
+
+### 14.4 多 Bot 协同（workspace 共享）
+
+多个 bot 绑定不同 Agent Profile，但用**同一 sessionId** 调 `ctx.agent.run()`：每次 run 各自隔离，但 `commit` 都 promote 到同一 `sessions/<sessionId>/persist/`，实现状态共享。需声明 `agent` + `workspace` 权限。
+
+---
+
+## 15. 权限扩展（surface / workspace / agent）
+
+> 对应 spec Task 7.3。三项权限均**非默认授予**（`default: false`），未声明时调用即抛清晰错误。
+
+| 权限 | risk | 说明 |
+|------|------|------|
+| `agent` | medium | 使用 Agent 框架（注册工具 / 调度子代理 / 触发 run） |
+| `surface` | medium | 注册表现层适配器（消费 AgentRunResult 渲染到界面） |
+| `workspace` | low | 跨插件共享 workspace（多 Bot 协同场景） |
+
+`plugin.json` 声明示例（agent-rp）：
+
+```json
+{
+  "permissions": ["llm", "fs", "assets", "gateway.inbound", "sessions", "agent", "surface", "workspace"]
+}
+```
+
+**隔离规则**：
+- 未声明 `surface` → `ctx.surface.register` 抛 `需要 "surface" 权限`
+- 未声明 `agent` → `ctx.agent.run` / `registerTool` 抛 `需要 "agent" 权限`
+- workspace 共享通过 `ctx.agent.run()` 触发，故 `agent` 是 workspace 共享的前置闸门
+- 不同插件各自按自身权限收窄，互不影响（A 有 surface 不意味着 B 也有）
+
+回归守护见 `test/permissions-surface-workspace.test.js`（23 项）。
+
+---
+
+## 16. 整合验证与性能（Task 7）
+
+### 16.1 三界面端到端联调
+
+同一 `AgentRunResult` 同时分发给 IM / ST / Native 三个适配器（主 + 旁路），验证表现层抽象不丢适配器、不重复调用。守护：`test/integration-multi-surface.test.js`。
+
+### 16.2 性能基准
+
+| 基准 | 阈值 | 守护测试 |
+|------|------|----------|
+| 100 次 `appendEvent` | < 200ms | `performance.test.js` |
+| `dispatch` 单次（3 适配器） | < 20ms | 同上 |
+| 10 客户端 SSE 广播 | < 50ms | 同上 |
+| 100 轮综合 run | < 15s（回归告警，不强 fail） | 同上 |
+
+关键优化：写入缓冲（批处理 IO）+ seq 内存计数器（不重读文件）+ `agent-runner` finally 块 `flushRun` 保证审计事件不丢。
+
+### 16.3 与现有插件协同
+
+| 插件 | 协同点 | 守护 |
+|------|--------|------|
+| `option-splitter` | `>选项X：` 格式契约（中/阿数字） | `plugin-coordination.test.js` |
+| `message-to-image` | `ImageRenderer` 命名导出复用 + 降级文本 | 同上 |
+| `rp-memory` | 过滤链无冲突（剥离 `<summary>` 不破坏选项行） | 同上 |
+| `group-rp-bidding` | 命令空间隔离 + endMarker 不误匹配选项 | 同上 |
+
+---
+
 ## 附录：相关文件
 
 | 文件 | 说明 |
@@ -961,4 +1126,17 @@ export default class MyToolsPlugin extends GatewayPlugin {
 | `plugins/agent-framework/engine/memory-engine.js` | 记忆引擎 |
 | `server/agent/context-builder.js` | 上下文构建器 |
 | `server/agent/pipeline.js` | 多阶段流水线引擎 |
+| `server/agent/run-result.js` | AgentRunResult 数据契约（artifacts/options/state/events/meta） |
+| `server/agent/surface-manager.js` | 表现层调度器（主 + 旁路适配器） |
+| `server/agent/theatre-broadcaster.js` | SSE 广播器（AgentRunResult 推送到面板） |
+| `plugins/agent-framework/engine/workspace-manager.js` | Workspace + Journal（可审计可回滚） |
 | `plugins/agent-framework/templates/` | Agent 模板文件 |
+
+**Task 7 测试文件**：
+
+| 测试文件 | 覆盖 |
+|----------|------|
+| `test/integration-multi-surface.test.js` | 三界面端到端联调（SubTask 7.1） |
+| `test/performance.test.js` | 性能基准：写入缓冲 / dispatch / SSE（SubTask 7.2） |
+| `test/permissions-surface-workspace.test.js` | surface/workspace/agent 权限隔离（SubTask 7.3） |
+| `test/plugin-coordination.test.js` | 与现有插件协同验证（SubTask 7.4） |
