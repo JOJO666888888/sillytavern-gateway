@@ -80,7 +80,7 @@ export class AgentRunner {
             // 5. 执行 agent loop
             const sampling = {
                 temperature: definition.model?.temperature ?? 0.8,
-                max_tokens: definition.model?.maxTokens ?? 2048,
+                max_tokens: definition.model?.maxTokens ?? 32768,
             };
             const maxSteps = definition.maxSteps || 10;
 

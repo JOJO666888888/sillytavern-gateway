@@ -17,6 +17,6 @@
         "autoReplyInGroup": false,
         "historyLimit": 10,
         "temperature": 0.8,
-        "maxTokens": 1024
+        "maxTokens": 8192
     }
 }

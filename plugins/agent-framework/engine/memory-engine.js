@@ -186,7 +186,7 @@ export class MemoryEngine {
         ];
 
         try {
-            const summary = await this.llm.chat(messages, { temperature: 0.3, max_tokens: 512 });
+            const summary = await this.llm.chat(messages, { temperature: 0.3, max_tokens: 4096 });
             if (summary && summary.trim()) {
                 this.update('project', summary.trim(), namespace);
                 return summary.trim();

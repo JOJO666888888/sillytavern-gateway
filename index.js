@@ -3311,7 +3311,7 @@ function newAgent() {
         '  - memory.recall',
         'model:',
         '  temperature: 0.8',
-        '  maxTokens: 2048',
+        '  maxTokens: 32768',
         'maxSteps: 10',
         'context:',
         '  historyLimit: 20',

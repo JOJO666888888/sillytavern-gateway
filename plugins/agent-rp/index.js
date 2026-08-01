@@ -749,7 +749,7 @@ export default class AgentRPPlugin extends GatewayPlugin {
 
         const sampling = {
             temperature: this.getConfig('temperature') ?? 0.8,
-            max_tokens: this.getConfig('maxTokens') ?? 2048,
+            max_tokens: this.getConfig('maxTokens') ?? 32768,
         };
 
         let fullReply = '';
@@ -1387,7 +1387,7 @@ ${sections.join('')}
 
             const summary = await ctx.llm.chat(summaryMessages, {
                 temperature: 0.3,
-                max_tokens: 512,
+                max_tokens: 4096,
             });
 
             if (summary && summary.trim()) {

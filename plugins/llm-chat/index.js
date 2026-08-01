@@ -83,7 +83,7 @@ export default class LLMChatPlugin extends GatewayPlugin {
         try {
             const reply = await ctx.llm.chat(messages, {
                 temperature: this.getConfig('temperature') ?? 0.7,
-                max_tokens: this.getConfig('maxTokens') ?? 1024,
+                max_tokens: this.getConfig('maxTokens') ?? 32768,
             });
 
             await ctx.reply(reply);

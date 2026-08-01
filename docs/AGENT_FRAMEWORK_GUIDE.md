@@ -236,7 +236,7 @@ maxSteps: 15                   # 可选，最大工具调用步数（默认10）
 # === 模型采样参数 ===
 model:                         # 可选
   temperature: 0.8
-  maxTokens: 2048
+  maxTokens: 32768
 
 # === 命令 ===
 commands:                      # 可选，声明的命令（当前仅用于展示）

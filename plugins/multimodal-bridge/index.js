@@ -70,7 +70,7 @@ export default class MultimodalBridgePlugin extends GatewayPlugin {
         try {
             const reply = await ctx.llm.chat(
                 [{ role: 'user', content: parts }],
-                { max_tokens: this.getConfig('maxTokens') ?? 512 },
+                { max_tokens: this.getConfig('maxTokens') ?? 8192 },
             );
             return ctx.reply(reply);
         } catch (e) {

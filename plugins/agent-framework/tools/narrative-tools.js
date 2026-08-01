@@ -34,7 +34,7 @@ export function createNarrativeTools() {
                 ];
 
                 try {
-                    const text = await llm.chat(messages, { temperature: 0.8, max_tokens: 2048 });
+                    const text = await llm.chat(messages, { temperature: 0.8, max_tokens: 32768 });
                     return { text: text || '' };
                 } catch (e) {
                     return { error: `生成失败: ${e.message}` };

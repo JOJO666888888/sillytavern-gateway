@@ -75,7 +75,7 @@ export class SubagentDispatcher {
         // 执行
         const sampling = {
             temperature: definition.model?.temperature ?? 0.5, // 子代理用较低温度
-            max_tokens: definition.model?.maxTokens ?? 1024,
+            max_tokens: definition.model?.maxTokens ?? 16384,
         };
         const maxSteps = definition.maxSteps || 5;
 

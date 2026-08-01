@@ -130,7 +130,7 @@ export default class PersonaRouterPlugin extends GatewayPlugin {
         try {
             const reply = await ctx.llm.chat(messages, {
                 temperature: this.getConfig('temperature') ?? 0.8,
-                max_tokens: this.getConfig('maxTokens') ?? 1024,
+                max_tokens: this.getConfig('maxTokens') ?? 8192,
             });
 
             await ctx.reply(reply);

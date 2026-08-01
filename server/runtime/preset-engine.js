@@ -36,8 +36,9 @@ const DEFAULT_SAMPLING = {
     // 推理模型（如 deepseek-v4-pro）会先消耗思维链 token 再产出正文，
     // max_tokens 过小会被思维链吃光导致空回复或正文截断。
     // 这里是"无下限配置时的兜底"；真实下限由 runtime.llm.maxTokens 控制
-    // (buildPrompt 会取 max(预设值, 下限))。RP 场景务必把下限调大(≥32768)。
-    max_tokens: 4096,
+    // (buildPrompt 会取 max(预设值, 下限))。2026 年主流模型输出上限 128K-384K，
+    // RP 场景务必把下限调大(≥131072)。
+    max_tokens: 32768,
     frequency_penalty: 0,
     presence_penalty: 0,
 };

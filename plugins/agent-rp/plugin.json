@@ -16,7 +16,7 @@
         "defaultStyle": { "type": "string", "default": "", "description": "默认文风文件名（留空则不加载文风）" },
         "historyLimit": { "type": "number", "default": 20, "min": 0, "max": 100, "description": "带入模型的历史消息轮数" },
         "temperature": { "type": "number", "default": 0.8, "min": 0, "max": 2, "description": "采样温度（RP 场景建议 0.7-1.0）" },
-        "maxTokens": { "type": "number", "default": 2048, "min": 256, "max": 8192, "description": "最大生成 token 数" },
+        "maxTokens": { "type": "number", "default": 32768, "min": 256, "max": 393216, "description": "最大生成 token 数" },
         "systemPromptTemplate": { "type": "string", "default": "", "description": "自定义 system prompt 模板（留空用内置默认）" },
         "stripOptions": { "type": "boolean", "default": true, "description": "是否从正文中提取选项（与 option-splitter 协同）" },
         "summaryInterval": { "type": "number", "default": 10, "min": 3, "max": 50, "description": "每 N 轮自动生成剧情摘要写入 memory/project.md（0=禁用）" },

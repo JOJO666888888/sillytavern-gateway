@@ -15,6 +15,6 @@
         "autoReplyInGroup": { "type": "boolean", "default": false, "description": "群聊中是否也自动回复（仅在被@时）" },
         "historyLimit": { "type": "number", "default": 10, "min": 0, "max": 50, "description": "带入模型的历史轮数（0=不带历史）" },
         "temperature": { "type": "number", "default": 0.7, "min": 0, "max": 2, "description": "采样温度" },
-        "maxTokens": { "type": "number", "default": 1024, "min": 1, "max": 8192, "description": "最大生成 token 数" }
+        "maxTokens": { "type": "number", "default": 32768, "min": 1, "max": 393216, "description": "最大生成 token 数" }
     }
 }

@@ -17,11 +17,12 @@ describe('runtime.llm.maxTokens 下限默认值', () => {
         assert.ok(mt > 0, `maxTokens 下限应为正数，实际 ${mt}`);
     });
 
-    test('源码默认值足够慷慨（≥16384，RP 长思考/长输出）', () => {
-        // 源码默认 16384；若实例配置更高则保留实例值，故用 >= 断言
+    test('源码默认值足够慷慨（≥131072，2026 年主流模型长输出）', () => {
+        // 2026 年主流模型最大输出：DeepSeek V4 384K / Kimi K2.6 262K / GLM-5.2 131K
+        // 源码默认 131072；若实例配置更高则保留实例值，故用 >= 断言
         assert.ok(
-            configManager.config.runtime.llm.maxTokens >= 16384,
-            `maxTokens 默认下限应 ≥16384，实际 ${configManager.config.runtime.llm.maxTokens}`,
+            configManager.config.runtime.llm.maxTokens >= 131072,
+            `maxTokens 默认下限应 ≥131072，实际 ${configManager.config.runtime.llm.maxTokens}`,
         );
     });
 });

@@ -409,7 +409,7 @@ export function createStShim(deps = {}) {
             persona_description: '',
             preset: 'default',
             temperature: 0.9,
-            max_context: 8000,
+            max_context: 262144,
             // ST 期望这些字段存在
             api_server: '',
             chat_starting_stage: 0,

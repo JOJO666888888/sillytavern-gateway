@@ -141,8 +141,11 @@ const DEFAULT_CONFIG = {
             // 若 max_tokens 过小：思维链吃光预算 -> 空回复，或正文半途截断 finish_reason=length。
             // 该下限会被应用到实际请求与历史截断预留额度上(见 preset-engine.buildPrompt)，
             // 当预设自带更大的 max_tokens 时保留预设值(预设优先)。0 表示不设下限。
-            // 源码默认 16384 是大多数模型的安全值；RP 场景建议在实例配置里调到 32768+。
-            maxTokens: 16384,
+            // 2026 年主流模型最大输出：DeepSeek V4 384K / Kimi K2.6 262K / GLM-5.2 131K。
+            // 源码默认 131072（128K）：覆盖 GLM-5.2 最大输出，DeepSeek V4 / Kimi K2.6 均支持更大。
+            // max_tokens 设大是安全的--模型在内容完成后自然停止，不会因上限大就多生成。
+            // 对输出上限更小的模型，API 会自动截断，不会报错。
+            maxTokens: 131072,
         },
         defaults: {                       // 新会话的默认 Profile
             character: '',
