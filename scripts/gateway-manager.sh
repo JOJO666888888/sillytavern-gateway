@@ -976,6 +976,44 @@ cmd_rollback() {
 # 进程管理
 # ═══════════════════════════════════════════════════════════
 
+# systemd 委托：服务器环境优先用 systemd 管理网关，避免 nohup 实例与 systemd
+# 服务抢端口（历史故障：两者并存导致端口冲突、systemd 反复重启失败）。
+# 无 systemd 的环境（如 Termux）仍走下方 nohup + PID 文件逻辑。
+
+# 检测已安装的网关 systemd 服务名。兼容 sillytavern-gateway（实际服务名）与
+# gateway（generate_systemd_unit 生成的默认名）。命中则设置 SYSTEMD_SERVICE_NAME 并返回 0。
+SYSTEMD_SERVICE_NAME=""
+detect_systemd_service() {
+    [ "$OS_TYPE" = "termux" ] && return 1
+    command -v systemctl >/dev/null 2>&1 || return 1
+    local name
+    for name in sillytavern-gateway gateway; do
+        if systemctl cat -- "${name}.service" >/dev/null 2>&1; then
+            SYSTEMD_SERVICE_NAME="$name"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# 用 systemd 执行 start/stop/restart/status。已委托返回 0；无 systemd 服务返回 1
+# （调用方据此回退到 nohup 逻辑）。检测到 systemd 服务后不再回退--失败要暴露而非悄悄 nohup。
+try_systemd() {
+    local action="$1"
+    detect_systemd_service || return 1
+    info "检测到 systemd 服务: $SYSTEMD_SERVICE_NAME，委托 systemctl $action"
+    if [ "$action" = "status" ]; then
+        systemctl status "$SYSTEMD_SERVICE_NAME" --no-pager 2>/dev/null || true
+        return 0
+    fi
+    if [ "$(id -u)" -eq 0 ]; then
+        systemctl "$action" "$SYSTEMD_SERVICE_NAME"
+    else
+        sudo systemctl "$action" "$SYSTEMD_SERVICE_NAME"
+    fi
+    return 0
+}
+
 start_gateway() {
     [ -z "${INSTALL_DIR:-}" ] && { error "未检测到安装目录"; return 1; }
     cd "$INSTALL_DIR"
@@ -3731,10 +3769,10 @@ main() {
         install)     cmd_install ;;
         uninstall)   cmd_uninstall ;;
         update)      cmd_update ;;
-        start)       start_gateway ;;
-        stop)        stop_gateway ;;
-        restart)     restart_gateway ;;
-        status)      get_status ;;
+        start)       try_systemd start   || start_gateway ;;
+        stop)        try_systemd stop    || stop_gateway ;;
+        restart)     try_systemd restart || restart_gateway ;;
+        status)      try_systemd status  || get_status ;;
         token)       cmd_show_token ;;
         log)         show_logs ;;
         runtime)     cmd_runtime ;;
