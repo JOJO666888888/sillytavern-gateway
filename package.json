@@ -12,7 +12,7 @@
     "token": "node scripts/show-token.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "keywords": [
     "sillytavern",
