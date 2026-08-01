@@ -566,6 +566,18 @@
                         </button>
                     </div>
                     <div id="gateway_theatre_save_hint" class="gateway-hint" style="display:none;"></div>
+
+                    <!-- AI 助手：自然语言修改配置（Task: AI 辅助页面修改系统） -->
+                    <div class="gateway-field">
+                        <label>🤖 AI 助手（自然语言修改配置）</label>
+                        <textarea id="gateway_theatre_ai_input" class="text_pole" rows="3" placeholder="用大白话描述你想怎么改，例如：&#10;• 把文风变得更黑暗一点&#10;• 增加一个审查角色一致性的子代理&#10;• 让叙事更长更详细"></textarea>
+                        <div class="gateway-field-row">
+                            <button id="gateway_theatre_ai_plan" class="menu_button"><i class="fa-solid fa-wand-magic-sparkles"></i> 生成修改方案</button>
+                            <button id="gateway_theatre_ai_undo" class="menu_button" title="撤销上次 AI 修改"><i class="fa-solid fa-rotate-left"></i> 撤销</button>
+                            <span id="gateway_theatre_ai_history" class="gateway-hint"></span>
+                        </div>
+                        <div id="gateway_theatre_ai_plan_view" class="gateway-ai-plan-view" style="display:none;"></div>
+                    </div>
                 </div>
 
                 <!-- 中间：正文流 + 事件流 + 选项区 + 输入框 -->
@@ -1182,6 +1194,58 @@
         var observer = new MutationObserver(function () { tryLoad(); });
         observer.observe(theatreBody, { attributes: true, attributeFilter: ['style'] });
         // 页面加载时若已展开，直接加载
+        tryLoad();
+    }
+})();
+</script>
+
+<!-- AI 辅助修改脚本加载器（Task: AI 辅助页面修改系统） -->
+<!-- 当 "Agent 剧场" 区块展开时，于 panel-agent-theatre.js 之后动态注入 panel-ai-modifier.js -->
+<script>
+(function () {
+    'use strict';
+
+    var aiModifierLoaded = false;
+
+    /** 动态注入 panel-ai-modifier.js（从网关 URL 拉，避免相对路径问题） */
+    function loadAiModifierScript() {
+        if (aiModifierLoaded) return;
+        if (window.__gatewayAiModifierInit) { aiModifierLoaded = true; return; }
+        var urlEl = document.getElementById('gateway_panel_url');
+        if (!urlEl) return;
+        var base = (urlEl.value || 'http://127.0.0.1:3210').trim();
+        if (!base) return;
+        var s = document.createElement('script');
+        s.src = base + '/ai-modifier.js';
+        s.async = true;
+        s.onload = function () {
+            console.log('[Gateway] AI 助手脚本已加载');
+            // 脚本自动初始化，这里再做一次显式调用兜底
+            if (window.GatewayAiModifier && typeof window.GatewayAiModifier.init === 'function') {
+                try { window.GatewayAiModifier.init(); } catch (e) { /* 静默，脚本内部已 init 过 */ }
+            }
+        };
+        s.onerror = function () {
+            console.warn('[Gateway] AI 助手脚本加载失败，请确认网关地址正确并已启动');
+        };
+        document.head.appendChild(s);
+        aiModifierLoaded = true;
+    }
+
+    /** 监听 Agent 剧场区块展开 */
+    function tryLoad() {
+        if (aiModifierLoaded) return;
+        var body = document.getElementById('gateway_theatre_body');
+        if (!body) return;
+        if (body.style.display !== 'none') {
+            loadAiModifierScript();
+        }
+    }
+
+    var theatreBody = document.getElementById('gateway_theatre_body');
+    if (theatreBody) {
+        var observer = new MutationObserver(function () { tryLoad(); });
+        observer.observe(theatreBody, { attributes: true, attributeFilter: ['style'] });
         tryLoad();
     }
 })();

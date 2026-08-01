@@ -1388,6 +1388,239 @@
     min-width: 0;
 }
 
+/* ==================== AI 辅助修改 Profile（自然语言改配置） ==================== */
+
+/* 方案预览容器 */
+.gateway-ai-plan-view {
+    margin-top: 8px;
+}
+
+/* 方案预览卡片：边框 + 圆角 + 微黄背景 */
+.gateway-ai-plan-card {
+    border: 1px solid var(--SmartThemeBorderColor, #555);
+    border-radius: 6px;
+    padding: 10px;
+    background: rgba(255, 235, 150, 0.08);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+/* 理解复述：斜体灰色 */
+.gateway-ai-plan-understanding {
+    font-style: italic;
+    color: var(--SmartThemeBodyColor, #ccc);
+    opacity: 0.75;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+/* 修改要点摘要 */
+.gateway-ai-plan-summary {
+    font-size: 12px;
+    color: var(--SmartThemeBodyColor, #ddd);
+    line-height: 1.55;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* 修改列表 */
+.gateway-ai-plan-changes {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.gateway-ai-plan-change {
+    border-left: 3px solid var(--SmartThemeQuoteColor, #7a9ec2);
+    padding: 4px 8px;
+    background: rgba(128, 128, 128, 0.1);
+    border-radius: 0 4px 4px 0;
+    font-size: 12px;
+}
+
+.gateway-ai-plan-change-field {
+    font-weight: 600;
+    color: var(--SmartThemeBodyColor, #eee);
+    font-family: var(--codeFontFamily, monospace);
+    margin-bottom: 3px;
+}
+
+.gateway-ai-plan-change-diff {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.gateway-ai-plan-from {
+    color: #e57373;
+    text-decoration: line-through;
+    opacity: 0.85;
+    font-family: var(--codeFontFamily, monospace);
+    font-size: 11px;
+}
+
+.gateway-ai-plan-arrow {
+    opacity: 0.6;
+    font-size: 11px;
+}
+
+.gateway-ai-plan-to {
+    color: #81c784;
+    font-family: var(--codeFontFamily, monospace);
+    font-size: 11px;
+}
+
+.gateway-ai-plan-change-reason {
+    margin-top: 3px;
+    opacity: 0.7;
+    font-size: 11px;
+    line-height: 1.45;
+}
+
+.gateway-ai-plan-change-empty {
+    opacity: 0.6;
+    font-size: 11px;
+    font-style: italic;
+}
+
+/* 风险徽章行 */
+.gateway-ai-plan-risk-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.gateway-ai-plan-risk {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1.6;
+}
+
+.gateway-ai-plan-risk.low {
+    background: rgba(76, 175, 80, 0.22);
+    color: #81c784;
+    border: 1px solid rgba(76, 175, 80, 0.4);
+}
+
+.gateway-ai-plan-risk.medium {
+    background: rgba(255, 152, 0, 0.22);
+    color: #ffb74d;
+    border: 1px solid rgba(255, 152, 0, 0.4);
+}
+
+.gateway-ai-plan-risk.high {
+    background: rgba(244, 67, 54, 0.22);
+    color: #e57373;
+    border: 1px solid rgba(244, 67, 54, 0.5);
+}
+
+.gateway-ai-plan-risk-note {
+    font-size: 11px;
+    opacity: 0.8;
+    line-height: 1.45;
+}
+
+/* 确认/取消按钮行 */
+.gateway-ai-plan-actions {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-top: 4px;
+}
+
+/* 高风险应用按钮：红色 */
+.gateway-ai-apply-btn.gateway-ai-apply-danger {
+    background: rgba(244, 67, 54, 0.25);
+    border-color: rgba(244, 67, 54, 0.6);
+    color: #ff8a80;
+}
+
+.gateway-ai-apply-btn.gateway-ai-apply-danger:hover {
+    background: rgba(244, 67, 54, 0.4);
+}
+
+/* 二次确认武装态：脉冲边框 */
+.gateway-ai-apply-btn.gateway-ai-apply-armed {
+    animation: gateway-ai-pulse 1s ease-in-out infinite;
+}
+
+@keyframes gateway-ai-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(244, 67, 54, 0.5); }
+    50% { box-shadow: 0 0 0 4px rgba(244, 67, 54, 0); }
+}
+
+/* 错误提示 */
+.gateway-ai-plan-error {
+    border: 1px solid rgba(244, 67, 54, 0.5);
+    border-radius: 6px;
+    padding: 8px 10px;
+    background: rgba(244, 67, 54, 0.1);
+    color: #e57373;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+/* loading 动画：三个跳动点 + 文字 */
+.gateway-ai-loading {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 10px;
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    border-radius: 6px;
+    background: rgba(128, 128, 128, 0.08);
+}
+
+.gateway-ai-loading span {
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--SmartThemeBodyColor, #aaa);
+    opacity: 0.6;
+    animation: gateway-ai-bounce 1.2s infinite ease-in-out;
+}
+
+.gateway-ai-loading span:nth-child(2) {
+    animation-delay: 0.15s;
+}
+
+.gateway-ai-loading span:nth-child(3) {
+    animation-delay: 0.3s;
+}
+
+.gateway-ai-loading-text {
+    margin-left: 6px;
+    font-size: 12px;
+    opacity: 0.8;
+    animation: none !important;
+    width: auto !important;
+    height: auto !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+}
+
+@keyframes gateway-ai-bounce {
+    0%, 80%, 100% {
+        transform: scale(0.6);
+        opacity: 0.4;
+    }
+    40% {
+        transform: scale(1);
+        opacity: 0.9;
+    }
+}
+
+
 /* 世界书多选（checkbox 列表）*/
 .gateway-rt-wb-row {
     align-items: flex-start;

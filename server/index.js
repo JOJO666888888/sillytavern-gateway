@@ -28,6 +28,7 @@ import { registerRuntimeCommands } from './runtime/runtime-commands.js';
 import { createLLMService } from './llm-service.js';
 import { createStShim } from './compat/st-shim.js';
 import { TheatreBroadcaster } from './agent/theatre-broadcaster.js';
+import { createAiModifierHandlers, createProfileStore } from './ai-modifier.js';
 import multer from 'multer';
 
 const logger = createLogger('server');
@@ -48,6 +49,9 @@ let nativeRuntime = null;
 const theatreBroadcaster = new TheatreBroadcaster();
 // 插件 LLM 服务（runtime.llm 配置后供 agent run / 兼容桥 使用）
 let llmService = null;
+
+/** AI 辅助修改的快照历史：profileName -> [yamlSnapshot, ...]（最多保留 MAX_HISTORY 步） */
+const aiModifyHistory = new Map();
 
 /**
  * 判断请求 Origin 是否允许跨域。
@@ -1063,6 +1067,39 @@ app.get('/api/agent-theatre/state', (req, res) => {
     });
 });
 
+// ==================== AI 辅助修改 Profile（自然语言改配置） ====================
+//
+// 让无编程经验的用户用大白话修改 Agent Profile YAML。流程：
+//   1. /plan   调 LLM 生成结构化修改方案（不落盘），前端预览
+//   2. /apply  用户确认后写入，写入前先把当前 YAML 快照入栈（可撤销）
+//   3. /undo   从快照栈弹出最近一份覆盖回去
+//   4. /history 查询可撤销步数
+//
+// 处理逻辑封装在 server/ai-modifier.js，依赖通过工厂注入，便于单元测试。
+
+const aiModifierStore = createProfileStore({
+    getAgentFramework: () => pluginManager?.loader?.getPlugin('agent-framework'),
+});
+const aiModifierHandlers = createAiModifierHandlers({
+    getLlmService: () => llmService,
+    readCurrentYaml: aiModifierStore.readCurrentYaml,
+    writeYaml: aiModifierStore.writeYaml,
+    history: aiModifyHistory,
+    logger,
+});
+
+/** POST /api/agent-theatre/ai-modify/plan - 生成修改方案（不实际应用） */
+app.post('/api/agent-theatre/ai-modify/plan', aiModifierHandlers.plan);
+
+/** POST /api/agent-theatre/ai-modify/apply - 应用修改（先快照当前 YAML） */
+app.post('/api/agent-theatre/ai-modify/apply', aiModifierHandlers.apply);
+
+/** POST /api/agent-theatre/ai-modify/undo - 撤销上次修改 */
+app.post('/api/agent-theatre/ai-modify/undo', aiModifierHandlers.undo);
+
+/** GET /api/agent-theatre/ai-modify/history - 查询撤销历史计数 */
+app.get('/api/agent-theatre/ai-modify/history', aiModifierHandlers.history);
+
 /**
  * GET /agent-theatre.js - 公开提供 panel-agent-theatre.js 脚本（无需鉴权）。
  *
@@ -1073,6 +1110,21 @@ app.get('/agent-theatre.js', (req, res) => {
     const file = path.join(REPO_ROOT, 'panel-agent-theatre.js');
     if (!fs.existsSync(file)) {
         return res.status(404).send('// panel-agent-theatre.js not found');
+    }
+    res.type('application/javascript; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache');
+    fs.createReadStream(file).pipe(res);
+});
+
+/**
+ * GET /ai-modifier.js - 公开提供 panel-ai-modifier.js 脚本（无需鉴权）。
+ *
+ * panel.html 在 "Agent 剧场" 区块展开时随 panel-agent-theatre.js 之后动态注入。
+ */
+app.get('/ai-modifier.js', (req, res) => {
+    const file = path.join(REPO_ROOT, 'panel-ai-modifier.js');
+    if (!fs.existsSync(file)) {
+        return res.status(404).send('// panel-ai-modifier.js not found');
     }
     res.type('application/javascript; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache');
