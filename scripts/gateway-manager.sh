@@ -2406,6 +2406,1078 @@ cmd_runtime() {
 }
 
 # ═══════════════════════════════════════════════════════════
+# Agent 方案配置管理
+# ═══════════════════════════════════════════════════════════
+
+# ── 辅助函数 ──
+
+# 返回 agents 数据目录路径，不存在则创建
+agent_dir() {
+    local d="$DATA_DIR/plugins/agent-framework/agents"
+    mkdir -p "$d" 2>/dev/null
+    echo "$d"
+}
+
+# 返回模板目录路径
+agent_template_dir() {
+    echo "$INSTALL_DIR/plugins/agent-framework/templates"
+}
+
+# 从 YAML 文本提取顶层字段值（简易解析，不处理嵌套）
+agent_yaml_extract_field() {
+    local yaml_text="$1" field="$2"
+    echo "$yaml_text" | while IFS= read -r line; do
+        # 跳过空行和注释
+        [ -z "$line" ] && continue
+        case "$line" in \#*) continue ;; esac
+        # 匹配 field: value 格式（非缩进行）
+        if [[ "$line" =~ ^${field}:[[:space:]]*(.*)$ ]]; then
+            local val="${BASH_REMATCH[1]}"
+            # 去掉引号
+            val="${val#\"}"; val="${val%\"}"
+            val="${val#\'}"; val="${val%\'}"
+            echo "$val"
+            return
+        fi
+    done
+}
+
+# 统计 YAML 中 tools 段下的列表项数
+agent_yaml_count_tools() {
+    local yaml_text="$1"
+    local in_tools=0 count=0
+    # 注意：用 here-string 而非管道，避免 while 进入子 shell 导致 count 变更丢失
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^tools: ]]; then
+            in_tools=1
+            continue
+        fi
+        if [ "$in_tools" = "1" ]; then
+            # 遇到非缩进行，tools 段结束
+            case "$line" in
+                [[:space:]]*|[[:space:]]#*) ;;
+                "") continue ;;
+                *) break ;;
+            esac
+            [[ "$line" =~ ^[[:space:]]+-[[:space:]]*(.+) ]] && count=$((count + 1))
+        fi
+    done <<< "$yaml_text"
+    echo "$count"
+}
+
+# 统计 YAML 中 subAgents 段下的列表项数
+agent_yaml_count_subagents() {
+    local yaml_text="$1"
+    local in_sub=0 count=0
+    # 注意：用 here-string 而非管道，避免 while 进入子 shell 导致 count 变更丢失
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^subAgents: ]]; then
+            in_sub=1
+            continue
+        fi
+        if [ "$in_sub" = "1" ]; then
+            case "$line" in
+                [[:space:]]*|[[:space:]]#*) ;;
+                "") continue ;;
+                *) break ;;
+            esac
+            [[ "$line" =~ ^[[:space:]]+-[[:space:]]*name: ]] && count=$((count + 1))
+        fi
+    done <<< "$yaml_text"
+    echo "$count"
+}
+
+# 基础校验：检查 name 字段存在且非空
+agent_validate() {
+    local yaml_text="$1"
+    local name
+    name="$(agent_yaml_extract_field "$yaml_text" "name")"
+    if [ -z "$name" ]; then
+        error "YAML 校验失败：缺少必需字段 'name'"
+        return 1
+    fi
+    # 校验 name 格式
+    if ! echo "$name" | grep -qE '^[a-zA-Z0-9][a-zA-Z0-9._-]*$'; then
+        error "YAML 校验失败：name 仅允许字母数字及 . _ -，且以字母数字开头"
+        return 1
+    fi
+    return 0
+}
+
+# 从 YAML 文本提取 name 字段
+agent_get_name() {
+    agent_yaml_extract_field "$1" "name"
+}
+
+# 从 YAML 文本提取 displayName 字段
+agent_get_display_name() {
+    agent_yaml_extract_field "$1" "displayName"
+}
+
+# 从 YAML 文本提取 description 字段
+agent_get_description() {
+    agent_yaml_extract_field "$1" "description"
+}
+
+# 检查 YAML 中 isDefault 是否为 true
+agent_is_default() {
+    local val
+    val="$(agent_yaml_extract_field "$1" "isDefault")"
+    [ "$val" = "true" ]
+}
+
+# 读取 agent YAML 文件内容
+agent_read_file() {
+    local name="$1" f
+    f="$(agent_dir)/${name}.yaml"
+    [ -f "$f" ] || { warn "Agent 文件不存在: $f"; return 1; }
+    cat "$f"
+}
+
+# 写入 agent YAML 文件
+agent_write_file() {
+    local name="$1" content="$2"
+    local d
+    d="$(agent_dir)"
+    echo "$content" > "$d/${name}.yaml"
+}
+
+# 删除 agent YAML 文件
+agent_delete_file() {
+    local name="$1" f
+    f="$(agent_dir)/${name}.yaml"
+    [ -f "$f" ] || { warn "Agent 文件不存在: $name"; return 1; }
+    rm -f "$f"
+}
+
+# 网关是否运行中
+agent_gateway_running() {
+    [ "$(check_port)" = "200" ]
+}
+
+# 通过 API 保存 agent（热加载）
+agent_api_save() {
+    local yaml_text="$1"
+    if agent_gateway_running; then
+        local resp
+        resp="$(api_call POST /api/agents "{\"yaml\":$(echo "$yaml_text" | node -e "process.stdin.resume();let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.stringify(d)))" 2>/dev/null)}" 2>/dev/null || echo "")"
+        if echo "$resp" | grep -q '"success":true' 2>/dev/null; then
+            return 0
+        else
+            warn "API 热加载失败（文件已保存，重启网关后生效）"
+            return 1
+        fi
+    fi
+    return 0
+}
+
+# 通过 API 删除 agent（热加载）
+agent_api_delete() {
+    local name="$1"
+    if agent_gateway_running; then
+        api_call DELETE "/api/agents/$(encodeURIComponent "$name")" >/dev/null 2>&1 || true
+    fi
+}
+
+# URL 编码（用于 API 路径中的 agent name）
+encodeURIComponent() {
+    node -e "process.stdout.write(encodeURIComponent(process.argv[1]))" "$1" 2>/dev/null || echo "$1"
+}
+
+# 列出内置模板
+agent_list_templates() {
+    local tdir
+    tdir="$(agent_template_dir)"
+    [ -d "$tdir" ] || { warn "模板目录不存在: $tdir"; return 1; }
+    echo ""
+    info "可用 Agent 模板"
+    echo ""
+    local idx=1
+    for f in "$tdir"/*.yaml; do
+        [ -f "$f" ] || continue
+        local fname tname tdesc
+        fname="$(basename "$f" .yaml)"
+        tname="$(agent_yaml_extract_field "$(cat "$f")" "name")"
+        tdesc="$(agent_yaml_extract_field "$(cat "$f")" "description")"
+        [ -z "$tdesc" ] && tdesc="(无描述)"
+        echo "  $idx) ${tname:-$fname}"
+        dim "     $tdesc"
+        idx=$((idx + 1))
+    done
+}
+
+# ── 菜单功能函数 ──
+
+# 列出所有 Agent
+agent_menu_list() {
+    echo ""
+    if agent_gateway_running; then
+        info "Agent 列表（来自运行中网关）"
+        echo ""
+        local resp
+        resp="$(api_call GET /api/agents 2>/dev/null || echo "")"
+        if [ -z "$resp" ] || echo "$resp" | grep -q '"error"' 2>/dev/null; then
+            warn "无法获取 Agent 列表（Agent 框架可能未启用）"
+            echo ""
+            printf "按回车继续..."
+            read -r
+            return 1
+        fi
+        echo "$resp" | node -e "
+            let d='';
+            process.stdin.on('data',c=>d+=c);
+            process.stdin.on('end',()=>{
+                try {
+                    const data = JSON.parse(d);
+                    const agents = data.agents || [];
+                    if (!agents.length) { console.log('  (暂无 Agent)'); return; }
+                    agents.forEach((a,i) => {
+                        const def = a.isDefault ? ' [默认]' : '';
+                        const tc = a.tools ? a.tools.length : 0;
+                        const sc = a.subAgents ? a.subAgents.length : 0;
+                        console.log('  ' + (i+1) + ') ' + a.name + def + '  工具:' + tc + '  子代理:' + sc);
+                        if (a.description) console.log('     ' + a.description);
+                    });
+                } catch(e) { console.log('  (解析失败)'); }
+            });
+        " 2>/dev/null
+    else
+        info "Agent 列表（本地文件）"
+        echo ""
+        local d
+        d="$(agent_dir)"
+        local idx=1 found=0
+        for f in "$d"/*.yaml; do
+            [ -f "$f" ] || continue
+            local content tname tdesc tc sc def
+            content="$(cat "$f")"
+            tname="$(agent_get_name "$content")"
+            tdesc="$(agent_get_description "$content")"
+            [ -z "$tdesc" ] && tdesc="(无描述)"
+            if agent_is_default "$content"; then def=" [默认]"; else def=""; fi
+            tc="$(agent_yaml_count_tools "$content")"
+            sc="$(agent_yaml_count_subagents "$content")"
+            echo "  $idx) ${tname:-$(basename "$f" .yaml)}${def}  工具:${tc}  子代理:${sc}"
+            dim "     $tdesc"
+            idx=$((idx + 1))
+            found=1
+        done
+        [ "$found" = "0" ] && echo "  (暂无 Agent)"
+    fi
+    echo ""
+    printf "按回车继续..."
+    read -r
+}
+
+# 查看 Agent YAML 全文
+agent_menu_view() {
+    local name="$1"
+    if [ -z "$name" ]; then
+        printf "Agent 名称: "
+        read -r name
+    fi
+    [ -z "$name" ] && return 1
+
+    local content
+    if agent_gateway_running; then
+        content="$(api_call GET "/api/agents/$(encodeURIComponent "$name")" 2>/dev/null || echo "")"
+        if [ -z "$content" ] || echo "$content" | grep -q '"error"' 2>/dev/null; then
+            # API 失败，回退到文件
+            content="$(agent_read_file "$name" 2>/dev/null || echo "")"
+        fi
+    else
+        content="$(agent_read_file "$name" 2>/dev/null || echo "")"
+    fi
+
+    if [ -z "$content" ]; then
+        warn "Agent 不存在: $name"
+        return 1
+    fi
+
+    echo ""
+    dim "─── Agent: $name ───"
+    echo "$content"
+    echo ""
+    printf "按回车继续..."
+    read -r
+}
+
+# 从模板创建新 Agent
+agent_menu_from_template() {
+    local tdir
+    tdir="$(agent_template_dir)"
+    [ -d "$tdir" ] || { error "模板目录不存在"; return 1; }
+
+    # 列出模板
+    echo ""
+    info "选择模板"
+    echo ""
+    local templates=()
+    local idx=1
+    for f in "$tdir"/*.yaml; do
+        [ -f "$f" ] || continue
+        local tname tdesc
+        tname="$(agent_yaml_extract_field "$(cat "$f")" "name")"
+        tdesc="$(agent_yaml_extract_field "$(cat "$f")" "description")"
+        [ -z "$tdesc" ] && tdesc="(无描述)"
+        echo "  $idx) ${tname:-$(basename "$f" .yaml)}"
+        dim "     $tdesc"
+        templates+=("$f")
+        idx=$((idx + 1))
+    done
+
+    if [ ${#templates[@]} -eq 0 ]; then
+        warn "无可用模板"
+        return 1
+    fi
+
+    printf "选择模板编号: "
+    local choice; read -r choice
+    if ! [ "$choice" -ge 1 ] 2>/dev/null || [ "$choice" -gt "${#templates[@]}" ]; then
+        warn "无效选择"
+        return 1
+    fi
+
+    local tmpl_file="${templates[$((choice - 1))]}"
+    local tmpl_content
+    tmpl_content="$(cat "$tmpl_file")"
+
+    # 输入新 Agent name
+    echo ""
+    printf "新 Agent 名称 (字母数字开头，可用 . _ -): "
+    local new_name; read -r new_name
+    if ! echo "$new_name" | grep -qE '^[a-zA-Z0-9][a-zA-Z0-9._-]*$'; then
+        warn "名称格式不合法"
+        return 1
+    fi
+
+    # 检查是否已存在
+    local target
+    target="$(agent_dir)/${new_name}.yaml"
+    if [ -f "$target" ]; then
+        warn "Agent 已存在: $new_name"
+        if ! confirm_action "覆盖？"; then return 1; fi
+    fi
+
+    # 替换 name、displayName，移除 isDefault
+    local modified
+    modified="$(echo "$tmpl_content" | sed \
+        -e "s/^name:.*/name: $new_name/" \
+        -e "s/^isDefault:.*/isDefault: false/" \
+    )"
+
+    # 用编辑器打开让用户微调
+    local editor
+    editor="$(detect_editor 2>/dev/null || echo "")"
+    local tmp_file="/tmp/agent_${new_name}_$$.yaml"
+    echo "$modified" > "$tmp_file"
+
+    if [ -n "$editor" ]; then
+        agent_show_editor_hints "$editor"
+        echo ""
+        info "用 $editor 编辑 Agent YAML（模板已预填）"
+        printf "按回车打开编辑器..."
+        read -r
+        $editor "$tmp_file" 2>/dev/null || warn "编辑器退出异常"
+    else
+        warn "未检测到编辑器，将直接保存模板内容"
+    fi
+
+    # 读取编辑后的内容
+    local final_content
+    final_content="$(cat "$tmp_file")"
+    rm -f "$tmp_file"
+
+    # 校验
+    if ! agent_validate "$final_content"; then
+        warn "校验失败，内容未保存"
+        return 1
+    fi
+
+    local final_name
+    final_name="$(agent_get_name "$final_content")"
+
+    # 保存
+    agent_write_file "$final_name" "$final_content"
+    success "Agent 已保存: $final_name"
+    agent_api_save "$final_content"
+    log_action "INFO" "创建 Agent: $final_name（从模板）"
+}
+
+# 空白新建 Agent
+agent_menu_new() {
+    echo ""
+    printf "Agent 名称 (字母数字开头，可用 . _ -): "
+    local name; read -r name
+    if ! echo "$name" | grep -qE '^[a-zA-Z0-9][a-zA-Z0-9._-]*$'; then
+        warn "名称格式不合法"
+        return 1
+    fi
+
+    local target
+    target="$(agent_dir)/${name}.yaml"
+    if [ -f "$target" ]; then
+        warn "Agent 已存在: $name"
+        if ! confirm_action "覆盖？"; then return 1; fi
+    fi
+
+    # 生成最小模板
+    local template="name: $name
+displayName: $name
+description: 新建 Agent
+
+systemPrompt: |
+  你是一个 Agent。
+
+tools:
+  - state.read
+  - state.write
+  - memory.recall
+
+context:
+  historyLimit: 20
+
+maxSteps: 10
+"
+
+    local editor
+    editor="$(detect_editor 2>/dev/null || echo "")"
+    local tmp_file="/tmp/agent_${name}_$$.yaml"
+    echo "$template" > "$tmp_file"
+
+    if [ -n "$editor" ]; then
+        agent_show_editor_hints "$editor"
+        echo ""
+        info "用 $editor 编辑 Agent YAML"
+        printf "按回车打开编辑器..."
+        read -r
+        $editor "$tmp_file" 2>/dev/null || warn "编辑器退出异常"
+    else
+        warn "未检测到编辑器，将直接保存默认模板"
+    fi
+
+    local final_content
+    final_content="$(cat "$tmp_file")"
+    rm -f "$tmp_file"
+
+    if ! agent_validate "$final_content"; then
+        warn "校验失败，内容未保存"
+        return 1
+    fi
+
+    local final_name
+    final_name="$(agent_get_name "$final_content")"
+    agent_write_file "$final_name" "$final_content"
+    success "Agent 已保存: $final_name"
+    agent_api_save "$final_content"
+    log_action "INFO" "创建 Agent: $final_name"
+}
+
+# 编辑 Agent
+agent_menu_edit() {
+    local name="$1"
+    if [ -z "$name" ]; then
+        printf "Agent 名称: "
+        read -r name
+    fi
+    [ -z "$name" ] && return 1
+
+    # 读取当前内容
+    local content
+    content="$(agent_read_file "$name" 2>/dev/null || echo "")"
+    if [ -z "$content" ]; then
+        # 尝试 API
+        if agent_gateway_running; then
+            content="$(api_call GET "/api/agents/$(encodeURIComponent "$name")" 2>/dev/null || echo "")"
+            if echo "$content" | grep -q '"error"' 2>/dev/null; then
+                warn "Agent 不存在: $name"
+                return 1
+            fi
+        else
+            warn "Agent 不存在: $name"
+            return 1
+        fi
+    fi
+
+    local editor
+    editor="$(detect_editor 2>/dev/null || echo "")"
+    if [ -z "$editor" ]; then
+        error "未检测到可用的文本编辑器"
+        return 1
+    fi
+
+    local tmp_file="/tmp/agent_${name}_$$.yaml"
+    echo "$content" > "$tmp_file"
+
+    agent_show_editor_hints "$editor"
+    echo ""
+    info "用 $editor 编辑 Agent: $name"
+    printf "按回车打开编辑器..."
+    read -r
+    $editor "$tmp_file" 2>/dev/null || warn "编辑器退出异常"
+
+    local final_content
+    final_content="$(cat "$tmp_file")"
+    rm -f "$tmp_file"
+
+    if ! agent_validate "$final_content"; then
+        warn "校验失败，内容未保存"
+        return 1
+    fi
+
+    local final_name
+    final_name="$(agent_get_name "$final_content")"
+
+    # 如果 name 变了，删除旧文件
+    if [ "$final_name" != "$name" ]; then
+        agent_delete_file "$name" 2>/dev/null || true
+        if agent_gateway_running; then
+            api_call DELETE "/api/agents/$(encodeURIComponent "$name")" >/dev/null 2>&1 || true
+        fi
+        info "Agent 名称已变更: $name → $final_name"
+    fi
+
+    agent_write_file "$final_name" "$final_content"
+    success "Agent 已保存: $final_name"
+    agent_api_save "$final_content"
+    log_action "INFO" "编辑 Agent: $final_name"
+}
+
+# 删除 Agent
+agent_menu_delete() {
+    local name="$1"
+    if [ -z "$name" ]; then
+        printf "Agent 名称: "
+        read -r name
+    fi
+    [ -z "$name" ] && return 1
+
+    if agent_is_default "$(agent_read_file "$name" 2>/dev/null || echo "")"; then
+        warn "这是默认 Agent，删除后可能影响系统行为"
+    fi
+
+    if ! confirm_action "删除 Agent \"$name\"？"; then
+        return 1
+    fi
+
+    agent_delete_file "$name" 2>/dev/null || true
+    if agent_gateway_running; then
+        api_call DELETE "/api/agents/$(encodeURIComponent "$name")" >/dev/null 2>&1 || true
+    fi
+    success "Agent 已删除: $name"
+    log_action "WARN" "删除 Agent: $name"
+}
+
+# 复制 Agent
+agent_menu_duplicate() {
+    printf "源 Agent 名称: "
+    local src; read -r src
+    [ -z "$src" ] && return 1
+
+    local content
+    content="$(agent_read_file "$src" 2>/dev/null || echo "")"
+    if [ -z "$content" ]; then
+        warn "Agent 不存在: $src"
+        return 1
+    fi
+
+    printf "新 Agent 名称: "
+    local dst; read -r dst
+    if ! echo "$dst" | grep -qE '^[a-zA-Z0-9][a-zA-Z0-9._-]*$'; then
+        warn "名称格式不合法"
+        return 1
+    fi
+
+    local target
+    target="$(agent_dir)/${dst}.yaml"
+    if [ -f "$target" ]; then
+        warn "Agent 已存在: $dst"
+        if ! confirm_action "覆盖？"; then return 1; fi
+    fi
+
+    # 替换 name，移除 isDefault
+    local modified
+    modified="$(echo "$content" | sed \
+        -e "s/^name:.*/name: $dst/" \
+        -e "s/^isDefault:.*/isDefault: false/" \
+    )"
+
+    agent_write_file "$dst" "$modified"
+    success "Agent 已复制: $src → $dst"
+    agent_api_save "$modified"
+    log_action "INFO" "复制 Agent: $src → $dst"
+}
+
+# 导入 YAML 文件
+agent_menu_import() {
+    printf "YAML 文件路径: "
+    local src_path; read -r src_path
+    [ -z "$src_path" ] && return 1
+    [ -f "$src_path" ] || { warn "文件不存在: $src_path"; return 1; }
+
+    local content
+    content="$(cat "$src_path")"
+
+    if ! agent_validate "$content"; then
+        return 1
+    fi
+
+    local name
+    name="$(agent_get_name "$content")"
+
+    local target
+    target="$(agent_dir)/${name}.yaml"
+    if [ -f "$target" ]; then
+        warn "Agent 已存在: $name"
+        if ! confirm_action "覆盖？"; then return 1; fi
+    fi
+
+    agent_write_file "$name" "$content"
+    success "Agent 已导入: $name"
+    agent_api_save "$content"
+    log_action "INFO" "导入 Agent: $name（来源: $src_path）"
+}
+
+# 导出 Agent
+agent_menu_export() {
+    local name="$1"
+    if [ -z "$name" ]; then
+        printf "Agent 名称: "
+        read -r name
+    fi
+    [ -z "$name" ] && return 1
+
+    local content
+    content="$(agent_read_file "$name" 2>/dev/null || echo "")"
+    if [ -z "$content" ]; then
+        warn "Agent 不存在: $name"
+        return 1
+    fi
+
+    printf "导出路径 [./${name}.yaml]: "
+    local dst_path; read -r dst_path
+    dst_path="${dst_path:-./${name}.yaml}"
+
+    cp "$(agent_dir)/${name}.yaml" "$dst_path"
+    success "Agent 已导出: $name → $dst_path"
+}
+
+# 子代理配置
+agent_menu_subagents() {
+    local name="$1"
+    if [ -z "$name" ]; then
+        printf "Agent 名称: "
+        read -r name
+    fi
+    [ -z "$name" ] && return 1
+
+    local content f
+    f="$(agent_dir)/${name}.yaml"
+    content="$(cat "$f" 2>/dev/null || echo "")"
+    if [ -z "$content" ]; then
+        warn "Agent 不存在: $name"
+        return 1
+    fi
+
+    # 检查是否有 subAgents 段
+    if ! echo "$content" | grep -q "^subAgents:"; then
+        info "Agent $name 当前无子代理配置"
+        printf "添加子代理？(y/n) [n]: "
+        local r; read -r r
+        [ "$r" != "y" ] && [ "$r" != "Y" ] && return 0
+        # 追加 subAgents 段
+        local sub_name
+        printf "子代理 Agent 名称: "; read -r sub_name
+        [ -z "$sub_name" ] && return 1
+        echo "" >> "$f"
+        echo "subAgents:" >> "$f"
+        echo "  - name: $sub_name" >> "$f"
+        echo "    trigger: after_draft" >> "$f"
+        echo "    parallel: false" >> "$f"
+        success "子代理已添加: $sub_name"
+        agent_api_save "$(cat "$f")"
+        log_action "INFO" "Agent $name 添加子代理: $sub_name"
+        return 0
+    fi
+
+    # 显示当前子代理
+    echo ""
+    info "Agent $name 的子代理配置"
+    echo ""
+    echo "$content" | awk '/^subAgents:/{found=1;next} /^[a-zA-Z]/{found=0} found{print}'
+
+    echo ""
+    echo "  a) 添加子代理"
+    echo "  r) 删除子代理"
+    echo "  0) 返回"
+    printf "选择: "
+    local choice; read -r choice
+
+    case "$choice" in
+        a|A)
+            local sub_name sub_trigger sub_parallel
+            printf "子代理 Agent 名称: "; read -r sub_name
+            [ -z "$sub_name" ] && return 1
+            printf "触发方式 (after_draft/manual) [after_draft]: "; read -r sub_trigger
+            sub_trigger="${sub_trigger:-after_draft}"
+            printf "并行执行？(y/n) [n]: "; read -r sub_parallel
+            local par="false"
+            [ "$sub_parallel" = "y" ] || [ "$sub_parallel" = "Y" ] && par="true"
+
+            # 在 subAgents 段末尾追加
+            local new_content
+            new_content="$(echo "$content" | awk -v sn="$sub_name" -v st="$sub_trigger" -v sp="$par" '
+                /^subAgents:/ { in_sub=1; print; next }
+                /^[a-zA-Z]/ && in_sub { in_sub=0 }
+                in_sub { lines[NR]=$0; next }
+                { if (in_sub_was==1 && !in_sub) {
+                    print "  - name: " sn
+                    print "    trigger: " st
+                    print "    parallel: " sp
+                    in_sub_was=0
+                  }
+                  print
+                }
+                /^subAgents:/ { in_sub_was=1 }
+                END { if (in_sub) {
+                    for (i in lines) print lines[i]
+                    print "  - name: " sn
+                    print "    trigger: " st
+                    print "    parallel: " sp
+                  }
+                }
+            ')"
+            # 简化处理：直接追加到文件末尾的 subAgents 段
+            # 找到 subAgents 段的最后一行，在其后插入
+            local tmp
+            tmp="$(mktemp 2>/dev/null || echo "/tmp/agent_sub_$$")"
+            echo "$content" > "$tmp"
+            # 在 subAgents 段的最后一个子代理后追加新子代理
+            sed -i "/^subAgents:/,/^[a-zA-Z]/{
+                /^[a-zA-Z]/i\\  - name: $sub_name\\n    trigger: $sub_trigger\\n    parallel: $par
+            }" "$tmp" 2>/dev/null || {
+                # sed 方式失败，用 node 处理
+                node -e "
+                    const fs=require('fs');
+                    let c=fs.readFileSync('$tmp','utf8');
+                    const lines=c.split('\n');
+                    let out=[];
+                    let inSub=false;
+                    let lastSubIdx=-1;
+                    for(let i=0;i<lines.length;i++){
+                        out.push(lines[i]);
+                        if(lines[i].match(/^subAgents:/)) inSub=true;
+                        else if(inSub && lines[i].match(/^[a-zA-Z]/)) inSub=false;
+                        else if(inSub && lines[i].match(/^\s+- name:/)) lastSubIdx=out.length-1;
+                    }
+                    // 在最后一个子代理后插入
+                    if(lastSubIdx>=0){
+                        out.splice(lastSubIdx+1,0,'  - name: $sub_name','    trigger: $sub_trigger','    parallel: $par');
+                    }
+                    fs.writeFileSync('$tmp',out.join('\n'));
+                " 2>/dev/null
+            }
+            cp "$tmp" "$f"
+            rm -f "$tmp"
+            success "子代理已添加: $sub_name"
+            agent_api_save "$(cat "$f")"
+            log_action "INFO" "Agent $name 添加子代理: $sub_name"
+            ;;
+        r|R)
+            printf "要删除的子代理名称: "; local del_name; read -r del_name
+            [ -z "$del_name" ] && return 1
+            # 用 node 精确删除指定子代理块
+            local tmp
+            tmp="$(mktemp 2>/dev/null || echo "/tmp/agent_sub_$$")"
+            node -e "
+                const fs=require('fs');
+                let c=fs.readFileSync('$f','utf8');
+                const lines=c.split('\n');
+                let out=[];
+                let inSub=false;
+                let skip=false;
+                for(let i=0;i<lines.length;i++){
+                    if(lines[i].match(/^subAgents:/)){inSub=true;out.push(lines[i]);continue;}
+                    if(inSub && lines[i].match(/^[a-zA-Z]/))inSub=false;
+                    if(inSub && lines[i].match(/^\s+- name:\s*$del_name\s*$/)){
+                        skip=true;
+                        continue;
+                    }
+                    if(skip){
+                        if(lines[i].match(/^\s+- name:/)||lines[i].match(/^[a-zA-Z]/)){
+                            skip=false;
+                        } else {
+                            continue;
+                        }
+                    }
+                    out.push(lines[i]);
+                }
+                fs.writeFileSync('$tmp',out.join('\n'));
+            " "$del_name" 2>/dev/null
+            cp "$tmp" "$f"
+            rm -f "$tmp"
+            success "子代理已删除: $del_name"
+            agent_api_save "$(cat "$f")"
+            log_action "INFO" "Agent $name 删除子代理: $del_name"
+            ;;
+        0|q|Q) return 0 ;;
+    esac
+}
+
+# 工具列表
+agent_menu_tools() {
+    echo ""
+    if agent_gateway_running; then
+        info "已注册工具（来自运行中网关）"
+        echo ""
+        local resp
+        resp="$(api_call GET /api/agents/tools 2>/dev/null || echo "")"
+        if [ -n "$resp" ] && ! echo "$resp" | grep -q '"error"' 2>/dev/null; then
+            echo "$resp" | node -e "
+                let d='';
+                process.stdin.on('data',c=>d+=c);
+                process.stdin.on('end',()=>{
+                    try {
+                        const tools = JSON.parse(d).tools || [];
+                        if(!tools.length){console.log('  (无注册工具)');return;}
+                        tools.forEach(t=>{
+                            console.log('  '+t.name+'  ['+(t.source||'?')+']');
+                            if(t.description)console.log('    '+t.description);
+                        });
+                    } catch(e){console.log('  (解析失败)');}
+                });
+            " 2>/dev/null
+        else
+            warn "无法获取工具列表（Agent 框架可能未启用）"
+        fi
+    else
+        info "内置工具列表（网关未运行，显示静态列表）"
+        echo ""
+        echo "  ── 状态工具 ──"
+        echo "    state.read     读取会话状态"
+        echo "    state.write    写入会话状态"
+        echo "    state.list     列出状态键名"
+        echo "    state.delete   删除状态键"
+        echo "  ── 记忆工具 ──"
+        echo "    memory.recall  检索四层记忆"
+        echo "    memory.update  更新记忆文件"
+        echo "    memory.read    读取记忆文件"
+        echo "  ── 叙事工具 ──"
+        echo "    narrative.generate  调用LLM生成正文"
+        echo "  ── 文件工具 ──"
+        echo "    file.read      读取工作区文件"
+        echo "    file.write     写入工作区文件"
+        echo "    file.list      列出工作区目录"
+        echo "  ── Skill 工具 ──"
+        echo "    skill.load     加载 skill 文件"
+        echo "    skill.list     列出 skill 文件"
+        echo "  ── 子代理工具 ──"
+        echo "    subagent.dispatch  调度子代理"
+        echo "    subagent.list      列出可用子代理"
+        echo "  ── 外部注册（需 agent-rp 插件）──"
+        echo "    character.read   读取角色卡"
+        echo "    worldbook.search 搜索世界书"
+    fi
+    echo ""
+    printf "按回车继续..."
+    read -r
+}
+
+# 运行日志
+agent_menu_logs() {
+    echo ""
+    if ! agent_gateway_running; then
+        warn "网关未运行，无法获取运行日志"
+        printf "按回车继续..."
+        read -r
+        return 1
+    fi
+
+    info "Agent 运行日志（最近 10 条）"
+    echo ""
+    local resp
+    resp="$(api_call GET /api/agents/logs 2>/dev/null || echo "")"
+    if [ -n "$resp" ] && ! echo "$resp" | grep -q '"error"' 2>/dev/null; then
+        echo "$resp" | node -e "
+            let d='';
+            process.stdin.on('data',c=>d+=c);
+            process.stdin.on('end',()=>{
+                try {
+                    let logs = JSON.parse(d).logs || [];
+                    if(!logs.length){console.log('  (暂无执行记录)');return;}
+                    logs=logs.slice(-10).reverse();
+                    logs.forEach(l=>{
+                        const status = l.success ? 'OK' : 'FAIL';
+                        const dur = l.duration ? (l.duration/1000).toFixed(1)+'s' : '-';
+                        const steps = l.steps!=null ? l.steps : '-';
+                        console.log('  '+l.agent+'  ['+status+']  '+dur+'  步数:'+steps);
+                    });
+                } catch(e){console.log('  (解析失败)');}
+            });
+        " 2>/dev/null
+    else
+        warn "无法获取日志"
+    fi
+    echo ""
+    printf "按回车继续..."
+    read -r
+}
+
+# 显示编辑器操作提示
+agent_show_editor_hints() {
+    local editor="$1"
+    echo ""
+    echo "  ┌──────────────────────────────────────────┐"
+    echo "  │  编辑器操作提示 ($editor)                  │"
+    echo "  ├──────────────────────────────────────────┤"
+    case "$editor" in
+        nano*)
+            echo "  │  保存退出: Ctrl+O → 回车 → Ctrl+X       │"
+            echo "  │  放弃退出: Ctrl+X → N                    │"
+            echo "  │  查找:     Ctrl+W                        │"
+            echo "  │  替换:     Ctrl+\\                        │"
+            echo "  │  行首/尾:  Ctrl+A / Ctrl+E               │"
+            ;;
+        vim*|vi*)
+            echo "  │  保存退出: :wq → 回车                     │"
+            echo "  │  放弃退出: :q! → 回车                     │"
+            echo "  │  查找:     /关键词 → 回车                  │"
+            echo "  │  替换:     :s/旧/新/g → 回车              │"
+            echo "  │  插入模式: i (按 Esc 回到命令模式)        │"
+            ;;
+        *)
+            echo "  │  请参考该编辑器的快捷键文档               │"
+            ;;
+    esac
+    echo "  └──────────────────────────────────────────┘"
+}
+
+# ── 交互式主菜单 ──
+agent_interactive_menu() {
+    while true; do
+        echo ""
+        printf "  ╔══════════════════════════════════════╗\n"
+        printf "  ║       Agent 方案配置管理              ║\n"
+        printf "  ╠══════════════════════════════════════╣\n"
+
+        # 显示 Agent 列表概览
+        local d
+        d="$(agent_dir)"
+        local agent_files=()
+        local idx=1
+        for f in "$d"/*.yaml; do
+            [ -f "$f" ] || continue
+            local content tname def tc sc
+            content="$(cat "$f")"
+            tname="$(agent_get_name "$content")"
+            if agent_is_default "$content"; then def=" [默认]"; else def=""; fi
+            tc="$(agent_yaml_count_tools "$content")"
+            sc="$(agent_yaml_count_subagents "$content")"
+            printf "  ║  %d) %-14s%s 工具:%-2s 子代理:%-2s    ║\n" \
+                "$idx" "${tname:-$(basename "$f" .yaml)}" "$def" "$tc" "$sc"
+            agent_files+=("$tname")
+            idx=$((idx + 1))
+        done
+        [ ${#agent_files[@]} -eq 0 ] && printf "  ║  (暂无 Agent)                        ║\n"
+
+        printf "  ╠══════════════════════════════════════╣\n"
+        printf "  ║  n) 新建    t) 从模板   c) 复制      ║\n"
+        printf "  ║  e) 编辑    v) 查看     d) 删除      ║\n"
+        printf "  ║  i) 导入    x) 导出     s) 子代理    ║\n"
+        printf "  ║  l) 日志    T) 工具                  ║\n"
+        printf "  ║  0) 返回                              ║\n"
+        printf "  ╚══════════════════════════════════════╝\n"
+        printf "  选择: "
+
+        local choice; read -r choice
+
+        case "$choice" in
+            n|N) agent_menu_new ;;
+            t) agent_menu_from_template ;;
+            c) agent_menu_duplicate ;;
+            e|E)
+                if [ ${#agent_files[@]} -eq 0 ]; then
+                    warn "暂无 Agent"
+                else
+                    printf "编号或名称: "; local n; read -r n
+                    local target_name=""
+                    if [ "$n" -ge 1 ] 2>/dev/null && [ "$n" -le "${#agent_files[@]}" ]; then
+                        target_name="${agent_files[$((n - 1))]}"
+                    else
+                        target_name="$n"
+                    fi
+                    agent_menu_edit "$target_name"
+                fi
+                ;;
+            v|V)
+                if [ ${#agent_files[@]} -eq 0 ]; then
+                    warn "暂无 Agent"
+                else
+                    printf "编号或名称: "; local n; read -r n
+                    local target_name=""
+                    if [ "$n" -ge 1 ] 2>/dev/null && [ "$n" -le "${#agent_files[@]}" ]; then
+                        target_name="${agent_files[$((n - 1))]}"
+                    else
+                        target_name="$n"
+                    fi
+                    agent_menu_view "$target_name"
+                fi
+                ;;
+            d|D)
+                if [ ${#agent_files[@]} -eq 0 ]; then
+                    warn "暂无 Agent"
+                else
+                    printf "编号或名称: "; local n; read -r n
+                    local target_name=""
+                    if [ "$n" -ge 1 ] 2>/dev/null && [ "$n" -le "${#agent_files[@]}" ]; then
+                        target_name="${agent_files[$((n - 1))]}"
+                    else
+                        target_name="$n"
+                    fi
+                    agent_menu_delete "$target_name"
+                fi
+                ;;
+            i) agent_menu_import ;;
+            x) agent_menu_export ;;
+            s) agent_menu_subagents ;;
+            l) agent_menu_logs ;;
+            T) agent_menu_tools ;;
+            0|q|Q) break ;;
+            *)
+                # 数字选择 → 查看对应 Agent
+                if [ "$choice" -ge 1 ] 2>/dev/null && [ "$choice" -le "${#agent_files[@]}" ]; then
+                    agent_menu_view "${agent_files[$((choice - 1))]}"
+                else
+                    warn "无效选择"
+                fi
+                ;;
+        esac
+    done
+}
+
+# ── 主入口 ──
+cmd_agents() {
+    [ -z "${INSTALL_DIR:-}" ] && { error "未检测到安装目录"; return 1; }
+
+    # 解析 CLI 快捷命令
+    local subcmd="${2:-}"
+    case "$subcmd" in
+        list)       agent_menu_list; return ;;
+        tools)      agent_menu_tools; return ;;
+        new)        agent_menu_new; return ;;
+        logs)       agent_menu_logs; return ;;
+        templates)  agent_list_templates; return ;;
+        edit)       agent_menu_edit "${3:-}"; return ;;
+        view)       agent_menu_view "${3:-}"; return ;;
+        delete)     agent_menu_delete "${3:-}"; return ;;
+        export)     agent_menu_export "${3:-}"; return ;;
+    esac
+
+    # 无子命令 → 交互菜单
+    agent_interactive_menu
+}
+
+# ═══════════════════════════════════════════════════════════
 # 鉴权 Token 获取
 # ═══════════════════════════════════════════════════════════
 
@@ -2526,6 +3598,8 @@ SillyTavern Gateway 管理工具 v1.1.1
   plugins         插件管理
   platforms       平台管理（含适配器一键安装）
   skills          Skill 管理（含编辑功能）
+  agents          Agent 方案配置管理（创建/编辑/删除/模板/导入导出/子代理）
+                  子命令: list|new|edit|view|delete|export|tools|logs|templates
   runtime         自建推理管线配置（启用/禁用/LLM配置）
   log             查看日志（网关输出/管理日志/保活日志）
   keepalive       Termux 保活设置
@@ -2542,6 +3616,10 @@ SillyTavern Gateway 管理工具 v1.1.1
   ./gateway-manager.sh log                # 查看日志
   ./gateway-manager.sh platforms          # 平台管理（可安装飞书/钉钉/QQ官方适配器）
   ./gateway-manager.sh skills             # Skill 管理（可编辑文档）
+  ./gateway-manager.sh agents             # Agent 方案管理菜单
+  ./gateway-manager.sh agents list        # 列出所有 Agent 方案
+  ./gateway-manager.sh agents new         # 从模板新建 Agent
+  ./gateway-manager.sh agents edit <name> # 编辑指定 Agent
 
 详细文档: scripts/gateway-manager.README.md
 EOF
@@ -2572,7 +3650,7 @@ main_menu() {
         printf "  ║  7) 状态      8) 插件      9) 平台   ║\n"
         printf "  ║ 10) Skill    11) 保活     12) 日志  ║\n"
         printf "  ║ 13) 回滚     14) systemd  15) Token ║\n"
-        printf "  ║ 16) Runtime  0) 退出                ║\n"
+        printf "  ║ 16) Runtime  17) Agent    0) 退出   ║\n"
         printf "  ╚══════════════════════════════════════╝\n"
         printf "  选择: "
 
@@ -2595,6 +3673,7 @@ main_menu() {
             14) generate_systemd_unit ;;
             15) cmd_show_token ;;
             16) cmd_runtime ;;
+            17) cmd_agents ;;
             0|q|Q)
                 echo "再见！"
                 break
@@ -2662,6 +3741,7 @@ main() {
         plugins)     manage_plugins ;;
         platforms)   manage_platforms ;;
         skills)      manage_skills ;;
+        agents)      cmd_agents "$@" ;;
         keepalive)   setup_keepalive ;;
         rollback)    cmd_rollback ;;
         check-restart) check_and_restart ;;
