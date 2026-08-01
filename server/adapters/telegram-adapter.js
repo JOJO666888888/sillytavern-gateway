@@ -53,7 +53,12 @@ export class TelegramAdapter extends PlatformAdapter {
                 this.logger.error(`Polling 错误: ${error.message}`);
                 if (error.code === 'ETELEGRAM' && error.response?.statusCode === 401) {
                     this.handleDisconnect('Token 无效');
+                    return;
                 }
+                // 网络类错误（EFATAL/ETIMEDOUT 等）：node-telegram-bot-api 的轮询循环在反复
+                // 失败后可能停止且不自动恢复，导致机器人静默收不到消息。短延迟后探测轮询状态，
+                // 停了就自愈重启（与库内部重试错开，避免抢跑）。
+                this._schedulePollingHealthCheck();
             });
 
             this.bot.on('webhook_error', (error) => {
@@ -62,6 +67,8 @@ export class TelegramAdapter extends PlatformAdapter {
 
             this.setState(ConnectionState.CONNECTED);
             this.emit('connected');
+            // 启动轮询健康看门狗：网络抖动后自动恢复轮询，避免静默断收
+            this._startPollingWatchdog();
         } catch (error) {
             this.logger.error(`Telegram 连接失败: ${error.message}`);
             this.setState(ConnectionState.ERROR);
@@ -251,9 +258,63 @@ export class TelegramAdapter extends PlatformAdapter {
     }
 
     /**
+     * 启动轮询健康看门狗。
+     * 网络抖动（EFATAL/ETIMEDOUT）下 node-telegram-bot-api 的轮询循环可能停止且不自动
+     * 恢复，导致机器人静默收不到消息。周期性探测 isPolling()，停了就重启轮询自愈。
+     */
+    _startPollingWatchdog() {
+        this._stopPollingWatchdog();
+        this._pollingWatchdog = setInterval(() => this._checkPollingHealth(), 60000);
+        // 看门狗本身不应阻止进程退出
+        if (this._pollingWatchdog.unref) this._pollingWatchdog.unref();
+    }
+
+    _stopPollingWatchdog() {
+        if (this._pollingWatchdog) {
+            clearInterval(this._pollingWatchdog);
+            this._pollingWatchdog = null;
+        }
+        if (this._pollingRestartTimer) {
+            clearTimeout(this._pollingRestartTimer);
+            this._pollingRestartTimer = null;
+        }
+        this._pollingRestartAttempts = 0;
+    }
+
+    /** polling_error 后短延迟探测，避免与库内部重试抢跑 */
+    _schedulePollingHealthCheck() {
+        if (this._pollingRestartTimer) clearTimeout(this._pollingRestartTimer);
+        this._pollingRestartTimer = setTimeout(() => {
+            this._pollingRestartTimer = null;
+            this._checkPollingHealth();
+        }, 5000);
+        if (this._pollingRestartTimer.unref) this._pollingRestartTimer.unref();
+    }
+
+    async _checkPollingHealth() {
+        if (this.state !== ConnectionState.CONNECTED || !this.bot) return;
+        if (this.bot.isPolling()) {
+            this._pollingRestartAttempts = 0;
+            return;
+        }
+        this._pollingRestartAttempts = (this._pollingRestartAttempts || 0) + 1;
+        this.logger.warn(`检测到轮询已停止，尝试重启（第 ${this._pollingRestartAttempts} 次）...`);
+        try {
+            // startPolling() 默认 restart:true，复用并重启 _polling 循环
+            await this.bot.startPolling();
+            this._pollingRestartAttempts = 0;
+            this.logger.info('轮询已恢复');
+        } catch (e) {
+            this.logger.error(`重启轮询失败: ${e.message}`);
+            // 失败则等待下一轮看门狗/polling_error 再次尝试
+        }
+    }
+
+    /**
      * 断开连接
      */
     async disconnect() {
+        this._stopPollingWatchdog();
         if (this.bot) {
             try {
                 this.bot.stopPolling();
