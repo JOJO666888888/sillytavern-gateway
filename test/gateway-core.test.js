@@ -9,7 +9,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 import { GatewayCore } from '../server/gateway-core.js';
-import { InboundMessage, OutboundMessage, MediaAsset, MediaType } from '../server/adapters/base-adapter.js';
+import PlatformAdapter, { InboundMessage, OutboundMessage, MediaAsset, MediaType, ConnectionState } from '../server/adapters/base-adapter.js';
 
 describe('GatewayCore 入站队列', () => {
     test('保存完整消息内容，不截断（对比 messageLog 的 100 字符截断）', () => {
@@ -112,6 +112,50 @@ describe('GatewayCore 出站过滤器', () => {
         const result = gc.applyOutboundFilters(msg);
         assert.ok(reached, '后续过滤器仍应执行');
         assert.ok(result, '消息不应因异常而丢失');
+    });
+});
+
+describe('GatewayCore 出站分发（纯媒体消息回归）', () => {
+    // 回归：content 为空的纯媒体消息（如 message-to-image 把回复渲染成图片后、
+    // 只带 mediaUrls 的消息）必须真正调用 adapter.send()。历史 bug：splitMessage('')
+    // 返回 []，分段循环 0 次，sendPhoto 从未执行，却在循环后误报"消息已发送"，
+    // 导致用户收不到任何图片。
+    function makeMockAdapter() {
+        const ad = new (class extends PlatformAdapter {
+            constructor() { super('telegram', {}); }
+        })();
+        ad.state = ConnectionState.CONNECTED;
+        const calls = [];
+        ad.send = async (msg) => { calls.push(msg); return true; };
+        return { ad, calls };
+    }
+
+    test('纯媒体消息（content 空 + mediaUrls）会调用 adapter.send', async () => {
+        const gc = new GatewayCore();
+        const { ad, calls } = makeMockAdapter();
+        gc.registerAdapter('telegram', ad);
+        const imgMsg = new OutboundMessage({ platform: 'telegram', chatId: 'c1', content: '', mediaUrls: ['/x/y.png'] });
+        const ok = await gc.dispatchOutbound(imgMsg);
+        assert.strictEqual(ok, true);
+        assert.strictEqual(calls.length, 1, '纯媒体消息必须触发一次 adapter.send（否则图片发不出去）');
+        assert.ok(calls[0].mediaUrls.includes('/x/y.png'), '媒体应随消息送达适配器');
+    });
+
+    test('纯文本消息仍正常发送且内容不空', async () => {
+        const gc = new GatewayCore();
+        const { ad, calls } = makeMockAdapter();
+        gc.registerAdapter('telegram', ad);
+        await gc.dispatchOutbound(new OutboundMessage({ platform: 'telegram', chatId: 'c1', content: 'hi' }));
+        assert.strictEqual(calls.length, 1);
+        assert.strictEqual(calls[0].content, 'hi');
+    });
+
+    test('空内容且无媒体时不调用 adapter.send（不发空消息）', async () => {
+        const gc = new GatewayCore();
+        const { ad, calls } = makeMockAdapter();
+        gc.registerAdapter('telegram', ad);
+        await gc.dispatchOutbound(new OutboundMessage({ platform: 'telegram', chatId: 'c1', content: '' }));
+        assert.strictEqual(calls.length, 0, '无内容无媒体不应发送空消息');
     });
 });
 
