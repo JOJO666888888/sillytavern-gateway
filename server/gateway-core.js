@@ -386,7 +386,14 @@ export class GatewayCore extends EventEmitter {
 
         // 应用出站过滤器（除非标记了 bypassFilters）
         const filtered = bypassFilters ? message : this.applyOutboundFilters(message);
-        if (!filtered) return false;
+        if (!filtered) {
+            // 出站过滤器主动丢弃本条消息（如 message-to-image 把正文转成图片补发后丢弃原文，
+            // 或某些过滤器纯抑制）。返回 true 而非 false：消息已被过滤器"处理"，不是发送失败。
+            // 若返回 false，消息队列会当作失败重试 3 次并死信，误报"发送返回 false"并污染前端错误弹窗。
+            // 注：所有 sendDirect 调用均带 bypassFilters，故此分支仅队列正常出站路径可达。
+            logger.debug('消息被出站过滤器丢弃，不再发送（非失败）');
+            return true;
+        }
         if (filtered !== message && filtered.content !== message.content) {
             message = filtered;
         }
