@@ -495,6 +495,31 @@
             </div>
         </div>
 
+        <!-- 网关全局日志 -->
+        <div class="gateway-section gateway-collapsible">
+            <div class="gateway-section-title gateway-collapse-toggle" data-toggle="gateway_logs_body">
+                <i class="fa-solid fa-chevron-right gateway-collapse-arrow"></i>
+                <i class="fa-solid fa-list-ul"></i> 网关日志
+            </div>
+            <div id="gateway_logs_body" class="gateway-collapse-body" style="display:none;">
+                <div class="gateway-section-subtitle">
+                    📜 全局日志
+                    <select id="gateway_logs_level" class="menu_button" title="级别过滤">
+                        <option value="">全部</option>
+                        <option value="error">错误</option>
+                        <option value="warn">警告</option>
+                        <option value="info">信息</option>
+                    </select>
+                    <label class="menu_button gateway-logs-autopoll-label" title="勾选后每 5 秒自动刷新"><input type="checkbox" id="gateway_logs_autopoll"> 自动刷新</label>
+                    <button id="gateway_logs_refresh" class="menu_button" title="刷新"><i class="fa-solid fa-rotate-right"></i></button>
+                    <button id="gateway_logs_clear" class="menu_button" title="清空当前视图"><i class="fa-solid fa-broom"></i></button>
+                </div>
+                <div id="gateway_logs" class="gateway-logs-view">
+                    <div class="gateway-empty-hint">未加载（展开后自动加载）</div>
+                </div>
+            </div>
+        </div>
+
         <!-- Agent 剧场（Task 4） -->
         <div class="gateway-section gateway-collapsible gateway-agent-theatre-section">
             <div class="gateway-section-title gateway-collapse-toggle" data-toggle="gateway_theatre_body">

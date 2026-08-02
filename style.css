@@ -384,6 +384,71 @@
     border: 1px solid #f44336;
 }
 
+.gateway-status-badge.warn {
+    background: rgba(255, 193, 7, 0.2);
+    color: #ffc107;
+    border: 1px solid #ffc107;
+}
+
+.gateway-status-badge.debug {
+    background: rgba(158, 158, 158, 0.2);
+    color: #9e9e9e;
+    border: 1px solid #9e9e9e;
+}
+
+/* 网关日志查看器 */
+.gateway-logs-view {
+    max-height: 360px;
+    overflow-y: auto;
+    border: 1px solid var(--SmartThemeBorderColor, #333);
+    border-radius: 6px;
+    background: var(--SmartThemeBlurTintColor, rgba(0, 0, 0, 0.15));
+    padding: 6px;
+    font-family: var(--monoFontFamily, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.gateway-log-line {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 3px 4px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.15));
+    word-break: break-word;
+}
+
+.gateway-log-line:last-child {
+    border-bottom: none;
+}
+
+.gateway-log-ts {
+    flex: 0 0 auto;
+    color: var(--SmartThemeBodyColor, #999);
+    opacity: 0.7;
+    white-space: nowrap;
+}
+
+.gateway-log-module {
+    flex: 0 0 auto;
+    color: #64b5f6;
+    white-space: nowrap;
+    min-width: 70px;
+}
+
+.gateway-log-msg {
+    flex: 1 1 auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.gateway-logs-autopoll-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+}
+
 /* 面板区块 */
 #gateway_panel .gateway-section {
     margin-bottom: 15px;

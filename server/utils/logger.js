@@ -1,4 +1,5 @@
 import winston from 'winston';
+import Transport from 'winston-transport';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -25,7 +26,45 @@ function redactSecrets(text) {
         // Discord Bot Token（三段式）
         .replace(/\b[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}\b/g, '<redacted-token>')
         // 网关 authToken / 通用长十六进制串（≥32 位）
-        .replace(/\b[a-f0-9]{32,64}\b/gi, '<redacted-hex>');
+        .replace(/\b[a-f0-9]{32,64}\b/gi, '<redacted-hex>')
+        // OpenAI 风格 API Key（sk- 开头），避免经日志接口泄露给前端
+        .replace(/\bsk-[A-Za-z0-9_-]{20,}\b/g, '<redacted-key>');
+}
+
+// ---- 内存环缓冲：供 /api/gateway/logs 拉取最近日志（前端日志页 + 错误弹窗） ----
+const RING_MAX = 500;
+let ringSeq = 0;
+const ringBuffer = [];
+
+class RingBufferTransport extends Transport {
+    log(info, callback) {
+        try {
+            ringSeq++;
+            ringBuffer.push({
+                seq: ringSeq,
+                timestamp: info.timestamp || '',
+                level: info.level,
+                module: info.module || 'gateway',
+                message: redactSecrets(String(info.message ?? info.stack ?? '')),
+            });
+            if (ringBuffer.length > RING_MAX) ringBuffer.shift();
+        } catch (_) { /* 环缓冲不得影响主日志流 */ }
+        callback();
+    }
+}
+
+/**
+ * 读取最近日志（供 /api/gateway/logs）。
+ * @param {{since?:number, limit?:number, level?:string}} [opts]
+ * @returns {{logs:Array, latestSeq:number}}
+ */
+export function getRecentLogs({ since = 0, limit = 200, level } = {}) {
+    let entries = ringBuffer;
+    if (since > 0) entries = entries.filter(e => e.seq > since);
+    if (level) entries = entries.filter(e => e.level === level);
+    const latestSeq = ringBuffer.length ? ringBuffer[ringBuffer.length - 1].seq : 0;
+    if (limit && entries.length > limit) entries = entries.slice(-limit);
+    return { logs: entries, latestSeq };
 }
 
 const logFormat = printf(({ level, message, timestamp, module, stack }) => {
@@ -62,6 +101,8 @@ const logger = winston.createLogger({
             maxsize: 10 * 1024 * 1024,
             maxFiles: 5,
         }),
+        // 内存环缓冲（供 /api/gateway/logs 实时拉取，脱敏后留存）
+        new RingBufferTransport(),
     ],
 });
 

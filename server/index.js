@@ -9,7 +9,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { exec } from 'child_process';
 import { fileURLToPath } from 'url';
-import { createLogger } from './utils/logger.js';
+import { createLogger, getRecentLogs } from './utils/logger.js';
 import configManager from './utils/config.js';
 import { gatewayCore } from './gateway-core.js';
 import { sessionManager } from './session-manager.js';
@@ -248,6 +248,19 @@ app.get('/media/:id', mediaStore.handler());
  */
 app.get('/api/gateway/status', (req, res) => {
     res.json(gatewayCore.getStatus());
+});
+
+/**
+ * 拉取最近网关日志（前端"网关日志"页 + 错误弹窗轮询）。
+ * 查询参数：since=seq（只返回 seq 更大的条目，用于增量轮询/去重）；
+ *           limit=N（默认 200，上限 500）；level=error|warn|info（可选过滤）。
+ * 受 /api/* 全局 token 鉴权保护；日志条目经 redactSecrets 脱敏，不含密钥。
+ */
+app.get('/api/gateway/logs', (req, res) => {
+    const since = parseInt(req.query.since, 10) || 0;
+    const limit = Math.min(parseInt(req.query.limit, 10) || 200, 500);
+    const level = req.query.level;
+    res.json({ success: true, ...getRecentLogs({ since, limit, level }) });
 });
 
 /**

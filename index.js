@@ -117,6 +117,9 @@ let gatewayConnected = false;
 let gatewayServerProcess = null;      // 本扩展自动启动的网关服务子进程
 let gatewayServerStartedByUs = false; // 是否由本扩展启动服务
 let pollTimer = null;
+let lastErrorSeq = 0;          // 错误弹窗游标：只弹 seq 更大的新错误
+let errorPopupReady = false;   // 首次轮询只对齐游标，不弹历史错误
+let logsAutopollTimer = null;  // 网关日志自动刷新定时器
 let lastMessages = [];
 /** 已处理过的消息 ID 集合 (platform+chatId+timestamp) */
 const processedMessageIds = new Set();
@@ -401,6 +404,10 @@ async function fetchGatewayStatus() {
 
         return status;
     } catch (error) {
+        if (gatewayConnected) {
+            // 刚由已连接变为断开：提醒一次（避免每 3s 轮询重复弹窗）
+            toastr.warning('网关连接已断开，请检查网关是否运行及地址/Token配置。', '网关断连', { timeOut: 10000 });
+        }
         gatewayConnected = false;
         updateConnectionStatus(false);
         return null;
@@ -951,6 +958,7 @@ function startPolling() {
     pollTimer = setInterval(() => {
         if (gatewayConnected) {
             fetchGatewayStatus();
+            fetchGatewayErrors();
         }
     }, settings.pollInterval);
 }
@@ -1254,6 +1262,7 @@ async function initGatewayPanel() {
     bindRegexEvents();
     bindRuntimeEvents();
     bindAgentEvents();
+    bindLogsEvents();
 
     // 恢复网关地址与鉴权 token 输入
     $('#gateway_panel_url').val(getSettings().serverUrl || 'http://127.0.0.1:3210');
@@ -1274,6 +1283,13 @@ async function initGatewayPanel() {
         const agentObserver = new MutationObserver(() => tryAgentAutoLoad());
         agentObserver.observe(agentBody, { attributes: true, attributeFilter: ['style'] });
         tryAgentAutoLoad();
+    }
+
+    // 11. 网关日志面板：展开时自动加载
+    const logsBody = document.getElementById('gateway_logs_body');
+    if (logsBody) {
+        const logsObserver = new MutationObserver(() => tryLogsAutoLoad());
+        logsObserver.observe(logsBody, { attributes: true, attributeFilter: ['style'] });
     }
 
     console.log('[Gateway] 顶级设置面板已注入 (与预设/API/世界书同等级)');
@@ -3244,6 +3260,104 @@ async function loadAgentLogs() {
     } catch (e) {
         el.html(`<div class="gateway-empty-hint">加载失败: ${escapeHtml(e.message)}</div>`);
     }
+}
+
+/** 网关日志级别 -> badge 样式/标签 */
+function gatewayLogLevelBadge(level) {
+    const map = {
+        error: { cls: 'disconnected', label: '错误' },
+        warn: { cls: 'warn', label: '警告' },
+        info: { cls: 'connected', label: '信息' },
+        debug: { cls: 'debug', label: '调试' },
+    };
+    const m = map[level] || { cls: '', label: level || '-' };
+    return `<span class="gateway-status-badge ${m.cls}">${m.label}</span>`;
+}
+
+/** 加载网关全局日志（"网关日志"面板） */
+async function loadGatewayLogs() {
+    const el = $('#gateway_logs');
+    if (!el.length) return;
+    el.html('<div class="gateway-empty-hint">加载中...</div>');
+    try {
+        const level = $('#gateway_logs_level').val() || '';
+        const qs = level ? `?limit=200&level=${encodeURIComponent(level)}` : '?limit=200';
+        const data = await apiRequest(`/api/gateway/logs${qs}`);
+        let logs = data.logs || [];
+        if (!logs.length) {
+            el.html('<div class="gateway-empty-hint">暂无日志</div>');
+            return;
+        }
+        logs = logs.slice().reverse(); // 最新在上
+        let html = '';
+        for (const l of logs) {
+            html += '<div class="gateway-log-line">' +
+                `<span class="gateway-log-ts">${escapeHtml(l.timestamp || '')}</span>` +
+                gatewayLogLevelBadge(l.level) +
+                `<span class="gateway-log-module">${escapeHtml(l.module || '')}</span>` +
+                `<span class="gateway-log-msg">${escapeHtml(l.message || '')}</span>` +
+            '</div>';
+        }
+        el.html(html);
+        el.scrollTop(0);
+    } catch (e) {
+        el.html(`<div class="gateway-empty-hint">加载失败: ${escapeHtml(e.message)}</div>`);
+    }
+}
+
+/** 日志面板展开时懒加载 */
+function tryLogsAutoLoad() {
+    const body = document.getElementById('gateway_logs_body');
+    if (!body || body.style.display === 'none') return;
+    loadGatewayLogs();
+}
+
+/** 绑定网关日志面板事件 */
+function bindLogsEvents() {
+    $('#gateway_logs_refresh').on('click', loadGatewayLogs);
+    $('#gateway_logs_level').on('change', loadGatewayLogs);
+    $('#gateway_logs_clear').on('click', () => {
+        $('#gateway_logs').html('<div class="gateway-empty-hint">已清空视图（点刷新重新加载）</div>');
+    });
+    $('#gateway_logs_autopoll').on('change', function () {
+        if (logsAutopollTimer) { clearInterval(logsAutopollTimer); logsAutopollTimer = null; }
+        if (this.checked) {
+            logsAutopollTimer = setInterval(() => {
+                // 仅在面板可见时刷新，节省请求
+                const body = document.getElementById('gateway_logs_body');
+                if (body && body.style.display !== 'none') loadGatewayLogs();
+            }, 5000);
+        }
+    });
+}
+
+/**
+ * 轮询新错误并弹窗提醒（接入 startPolling）。
+ * 游标机制：首次只对齐 latestSeq，不弹历史错误；之后只弹 seq 更大的新错误。
+ */
+async function fetchGatewayErrors() {
+    try {
+        const data = await apiRequest(`/api/gateway/logs?since=${lastErrorSeq}&level=error&limit=20`);
+        const logs = data.logs || [];
+        if (data.latestSeq == null) return;
+        if (!errorPopupReady) {
+            lastErrorSeq = data.latestSeq;
+            errorPopupReady = true;
+            return;
+        }
+        if (logs.length) {
+            const MAX_POP = 5;
+            for (const l of logs.slice(-MAX_POP)) {
+                const title = l.module ? `[${l.module}] 网关错误` : '网关错误';
+                // escapeHtml 后交由 toastr 渲染：浏览器解码实体回原文，既安全又正确显示
+                toastr.error(escapeHtml(l.message || ''), title, { timeOut: 0, extendedTimeOut: 0, closeButton: true, tapToDismiss: false });
+            }
+            if (logs.length > MAX_POP) {
+                toastr.warning(`最近有 ${logs.length} 条错误，仅显示最新 ${MAX_POP} 条，完整列表见"网关日志"页。`, '错误较多', { timeOut: 10000 });
+            }
+        }
+        lastErrorSeq = data.latestSeq;
+    } catch (_) { /* 错误弹窗自身失败不应打扰用户 */ }
 }
 
 /** 编辑 Agent */
