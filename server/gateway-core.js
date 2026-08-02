@@ -416,15 +416,22 @@ export class GatewayCore extends EventEmitter {
 
         try {
             // 长文本分段发送
-            const segments = adapter.splitMessage(message.content, this.getMaxLength(message.platform));
+            let segments = adapter.splitMessage(message.content, this.getMaxLength(message.platform));
+            // 纯媒体消息（content 为空）时 splitMessage 返回 []，下面的循环不会执行，
+            // 导致媒体（如 message-to-image 渲染的图片）永远发不出去，却仍在循环后误报
+            // "消息已发送"。有媒体时补一个空分段承载它（适配器会跳过空文本、只发媒体）。
+            if (segments.length === 0 && (message.mediaUrls?.length || message.media?.length)) {
+                segments = [''];
+            }
 
             for (let i = 0; i < segments.length; i++) {
                 const segment = segments[i];
                 const isLast = i === segments.length - 1;
                 // 出站去重: 防止消息队列重试时重复发送相同内容到同一目标
                 // R2: skipDedup 标记的消息跳过此检查
+                // 纯媒体分段（segment 为空）也跳过：不同图片的内容哈希相同，会被误杀。
                 let dedupKey = null;
-                if (!skipDedup) {
+                if (!skipDedup && segment) {
                     dedupKey = `${message.platform}|${message.chatId}|${this._hashContent(segment)}`;
                     const lastSent = this._recentOutbound.get(dedupKey);
                     if (lastSent && (Date.now() - lastSent) < this._outboundDedupWindow) {
