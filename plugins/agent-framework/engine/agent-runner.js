@@ -1,4 +1,4 @@
-import { ContextBuilder } from '../../../server/agent/context-builder.js';
+import { ContextBuilder, extractDefinitionVar } from '../../../server/agent/context-builder.js';
 import { Pipeline } from '../../../server/agent/pipeline.js';
 import { AgentRunResult, AgentEventType } from '../../../server/agent/run-result.js';
 
@@ -38,9 +38,10 @@ export class AgentRunner {
         let draftGenerated = false;
 
         // meta 提前构造，便于 catch 分支复用
+        // style 语义统一：session.style（会话运行时）> injectAssets 变量名 > 顶层 definition.style（deprecated 兼容）
         const meta = {
             viewMode: definition.viewMode || 'first',
-            style: definition.style || session?.style || '',
+            style: session?.style || extractDefinitionVar(definition, 'style') || definition.style || '',
             turn: session?.turn || session?.turnCount || 0,
             referencedMemory: '',
         };

@@ -24,7 +24,7 @@ import { SubagentDispatcher } from './engine/subagent-dispatcher.js';
 import { StateManager } from './engine/state-manager.js';
 import { MemoryEngine } from './engine/memory-engine.js';
 import { WorkspaceManager } from './engine/workspace-manager.js';
-import { ContextBuilder } from '../../server/agent/context-builder.js';
+import { ContextBuilder, extractDefinitionVar } from '../../server/agent/context-builder.js';
 
 // 工具
 import { createStateTools } from './tools/state-tools.js';
@@ -362,13 +362,8 @@ export default class AgentFrameworkPlugin extends GatewayPlugin {
     }
 
     _extractVar(definition, varName) {
-        // 从定义的 context.injectAssets 中提取变量名
-        const inject = definition.context?.injectAssets || {};
-        const val = inject[varName];
-        if (val && val.startsWith('${') && val.endsWith('}')) {
-            return val.slice(2, -1); // 返回变量名本身
-        }
-        return val || '';
+        // 委托共享实现（语义与 agent-runner 的 meta.style 一致）
+        return extractDefinitionVar(definition, varName);
     }
 
     async _cmdList(ctx) {

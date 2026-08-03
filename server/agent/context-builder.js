@@ -4,6 +4,27 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+/**
+ * 从 Agent 定义的 context.injectAssets 中提取声明变量。
+ *
+ * 语义：injectAssets 中形如 `"${style}"` 的值表示"该资产由会话运行时变量 style 注入"，
+ * 提取结果为变量名本身（'style'）；普通字符串值原样返回；未声明返回 ''。
+ *
+ * 供 meta.style 语义统一使用（session.style > injectAssets 变量名 > 顶层 definition.style），
+ * 也供其它需要提取定义变量的调用方复用。
+ * @param {Object} definition - Agent 定义
+ * @param {string} varName - 变量名（如 'style' / 'character' / 'worldbook'）
+ * @returns {string}
+ */
+export function extractDefinitionVar(definition, varName) {
+    const inject = definition?.context?.injectAssets || {};
+    const val = inject[varName];
+    if (val && val.startsWith('${') && val.endsWith('}')) {
+        return val.slice(2, -1); // 返回变量名本身
+    }
+    return val || '';
+}
+
 export class ContextBuilder {
     constructor(options = {}) {
         this.assetsDir = options.assetsDir || path.resolve(__dirname, '..', '..', 'assets');
