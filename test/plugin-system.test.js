@@ -61,6 +61,9 @@ describe('插件生命周期（禁用真正生效）', () => {
 
     after(async () => {
         try { await pm?.shutdown?.(); } catch (_) { /* ignore */ }
+        // 等待插件系统的异步资源（winston 文件流、undici 连接等）收敛后再退出，
+        // 否则 --test-force-exit 强杀时可能撞上 Windows libuv 的 UV_HANDLE_CLOSING 断言崩溃
+        await new Promise(r => setTimeout(r, 1500));
         for (const d of ['config', 'data', 'logs']) {
             try { fs.rmSync(d, { recursive: true, force: true }); } catch (_) { /* ignore */ }
         }
