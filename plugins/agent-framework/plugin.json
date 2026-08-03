@@ -1,9 +1,9 @@
 {
     "name": "agent-framework",
-    "displayName": "Agent 框架",
+    "displayName": "Agent 设置",
     "version": "0.1.0",
     "author": "gateway-team",
-    "description": "终端 Agent 框架：YAML 定义工作流、工具注册表、子代理调度、多阶段流水线。让用户在网关内实现多 Agent 创作流水线。",
+    "description": "终端 Agent 设置：YAML 定义工作流、工具注册表、子代理调度、多阶段流水线。让用户在网关内实现多 Agent 创作流水线。",
     "main": "index.js",
     "priority": 40,
     "enabled": true,
@@ -16,6 +16,7 @@
         "embedderMode": { "type": "string", "default": "local", "enum": ["local", "api"], "description": "embedding 引擎的向量生成方式：local=内置字符n-gram（离线可用）；api=外部 /embeddings 端点（语义更强）" },
         "embedderBaseUrl": { "type": "string", "default": "", "description": "api 模式的嵌入端点基址（OpenAI 兼容，如 http://127.0.0.1:11434/v1 或火山方舟 v1 地址）；local 模式忽略" },
         "embedderModel": { "type": "string", "default": "text-embedding-3-small", "description": "api 模式的嵌入模型名" },
-        "embedderApiKey": { "type": "string", "default": "", "description": "api 模式的密钥；留空回退环境变量 AGENT_EMBEDDER_API_KEY" }
+        "embedderApiKey": { "type": "string", "default": "", "description": "api 模式的密钥；留空回退环境变量 AGENT_EMBEDDER_API_KEY" },
+        "agentFrontendUrl": { "type": "string", "default": "", "description": "Agent 自定义前端访问 URL（留空使用内置 /agent 页面）" }
     }
 }

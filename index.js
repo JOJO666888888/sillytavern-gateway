@@ -1205,6 +1205,29 @@ async function initExtension() {
 // ==================== 顶级面板 ====================
 
 /**
+ * 打开 Agent 专用前端（模块 B：Agent 前端入口）。
+ *
+ * 优先读取网关配置的 agentFrontendUrl（/api/plugins/agent-framework/config），
+ * 已配置则在新标签打开该 URL；未配置或读取失败回退内置 ${serverUrl}/agent 页面。
+ */
+async function openAgentFrontend() {
+    const base = ($('#gateway_panel_url').val() || getSettings().serverUrl || 'http://127.0.0.1:3210')
+        .trim().replace(/\/+$/, '');
+    let target = `${base}/agent`;
+    try {
+        const data = await apiRequest('/api/plugins/agent-framework/config');
+        const cfg = data && data.config;
+        if (cfg && typeof cfg.agentFrontendUrl === 'string' && cfg.agentFrontendUrl.trim()) {
+            target = cfg.agentFrontendUrl.trim();
+        }
+    } catch (error) {
+        // 网关不可达/未配置时回退内置页面，不打断打开动作
+        console.warn(`[Gateway] 读取 Agent 前端 URL 配置失败(${error.message})，回退内置 /agent 页面`);
+    }
+    window.open(target, '_blank');
+}
+
+/**
  * 初始化网关顶级设置面板
  * 注入到 ST 顶部设置栏(#top-settings-holder)，与预设/API/世界书/扩展同等级。
  *
@@ -1261,7 +1284,6 @@ async function initGatewayPanel() {
     bindPanelEvents();
     bindRegexEvents();
     bindRuntimeEvents();
-    bindAgentEvents();
     bindLogsEvents();
 
     // 恢复网关地址与鉴权 token 输入
@@ -1277,15 +1299,7 @@ async function initGatewayPanel() {
     // 9. 恢复本地服务控制状态
     updateGatewayServerUI();
 
-    // 10. Agent 面板：监听折叠区块展开时自动加载
-    const agentBody = document.getElementById('gateway_agent_body');
-    if (agentBody) {
-        const agentObserver = new MutationObserver(() => tryAgentAutoLoad());
-        agentObserver.observe(agentBody, { attributes: true, attributeFilter: ['style'] });
-        tryAgentAutoLoad();
-    }
-
-    // 11. 网关日志面板：展开时自动加载
+    // 10. 网关日志面板：展开时自动加载
     const logsBody = document.getElementById('gateway_logs_body');
     if (logsBody) {
         const logsObserver = new MutationObserver(() => tryLogsAutoLoad());
@@ -1372,6 +1386,9 @@ function bindPanelEvents() {
             btn.prop('disabled', false).html(originalHtml);
         }
     });
+
+    // "Agent 前端"入口：在新标签打开独立 Agent 前端页面（Agent 设置 + Agent 剧场）
+    $('#gateway_panel_open_agent').on('click', openAgentFrontend);
 
     // 本地服务控制
     $('#gateway_panel_auto_start_server').on('change', function () {
@@ -3099,169 +3116,6 @@ async function syncFromSillyTavern() {
     }
 }
 
-// ==================== Agent 框架面板 ====================
-
-/** Agent 自动加载标记 */
-let agentLoaded = false;
-
-/** Agent 面板辅助：时间格式化 */
-function agentFmtTime(ts) {
-    if (!ts) return '-';
-    return new Date(ts).toLocaleTimeString();
-}
-
-/** Agent 面板辅助：耗时格式化 */
-function agentFmtDuration(ms) {
-    if (!ms && ms !== 0) return '-';
-    if (ms < 1000) return ms + 'ms';
-    return (ms / 1000).toFixed(1) + 's';
-}
-
-/** 简易对象 → YAML 序列化（用于编辑器回填） */
-function agentToYaml(obj, indent = 0) {
-    const pad = '  '.repeat(indent);
-    const lines = [];
-    if (obj === null || obj === undefined) return '';
-    if (typeof obj !== 'object') return String(obj);
-    if (Array.isArray(obj)) {
-        for (const item of obj) {
-            if (item !== null && typeof item === 'object' && !Array.isArray(item)) {
-                const entries = Object.entries(item);
-                if (entries.length > 0) {
-                    lines.push(pad + '- ' + entries[0][0] + ': ' + agentYamlVal(entries[0][1]));
-                    for (let j = 1; j < entries.length; j++) {
-                        lines.push(pad + '  ' + entries[j][0] + ': ' + agentYamlVal(entries[j][1]));
-                    }
-                }
-            } else {
-                lines.push(pad + '- ' + agentYamlVal(item));
-            }
-        }
-        return lines.join('\n');
-    }
-    for (const key in obj) {
-        if (!Object.prototype.hasOwnProperty.call(obj, key)) continue;
-        const val = obj[key];
-        if (val !== null && typeof val === 'object') {
-            const sub = agentToYaml(val, indent + 1);
-            lines.push(pad + key + ':');
-            if (sub) lines.push(sub);
-        } else {
-            lines.push(pad + key + ': ' + agentYamlVal(val));
-        }
-    }
-    return lines.join('\n');
-}
-
-function agentYamlVal(v) {
-    if (v === null || v === undefined) return 'null';
-    if (typeof v === 'string') return v;
-    if (typeof v === 'number' || typeof v === 'boolean') return String(v);
-    if (Array.isArray(v) || typeof v === 'object') return '\n' + agentToYaml(v, 1);
-    return String(v);
-}
-
-/** 加载 Agent 列表 */
-async function loadAgents() {
-    const el = $('#gateway_agent_list');
-    el.html('<div class="gateway-empty-hint">加载中...</div>');
-    try {
-        const data = await apiRequest('/api/agents');
-        if (data.error) {
-            el.html(`<div class="gateway-empty-hint">${escapeHtml(data.error)}</div>`);
-            return;
-        }
-        const agents = data.agents || [];
-        if (!agents.length) {
-            el.html('<div class="gateway-empty-hint">暂无 Agent，点击「新建Agent」创建</div>');
-            return;
-        }
-        let html = '<table class="gateway-agent-table"><thead><tr>' +
-            '<th>名称</th><th>描述</th><th>工具数</th><th>子代理数</th><th>操作</th>' +
-            '</tr></thead><tbody>';
-        for (const a of agents) {
-            const desc = a.description || a.displayName || '';
-            html += '<tr>' +
-                `<td><b>${escapeHtml(a.name)}</b></td>` +
-                `<td>${escapeHtml(desc)}</td>` +
-                `<td>${a.tools ? a.tools.length : 0}</td>` +
-                `<td>${a.subAgents ? a.subAgents.length : 0}</td>` +
-                '<td class="gateway-agent-actions">' +
-                    `<button class="menu_button gateway-agent-run-btn" data-name="${escapeHtml(a.name)}" title="运行"><i class="fa-solid fa-play"></i></button>` +
-                    `<button class="menu_button gateway-agent-edit-btn" data-name="${escapeHtml(a.name)}" title="编辑"><i class="fa-solid fa-pen"></i></button>` +
-                    `<button class="menu_button gateway-agent-del-btn" data-name="${escapeHtml(a.name)}" title="删除"><i class="fa-solid fa-trash"></i></button>` +
-                '</td>' +
-            '</tr>';
-        }
-        html += '</tbody></table>';
-        el.html(html);
-    } catch (e) {
-        el.html(`<div class="gateway-empty-hint">加载失败: ${escapeHtml(e.message)}</div>`);
-    }
-}
-
-/** 加载工具注册表 */
-async function loadAgentTools() {
-    const el = $('#gateway_agent_tools');
-    el.html('<div class="gateway-empty-hint">加载中...</div>');
-    try {
-        const data = await apiRequest('/api/agents/tools');
-        const tools = data.tools || [];
-        if (!tools.length) {
-            el.html('<div class="gateway-empty-hint">暂无注册工具</div>');
-            return;
-        }
-        let html = '<table class="gateway-agent-table"><thead><tr>' +
-            '<th>工具名</th><th>描述</th><th>来源</th>' +
-            '</tr></thead><tbody>';
-        for (const t of tools) {
-            html += '<tr>' +
-                `<td><code>${escapeHtml(t.name)}</code></td>` +
-                `<td>${escapeHtml(t.description || '')}</td>` +
-                `<td>${escapeHtml(t.source || '')}</td>` +
-            '</tr>';
-        }
-        html += '</tbody></table>';
-        el.html(html);
-    } catch (e) {
-        el.html(`<div class="gateway-empty-hint">加载失败: ${escapeHtml(e.message)}</div>`);
-    }
-}
-
-/** 加载运行日志 */
-async function loadAgentLogs() {
-    const el = $('#gateway_agent_logs');
-    el.html('<div class="gateway-empty-hint">加载中...</div>');
-    try {
-        const data = await apiRequest('/api/agents/logs');
-        let logs = data.logs || [];
-        if (!logs.length) {
-            el.html('<div class="gateway-empty-hint">暂无执行记录</div>');
-            return;
-        }
-        logs = logs.slice(-10).reverse();
-        let html = '<table class="gateway-agent-table"><thead><tr>' +
-            '<th>Agent</th><th>开始时间</th><th>耗时</th><th>步数</th><th>状态</th>' +
-            '</tr></thead><tbody>';
-        for (const l of logs) {
-            const status = l.success
-                ? '<span class="gateway-status-badge connected">成功</span>'
-                : '<span class="gateway-status-badge disconnected">失败</span>';
-            html += '<tr>' +
-                `<td>${escapeHtml(l.agent || '-')}</td>` +
-                `<td>${agentFmtTime(l.startTime)}</td>` +
-                `<td>${agentFmtDuration(l.duration)}</td>` +
-                `<td>${l.steps != null ? l.steps : '-'}</td>` +
-                `<td>${status}</td>` +
-            '</tr>';
-        }
-        html += '</tbody></table>';
-        el.html(html);
-    } catch (e) {
-        el.html(`<div class="gateway-empty-hint">加载失败: ${escapeHtml(e.message)}</div>`);
-    }
-}
-
 /** 网关日志级别 -> badge 样式/标签 */
 function gatewayLogLevelBadge(level) {
     const map = {
@@ -3358,115 +3212,6 @@ async function fetchGatewayErrors() {
         }
         lastErrorSeq = data.latestSeq;
     } catch (_) { /* 错误弹窗自身失败不应打扰用户 */ }
-}
-
-/** 编辑 Agent */
-async function editAgent(name) {
-    try {
-        const def = await apiRequest(`/api/agents/${encodeURIComponent(name)}`);
-        const yaml = agentToYaml(def);
-        $('#gateway_agent_yaml').val(yaml);
-        $('#gateway_agent_editing_name').text('编辑: ' + name);
-        $('#gateway_agent_editor').show();
-        $('#gateway_agent_body').find('.gateway-agent-yaml').focus();
-    } catch (e) {
-        toastr.error(`加载Agent失败: ${e.message}`);
-    }
-}
-
-/** 保存 Agent */
-async function saveAgent() {
-    const yaml = $('#gateway_agent_yaml').val().trim();
-    if (!yaml) { toastr.warning('YAML 内容不能为空'); return; }
-    try {
-        await apiRequest('/api/agents', { method: 'POST', body: JSON.stringify({ yaml }) });
-        toastr.success('Agent 已保存');
-        $('#gateway_agent_editor').hide();
-        $('#gateway_agent_yaml').val('');
-        $('#gateway_agent_editing_name').text('');
-        await loadAgents();
-    } catch (e) {
-        toastr.error(`保存失败: ${e.message}`);
-    }
-}
-
-/** 运行 Agent（提示用户在 IM 中执行） */
-async function runAgent(name) {
-    try {
-        const data = await apiRequest(`/api/agents/${encodeURIComponent(name)}/run`, {
-            method: 'POST', body: JSON.stringify({}),
-        });
-        toastr.info(data.message || '请在IM中运行');
-    } catch (e) {
-        toastr.error(`操作失败: ${e.message}`);
-    }
-}
-
-/** 删除 Agent */
-async function deleteAgent(name) {
-    if (!confirm(`确定删除 Agent "${name}"？此操作不可撤销。`)) return;
-    try {
-        await apiRequest(`/api/agents/${encodeURIComponent(name)}`, { method: 'DELETE' });
-        toastr.success('Agent 已删除');
-        await loadAgents();
-    } catch (e) {
-        toastr.error(`删除失败: ${e.message}`);
-    }
-}
-
-/** 新建 Agent（填充模板） */
-function newAgent() {
-    const template = [
-        'name: new-agent',
-        'displayName: 新Agent',
-        'description: 在此填写Agent描述',
-        'tools:',
-        '  - state.set',
-        '  - memory.recall',
-        'model:',
-        '  temperature: 0.8',
-        '  maxTokens: 32768',
-        'maxSteps: 10',
-        'context:',
-        '  historyLimit: 20',
-        '',
-    ].join('\n');
-    $('#gateway_agent_yaml').val(template);
-    $('#gateway_agent_editing_name').text('新建 Agent');
-    $('#gateway_agent_editor').show();
-}
-
-/** 绑定 Agent 面板事件 */
-function bindAgentEvents() {
-    $('#gateway_agent_refresh').on('click', loadAgents);
-    $('#gateway_agent_new').on('click', newAgent);
-    $('#gateway_agent_tools_refresh').on('click', loadAgentTools);
-    $('#gateway_agent_logs_refresh').on('click', loadAgentLogs);
-
-    $('#gateway_agent_save').on('click', saveAgent);
-    $('#gateway_agent_cancel').on('click', function () {
-        $('#gateway_agent_editor').hide();
-        $('#gateway_agent_yaml').val('');
-        $('#gateway_agent_editing_name').text('');
-    });
-
-    // 事件委托：运行 / 编辑 / 删除（HTML 重渲染后仍生效）
-    $('#gateway_agent_list')
-        .on('click', '.gateway-agent-run-btn', function () { runAgent($(this).data('name')); })
-        .on('click', '.gateway-agent-edit-btn', function () { editAgent($(this).data('name')); })
-        .on('click', '.gateway-agent-del-btn', function () { deleteAgent($(this).data('name')); });
-}
-
-/** Agent 区块首次展开时自动加载数据 */
-function tryAgentAutoLoad() {
-    if (agentLoaded) return;
-    const body = document.getElementById('gateway_agent_body');
-    if (body && body.style.display !== 'none') {
-        agentLoaded = true;
-        loadAgents();
-        loadAgentTools();
-        loadAgentLogs();
-    }
 }
 
 // ==================== R3: Schema 驱动的插件配置弹窗 ====================

@@ -8,7 +8,6 @@
 .gateway-section {
     margin-bottom: 15px;
     padding: 10px;
-    border: 1px solid var(--SmartThemeBorderColor, #333);
     border-radius: 8px;
     background: var(--SmartThemeBlurTintColor, rgba(0, 0, 0, 0.1));
 }
@@ -312,9 +311,8 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 15px;
-    padding-bottom: 10px;
-    border-bottom: 1px solid var(--SmartThemeBorderColor, #333);
+    margin-bottom: 12px;
+    padding-bottom: 8px;
 }
 
 .gateway-panel-header h3 {
@@ -451,10 +449,9 @@
 
 /* 面板区块 */
 #gateway_panel .gateway-section {
-    margin-bottom: 15px;
-    padding: 12px;
-    border: 1px solid var(--SmartThemeBorderColor, #333);
-    border-radius: 8px;
+    margin-bottom: 14px;
+    padding: 10px 12px;
+    border-radius: 10px;
     background: var(--SmartThemeBlurTintColor, rgba(0, 0, 0, 0.1));
 }
 
@@ -467,7 +464,6 @@
     color: var(--SmartThemeBodyColor, #fff);
     margin-bottom: 10px;
     padding-bottom: 6px;
-    border-bottom: 1px solid var(--SmartThemeBorderColor, #333);
 }
 
 .gateway-section-title .menu_button {
@@ -888,6 +884,21 @@
 .gateway-save-btn {
     width: 100%;
     margin-top: 8px;
+}
+
+/* Agent 前端入口按钮：醒目强调（模块 B 独立页入口） */
+.gateway-agent-entry-btn {
+    font-weight: bold;
+    padding: 3px 10px;
+    border: 1px solid var(--SmartThemeQuoteColor, #7a9ec2);
+    color: var(--SmartThemeQuoteColor, #7a9ec2);
+    background: rgba(122, 158, 194, 0.12);
+    border-radius: 6px;
+    white-space: nowrap;
+}
+.gateway-agent-entry-btn:hover {
+    background: rgba(122, 158, 194, 0.25);
+    filter: brightness(1.1);
 }
 
 .gateway-refresh-btn {
@@ -1924,4 +1935,325 @@
     font-weight: 700;
     margin-bottom: 2px;
     opacity: 0.8;
+}
+
+/* ================================================================
+ * RP 视觉设计系统 v2  —  奥术控制台 (Arcane Command Console)
+ *
+ * 设计理念：
+ *   面板是连接 SillyTavern RP 世界与多平台 IM 的"魔法调度中枢"。
+ *   以 RP 紫罗兰为主色调，每个功能区块拥有专属主题色，用渐变横线
+ *   与符文装饰替代生硬方框，营造沉浸式工坊体验。所有色彩叠加在
+ *   ST 主题变量之上，暗色/亮色主题下均保持可读性。
+ *
+ * 色彩体系（来自配套终端脚本 RP 主题）：
+ *   紫罗兰 #9d6cff | 兰紫 #d770ff | 金橙 #ffaf00
+ *   翡翠绿 #00d787 | 琥珀金 #d7af00 | 绯红 #ff005f | 石板灰 #808080
+ * ================================================================ */
+
+/* ── 1. 区块主题色令牌 ──
+ *   每个区块通过 data-gw-theme 属性获得 --gw-accent（主色）与
+ *   --gw-accent-rgb（RGB 分量，用于 rgba() 透明度叠加）。
+ *   色彩分配逻辑：
+ *     update     翡翠绿  — 更新带来新鲜与成长
+ *     connection 青蓝    — 信号传输、连通（扩展色，衔接翡翠绿与蓝）
+ *     platform   金橙    — 核心枢纽、重要配置
+ *     runtime    兰紫    — 推理引擎、魔法智慧
+ *     agent      紫罗兰  — 框架主色调，Agent 是中枢
+ *     logs       石板灰  — 中性记录，不抢视觉焦点
+ *     theatre    绯红    — 戏剧张力、角色激情
+ *     plugin     琥珀金  — 模块化、价值与扩展
+ *     docs       青绿    — 知识、文档、宁静
+ *     regex      桃紫    — 转换、过滤、魔法变奏（扩展色）
+ */
+.gateway-section[data-gw-theme="update"]     { --gw-accent: #00d787; --gw-accent-rgb: 0, 215, 135; }
+.gateway-section[data-gw-theme="connection"] { --gw-accent: #00c8ff; --gw-accent-rgb: 0, 200, 255; }
+.gateway-section[data-gw-theme="platform"]   { --gw-accent: #ffaf00; --gw-accent-rgb: 255, 175, 0; }
+.gateway-section[data-gw-theme="runtime"]    { --gw-accent: #d770ff; --gw-accent-rgb: 215, 112, 255; }
+.gateway-section[data-gw-theme="agent"]      { --gw-accent: #9d6cff; --gw-accent-rgb: 157, 108, 255; }
+.gateway-section[data-gw-theme="logs"]       { --gw-accent: #9aa0a6; --gw-accent-rgb: 154, 160, 166; }
+.gateway-section[data-gw-theme="theatre"]    { --gw-accent: #ff005f; --gw-accent-rgb: 255, 0, 95; }
+.gateway-section[data-gw-theme="plugin"]     { --gw-accent: #d7af00; --gw-accent-rgb: 215, 175, 0; }
+.gateway-section[data-gw-theme="docs"]       { --gw-accent: #00d7af; --gw-accent-rgb: 0, 215, 175; }
+.gateway-section[data-gw-theme="regex"]      { --gw-accent: #ff5fd7; --gw-accent-rgb: 255, 95, 215; }
+
+/* ── 2. 面板头部：RP 符文装饰 + 渐变流光 ── */
+
+/* 头部下方渐变流光横线（替代原 border-bottom） */
+.gateway-panel-header {
+    position: relative;
+}
+
+.gateway-panel-header::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 2px;
+    border-radius: 2px;
+    background: linear-gradient(90deg,
+        transparent 0%,
+        #9d6cff 12%,
+        #d770ff 28%,
+        #ffaf00 50%,
+        #d770ff 72%,
+        #9d6cff 88%,
+        transparent 100%);
+    background-size: 200% 100%;
+    animation: gw-flow 6s linear infinite;
+    opacity: 0.85;
+}
+
+@keyframes gw-flow {
+    0%   { background-position: 0% 0%; }
+    100% { background-position: 200% 0%; }
+}
+
+/* 标题符文（剑⚔）— 两侧装饰，呼吸光效 */
+.gw-panel-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    font-size: 18px;
+}
+
+.gw-panel-title::before,
+.gw-panel-title::after {
+    font-size: 0.65em;
+    font-weight: normal;
+    opacity: 0.7;
+    animation: gw-rune-pulse 3s ease-in-out infinite;
+}
+
+.gw-panel-title::before { content: '\2694'; }  /* ⚔ */
+.gw-panel-title::after  { content: '\2694'; animation-delay: 1.5s; }
+
+@keyframes gw-rune-pulse {
+    0%, 100% { opacity: 0.4; text-shadow: 0 0 4px rgba(157, 108, 255, 0.3); }
+    50%      { opacity: 0.85; text-shadow: 0 0 14px rgba(215, 112, 255, 0.6); }
+}
+
+/* 标题文字渐变流光 */
+.gw-title-text {
+    background: linear-gradient(90deg, #9d6cff, #d770ff, #ffaf00, #d770ff, #9d6cff);
+    background-size: 200% auto;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: gw-text-flow 8s linear infinite;
+}
+
+@keyframes gw-text-flow {
+    0%   { background-position: 0% center; }
+    100% { background-position: 200% center; }
+}
+
+/* 头部下方宝石装饰行 ◆ ── ✦ ── ◆ */
+.gw-header-ornament {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 14px;
+    padding: 0 4px;
+    font-size: 11px;
+}
+
+.gw-ornament-gem {
+    color: #d770ff;
+    opacity: 0.6;
+    animation: gw-gem-pulse 4s ease-in-out infinite;
+    flex-shrink: 0;
+}
+
+.gw-ornament-star {
+    color: #ffaf00;
+    opacity: 0.6;
+    animation: gw-gem-pulse 4s ease-in-out infinite;
+    animation-delay: 2s;
+    flex-shrink: 0;
+}
+
+.gw-ornament-line {
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(90deg,
+        transparent,
+        rgba(var(--gw-accent-rgb, 128, 128, 128), 0.4),
+        transparent);
+    border-radius: 1px;
+}
+
+@keyframes gw-gem-pulse {
+    0%, 100% { opacity: 0.35; text-shadow: 0 0 3px currentColor; }
+    50%      { opacity: 0.75; text-shadow: 0 0 10px currentColor; }
+}
+
+/* ── 3. 区块容器：无框 + 主题色微染背景 ── */
+
+/* 用主题色极低透明度叠加，暗色主题下若隐若现，亮色主题下不干扰 */
+#gateway_panel .gateway-section[data-gw-theme] {
+    position: relative;
+    background: rgba(var(--gw-accent-rgb, 128, 128, 128), 0.04);
+    transition: background 0.3s ease;
+}
+
+#gateway_panel .gateway-section[data-gw-theme]:hover {
+    background: rgba(var(--gw-accent-rgb, 128, 128, 128), 0.07);
+}
+
+/* 区块顶部主题色渐隐细线 */
+#gateway_panel .gateway-section[data-gw-theme]::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 14px;
+    right: 14px;
+    height: 1px;
+    background: linear-gradient(90deg,
+        transparent,
+        rgba(var(--gw-accent-rgb, 128, 128, 128), 0.45),
+        transparent);
+    border-radius: 1px;
+}
+
+/* ── 4. 区块标题栏：左色标 + 图标着色 + 渐变下划线 ── */
+
+/* 左侧 3px 主题色竖标 */
+.gateway-section[data-gw-theme] > .gateway-section-title {
+    border-left: 3px solid var(--gw-accent, #808080);
+    padding-left: 10px !important;
+    position: relative;
+}
+
+/* 标题栏底部渐变横线（替代原 border-bottom），颜色与区块主题统一 */
+.gateway-section[data-gw-theme] > .gateway-section-title::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 1px;
+    background: linear-gradient(90deg,
+        var(--gw-accent, #808080),
+        rgba(var(--gw-accent-rgb, 128, 128, 128), 0.4) 40%,
+        transparent);
+    border-radius: 1px;
+}
+
+/* 标题栏功能图标着色 + 微光 */
+.gateway-section[data-gw-theme] > .gateway-section-title > i:not(.gateway-collapse-arrow) {
+    color: var(--gw-accent, #808080);
+    filter: drop-shadow(0 0 5px rgba(var(--gw-accent-rgb, 128, 128, 128), 0.4));
+    transition: filter 0.3s ease;
+}
+
+/* 悬停时图标光晕增强 */
+.gateway-section[data-gw-theme] > .gateway-section-title:hover > i:not(.gateway-collapse-arrow) {
+    filter: drop-shadow(0 0 10px rgba(var(--gw-accent-rgb, 128, 128, 128), 0.7));
+}
+
+/* 折叠箭头继承主题色 */
+.gateway-section[data-gw-theme] > .gateway-section-title .gateway-collapse-arrow {
+    color: rgba(var(--gw-accent-rgb, 128, 128, 128), 0.8);
+}
+
+/* ── 5. 运行模式开关：RP 翡翠绿 ── */
+.gateway-mode-block.mode-active {
+    border-left-color: #00d787;
+    background: rgba(0, 215, 135, 0.08);
+    box-shadow: -3px 0 14px rgba(0, 215, 135, 0.12);
+}
+
+/* ── 6. 状态徽标：统一 RP 色彩 ── */
+.gateway-status-badge.connected {
+    background: rgba(0, 215, 135, 0.18);
+    color: #00d787;
+    border: 1px solid rgba(0, 215, 135, 0.5);
+}
+
+.gateway-status-badge.disconnected {
+    background: rgba(255, 0, 95, 0.18);
+    color: #ff005f;
+    border: 1px solid rgba(255, 0, 95, 0.5);
+}
+
+.gateway-status-badge.warn {
+    background: rgba(215, 175, 0, 0.18);
+    color: #d7af00;
+    border: 1px solid rgba(215, 175, 0, 0.5);
+}
+
+.gateway-status-badge.debug {
+    background: rgba(128, 128, 128, 0.2);
+    color: #aaa;
+    border: 1px solid rgba(128, 128, 128, 0.5);
+}
+
+/* ── 7. Toggle 开关：开启态翡翠绿 + 微光 ── */
+.toggle-switch input:checked + .toggle-slider {
+    background-color: #00d787;
+    box-shadow: 0 0 8px rgba(0, 215, 135, 0.4);
+}
+
+/* ── 8. 适配器状态徽标统一 RP 色 ── */
+.gateway-adapter-state.connected {
+    background: rgba(0, 215, 135, 0.2);
+    color: #00d787;
+}
+
+.gateway-adapter-state.connecting,
+.gateway-adapter-state.reconnecting {
+    background: rgba(215, 175, 0, 0.2);
+    color: #d7af00;
+}
+
+.gateway-adapter-state.error {
+    background: rgba(255, 0, 95, 0.2);
+    color: #ff005f;
+}
+
+/* ── 9. 验证结果条统一 RP 色 ── */
+.gateway-verify-item.ok {
+    border-left: 3px solid #00d787;
+}
+
+.gateway-verify-item.fail {
+    border-left: 3px solid #ff005f;
+}
+
+.gateway-verify-badge.connected {
+    background: rgba(0, 215, 135, 0.2);
+    color: #00d787;
+}
+
+.gateway-verify-badge.error {
+    background: rgba(255, 0, 95, 0.2);
+    color: #ff005f;
+}
+
+/* ── 10. 无障碍：尊重 prefers-reduced-motion ── */
+@media (prefers-reduced-motion: reduce) {
+    .gw-title-text,
+    .gw-panel-title::before,
+    .gw-panel-title::after,
+    .gw-ornament-gem,
+    .gw-ornament-star,
+    .gateway-panel-header::after {
+        animation: none !important;
+    }
+
+    /* 关闭渐变文字后回退为 ST 主题色 */
+    .gw-title-text {
+        -webkit-text-fill-color: var(--SmartThemeBodyColor, #fff);
+        background: none;
+    }
+
+    /* 符文保持静态可见 */
+    .gw-panel-title::before,
+    .gw-panel-title::after {
+        opacity: 0.6;
+        text-shadow: none;
+    }
 }

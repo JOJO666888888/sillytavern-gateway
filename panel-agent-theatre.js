@@ -1,14 +1,19 @@
 /**
- * Agent 剧场前端逻辑（Task 4.3-4.6）
+ * [已废弃] Agent 剧场前端逻辑（Task 4.3-4.6 时代的 ST 面板内嵌实现）
  *
- * 功能：
+ * 模块 B 改造后，Agent 剧场已迁移到独立前端页面 public/agent.js（/agent 访问，
+ * 元素 id 改为 agent_theatre_* / agent_frontend_* 前缀，不依赖 SillyTavern）。
+ * 本文件保留仅为历史参考，ST 面板（panel.html）与根扩展（index.js）已不再引用
+ * 或动态注入本脚本。请勿在新代码中依赖本文件。
+ *
+ * 功能（历史）：
  *   - EventSource 订阅 /api/agent-theatre/stream，实时正文流式追加
  *   - 状态面板渲染 state.visible（时间 / 地点 / 在场角色 / 各角色状态）
  *   - 时间线从 events 重建（工具调用 / 子代理 / 状态变更，不同图标）
  *   - 选项区点击即 POST /api/agent-theatre/input（带 callbackId）
  *   - 配置侧栏 YAML 编辑后 POST 保存，热重载（调 /api/agents 保存 + 通知引擎重载）
  *
- * 挂载方式：panel.html 在 "Agent 剧场" 区块展开且网关已连接时，动态注入本脚本。
+ * 挂载方式（历史）：panel.html 在 "Agent 剧场" 区块展开且网关已连接时，动态注入本脚本。
  * 本脚本以 IIFE 形式自动初始化，依赖页面已存在的 DOM 元素：
  *   #gateway_theatre_* 系列元素 + 全局 gwFetch / esc / toastr 工具。
  *

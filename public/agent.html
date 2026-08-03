@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent 前端 - 多平台网关</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" crossorigin="anonymous">
+<link rel="stylesheet" href="agent.css">
+</head>
+<body>
+<div class="agent-page">
+
+    <!-- 页头 -->
+    <header class="agent-header">
+        <div class="agent-header-title">
+            <h1><i class="fa-solid fa-sitemap"></i> Agent 前端</h1>
+            <span class="agent-header-sub">多平台网关 · 独立页面 · 不依赖 SillyTavern</span>
+        </div>
+        <div class="agent-header-actions">
+            <button id="agent_guide_btn" class="menu_button" title="使用说明"><i class="fa-solid fa-circle-question"></i> 使用说明</button>
+        </div>
+    </header>
+
+    <!-- 连接配置 -->
+    <section class="gateway-section" data-gw-theme="connection">
+        <div class="gateway-section-title">
+            <i class="fa-solid fa-plug"></i> 连接配置
+            <i class="fa-solid fa-circle-question agent-help-icon" data-help="connection" title="点击查看说明"></i>
+        </div>
+        <div class="gateway-collapse-body" style="display:block;">
+            <div class="gateway-field-row">
+                <input type="text" id="agent_conn_url" class="text_pole" placeholder="http://127.0.0.1:3210" value="http://127.0.0.1:3210" title="网关地址">
+                <input type="password" id="agent_conn_token" class="text_pole" placeholder="鉴权 Token（可空）" title="网关鉴权 Token">
+                <button id="agent_conn_save" class="menu_button gateway-save-btn"><i class="fa-solid fa-floppy-disk"></i> 保存连接</button>
+            </div>
+            <div class="gateway-hint">连接配置保存在浏览器 localStorage。所有 API 请求自动携带 X-Gateway-Token（若已填写）。</div>
+            <div id="agent_conn_status" class="gateway-hint" style="display:none;"></div>
+        </div>
+    </section>
+
+    <!-- Agent 设置 -->
+    <section class="gateway-section gateway-collapsible" data-gw-theme="agent" id="agent_settings_section">
+        <div class="gateway-section-title gateway-collapse-toggle" data-toggle="agent_settings_body">
+            <i class="fa-solid fa-chevron-right gateway-collapse-arrow"></i>
+            <i class="fa-solid fa-sitemap"></i> Agent 设置
+            <i class="fa-solid fa-circle-question agent-help-icon" data-help="agent-settings" title="点击查看说明"></i>
+        </div>
+        <div id="agent_settings_body" class="gateway-collapse-body" style="display:none;">
+
+            <!-- 分组 1：Agent 引擎 -->
+            <div class="gateway-subsection gateway-collapsible" data-gw-theme="engine">
+                <div class="gateway-section-title gateway-collapse-toggle" data-toggle="agent_engine_body">
+                    <i class="fa-solid fa-chevron-right gateway-collapse-arrow"></i>
+                    Agent 引擎
+                    <i class="fa-solid fa-circle-question agent-help-icon" data-help="agent-engine" title="点击查看说明"></i>
+                </div>
+                <div id="agent_engine_body" class="gateway-collapse-body" style="display:none;">
+                    <div class="gateway-field">
+                        <label>defaultMaxSteps</label>
+                        <input type="number" id="agent_engine_defaultMaxSteps" class="text_pole" min="1" max="50" step="1">
+                        <span class="gateway-hint">Agent 默认最大工具调用步数（1-50）</span>
+                    </div>
+                    <div class="gateway-field">
+                        <label>summaryInterval</label>
+                        <input type="number" id="agent_engine_summaryInterval" class="text_pole" min="0" max="50" step="1">
+                        <span class="gateway-hint">每 N 轮自动生成剧情摘要（0=禁用）</span>
+                    </div>
+                    <div class="gateway-field">
+                        <label>memoryRetriever</label>
+                        <select id="agent_engine_memoryRetriever" class="text_pole">
+                            <option value="inverted">inverted（倒排索引，零依赖）</option>
+                            <option value="embedding">embedding（嵌入向量）</option>
+                        </select>
+                        <span class="gateway-hint">记忆检索引擎；embedding 需配置 embedderMode</span>
+                    </div>
+                    <div class="gateway-field">
+                        <label>embedderMode</label>
+                        <select id="agent_engine_embedderMode" class="text_pole">
+                            <option value="local">local（内置字符 n-gram，离线可用）</option>
+                            <option value="api">api（外部 /embeddings 端点）</option>
+                        </select>
+                    </div>
+                    <div class="gateway-field">
+                        <label>embedderBaseUrl</label>
+                        <input type="text" id="agent_engine_embedderBaseUrl" class="text_pole" placeholder="http://127.0.0.1:11434/v1">
+                        <span class="gateway-hint">api 模式嵌入端点基址（OpenAI 兼容，如火山方舟 v1 地址）；local 模式忽略</span>
+                    </div>
+                    <div class="gateway-field">
+                        <label>embedderModel</label>
+                        <input type="text" id="agent_engine_embedderModel" class="text_pole" placeholder="text-embedding-3-small">
+                    </div>
+                    <div class="gateway-field">
+                        <label>embedderApiKey</label>
+                        <input type="password" id="agent_engine_embedderApiKey" class="text_pole" placeholder="sk-...（留空回退环境变量 AGENT_EMBEDDER_API_KEY）">
+                    </div>
+                </div>
+            </div>
+
+            <!-- 分组 2：Agent 前端 -->
+            <div class="gateway-subsection gateway-collapsible" data-gw-theme="frontend">
+                <div class="gateway-section-title gateway-collapse-toggle" data-toggle="agent_frontend_body">
+                    <i class="fa-solid fa-chevron-right gateway-collapse-arrow"></i>
+                    Agent 前端
+                    <i class="fa-solid fa-circle-question agent-help-icon" data-help="agent-frontend" title="点击查看说明"></i>
+                </div>
+                <div id="agent_frontend_body" class="gateway-collapse-body" style="display:none;">
+                    <div class="gateway-field">
+                        <label>Agent 自定义前端 URL</label>
+                        <div class="gateway-field-row">
+                            <input type="text" id="agent_frontend_url" class="text_pole" placeholder="http://127.0.0.1:3210/agent" value="http://127.0.0.1:3210/agent">
+                            <button id="agent_frontend_open" class="menu_button" title="在新标签打开该 URL（留空时使用内置 /agent 页面）"><i class="fa-solid fa-arrow-up-right-from-square"></i> 访问</button>
+                            <button id="agent_frontend_validate" class="menu_button" title="先做格式校验，再由网关后端探测可达性"><i class="fa-solid fa-circle-check"></i> 验证</button>
+                        </div>
+                        <span id="agent_frontend_error" class="agent-field-error" style="display:none;"></span>
+                        <span class="gateway-hint">可填其它可访问的 Agent 前端地址（如部署到公网的镜像）。留空时「访问」使用内置 /agent 页面；「验证」先做格式校验，再由网关后端探测可达性。</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 分组 3：IM 集成（只读提示，不落库） -->
+            <div class="gateway-subsection gateway-collapsible" data-gw-theme="im">
+                <div class="gateway-section-title gateway-collapse-toggle" data-toggle="agent_im_body">
+                    <i class="fa-solid fa-chevron-right gateway-collapse-arrow"></i>
+                    IM 集成（agent-rp）
+                    <i class="fa-solid fa-circle-question agent-help-icon" data-help="im-integration" title="点击查看说明"></i>
+                </div>
+                <div id="agent_im_body" class="gateway-collapse-body" style="display:none;">
+                    <div class="gateway-hint">agent-rp 插件把 Agent 运行结果渲染为 IM 富文本（正文分段 + 选项按钮 + 实时状态图），支持群聊多 Bot 协同。以下命令可直接在聊天中发送；本分组仅作只读说明，不在此保存配置：</div>
+                    <pre class="agent-help-pre">/rp start [角色卡|Profile]   - 启动 RP 会话
+/rp stop                     - 结束 RP 会话
+/rp status                   - 查看当前 RP 状态
+/rp style [文风名]           - 切换/查看当前文风
+/rp mode [actor|director]    - 切换视角模式
+/rp character [名称]         - 切换角色卡
+/rp profile [Profile名]      - 切换 Agent Profile（引擎模式）
+/rp skill [list|load|unload|clear] - 管理 skill
+/rp bindbot &lt;botId&gt; &lt;Profile&gt; - 群聊多 Bot：绑定 botId 到 Profile
+/rp unbindbot &lt;botId&gt;        - 群聊多 Bot：解绑 botId
+/rp help                     - 显示帮助</pre>
+                    <div class="gateway-hint">群聊多 Bot 用法：先用 <code>/rp bindbot &lt;botId&gt; &lt;Profile&gt;</code> 把每个 Bot 绑定到不同 Profile，再用 <code>/rp start &lt;Profile&gt;</code> 启动对应会话。</div>
+                </div>
+            </div>
+
+            <!-- 统一保存：引擎 + 前端 URL 一次性提交到 agent-framework 配置 -->
+            <div class="gateway-field" style="margin-top:10px;">
+                <button id="agent_settings_save_all" class="menu_button gateway-save-btn agent-save-all"><i class="fa-solid fa-floppy-disk"></i> 保存设置</button>
+                <span class="gateway-hint">一次性提交「Agent 引擎」与「Agent 前端 URL」到 /api/plugins/agent-framework/config；保存成功 toast 提示，失败显示具体错误。</span>
+            </div>
+        </div>
+    </section>
+
+    <!-- Agent 剧场 -->
+    <section class="gateway-section gateway-collapsible" data-gw-theme="theatre" id="agent_theatre_section">
+        <div class="gateway-section-title gateway-collapse-toggle" data-toggle="agent_theatre_body">
+            <i class="fa-solid fa-chevron-right gateway-collapse-arrow"></i>
+            <i class="fa-solid fa-masks-theater"></i> Agent 剧场
+            <span id="agent_theatre_state" class="gateway-adapter-state">-</span>
+            <i class="fa-solid fa-circle-question agent-help-icon" data-help="theatre" title="点击查看说明"></i>
+        </div>
+        <div id="agent_theatre_body" class="gateway-collapse-body" style="display:none;">
+
+            <!-- 顶部工具栏：Profile / 文风 / 视角 / 会话 -->
+            <div class="gateway-theatre-toolbar">
+                <div class="gateway-theatre-toolbar-field">
+                    <label>Profile</label>
+                    <select id="agent_theatre_profile" class="text_pole" title="选择 Agent Profile">
+                        <option value="default-rp">default-rp</option>
+                    </select>
+                </div>
+                <div class="gateway-theatre-toolbar-field">
+                    <label>文风</label>
+                    <input type="text" id="agent_theatre_style" class="text_pole" placeholder="留空用 Profile 默认">
+                </div>
+                <div class="gateway-theatre-toolbar-field">
+                    <label>视角</label>
+                    <select id="agent_theatre_viewmode" class="text_pole" title="视角模式（同步到 Profile YAML 的 viewMode 字段）">
+                        <option value="actor">actor（角色视角）</option>
+                        <option value="director">director（导演视角）</option>
+                        <option value="first">first（第一人称）</option>
+                    </select>
+                </div>
+                <div class="gateway-theatre-toolbar-field">
+                    <label>会话</label>
+                    <input type="text" id="agent_theatre_session" class="text_pole" placeholder="native:default" value="native:default" title="platform:chatId 格式的会话标识">
+                </div>
+                <button id="agent_theatre_clear" class="menu_button" title="清空当前正文流与历史">
+                    <i class="fa-solid fa-eraser"></i> 清空
+                </button>
+                <span id="agent_theatre_status" class="gateway-status-badge disconnected">未连接</span>
+            </div>
+
+            <!-- 三栏布局：左配置侧栏 / 中正文+选项 / 右状态+时间线 -->
+            <div class="gateway-theatre-layout">
+                <!-- 左侧：配置侧栏（边玩边改） -->
+                <div class="gateway-theatre-sidebar">
+                    <div class="gateway-section-subtitle">⚙️ 配置（边玩边改）</div>
+                    <div class="gateway-field">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="agent_theatre_stream_stream" checked> 实时流式显示
+                        </label>
+                    </div>
+                    <div class="gateway-field">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="agent_theatre_show_events" checked> 显示事件流
+                        </label>
+                    </div>
+                    <div class="gateway-field">
+                        <label>Profile YAML（保存即热重载）</label>
+                        <textarea id="agent_theatre_profile_yaml" class="text_pole gateway-theatre-yaml" rows="14" placeholder="name: default-rp&#10;displayName: 默认RP&#10;tools: []&#10;model:&#10;  temperature: 0.8&#10;  maxTokens: 4096&#10;maxSteps: 10"></textarea>
+                    </div>
+                    <div class="gateway-field-row">
+                        <button id="agent_theatre_save_profile" class="menu_button gateway-save-btn" title="保存 Profile 并通知引擎热重载">
+                            <i class="fa-solid fa-floppy-disk"></i> 保存热重载
+                        </button>
+                        <button id="agent_theatre_reload_profile" class="menu_button" title="从服务器重新加载当前 Profile YAML">
+                            <i class="fa-solid fa-rotate-right"></i> 重新加载
+                        </button>
+                    </div>
+                    <div id="agent_theatre_save_hint" class="gateway-hint" style="display:none;"></div>
+
+                    <!-- AI 助手：自然语言修改配置 -->
+                    <div class="gateway-field">
+                        <label>🤖 AI 助手（自然语言修改配置）</label>
+                        <textarea id="agent_theatre_ai_input" class="text_pole" rows="3" placeholder="用大白话描述你想怎么改，例如：&#10;• 把文风变得更黑暗一点&#10;• 增加一个审查角色一致性的子代理&#10;• 让叙事更长更详细"></textarea>
+                        <div class="gateway-field-row">
+                            <button id="agent_theatre_ai_plan" class="menu_button"><i class="fa-solid fa-wand-magic-sparkles"></i> 生成修改方案</button>
+                            <button id="agent_theatre_ai_undo" class="menu_button" title="撤销上次 AI 修改"><i class="fa-solid fa-rotate-left"></i> 撤销</button>
+                            <span id="agent_theatre_ai_history" class="gateway-hint"></span>
+                        </div>
+                        <div id="agent_theatre_ai_plan_view" class="gateway-ai-plan-view" style="display:none;"></div>
+                    </div>
+                </div>
+
+                <!-- 中间：正文流 + 事件流 + 选项区 + 输入框 -->
+                <div class="gateway-theatre-main">
+                    <div class="gateway-section-subtitle">
+                        📖 正文流
+                        <span id="agent_theatre_turn_info" class="gateway-hint"></span>
+                    </div>
+                    <div id="agent_theatre_narrative" class="gateway-theatre-narrative">
+                        <div class="gateway-empty-hint">在下方输入消息或点击选项开始 Agent RP</div>
+                    </div>
+                    <div id="agent_theatre_events_inline" class="gateway-theatre-events-inline" style="display:none;"></div>
+
+                    <div class="gateway-section-subtitle">🎯 选项区</div>
+                    <div id="agent_theatre_options" class="gateway-theatre-options">
+                        <div class="gateway-empty-hint">（选项将在 Agent 输出后出现）</div>
+                    </div>
+
+                    <div class="gateway-theatre-input-row">
+                        <textarea id="agent_theatre_input" class="text_pole gateway-theatre-input" rows="2" placeholder="输入消息，或直接点击上方选项..."></textarea>
+                        <button id="agent_theatre_send" class="menu_button gateway-save-btn" title="发送消息触发 Agent run">
+                            <i class="fa-solid fa-paper-plane"></i> 发送
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 右侧：状态面板 + 时间线 -->
+                <div class="gateway-theatre-right">
+                    <div class="gateway-section-subtitle">📍 状态面板</div>
+                    <div id="agent_theatre_state_panel" class="gateway-theatre-state-panel">
+                        <div class="gateway-empty-hint">（状态将在首次 run 后显示）</div>
+                    </div>
+
+                    <div class="gateway-section-subtitle">📊 时间线</div>
+                    <div id="agent_theatre_timeline" class="gateway-theatre-timeline">
+                        <div class="gateway-empty-hint">（事件流将在此显示）</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <footer class="agent-footer">SillyTavern Gateway · Agent 前端（模块 B）</footer>
+</div>
+
+<!-- 使用说明 / 帮助 Modal（自实现，不依赖 ST） -->
+<div id="agent_modal_backdrop" class="agent-modal-backdrop" style="display:none;">
+    <div class="agent-modal" role="dialog" aria-modal="true">
+        <div class="agent-modal-header">
+            <span id="agent_modal_title">使用说明</span>
+            <button id="agent_modal_close_x" class="menu_button agent-modal-close" title="关闭"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div id="agent_modal_body" class="agent-modal-body"></div>
+        <div class="agent-modal-footer">
+            <label class="checkbox-label agent-modal-nodisclaim" title="勾选后不再自动弹出使用说明">
+                <input type="checkbox" id="agent_modal_nodisclaim"> 不再提示
+            </label>
+            <button id="agent_modal_close" class="menu_button gateway-save-btn"><i class="fa-solid fa-check"></i> 知道了</button>
+        </div>
+    </div>
+</div>
+
+<div id="agent_toast_container" class="agent-toast-container"></div>
+
+<script src="agent.js"></script>
+</body>
+</html>

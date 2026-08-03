@@ -44,7 +44,7 @@ export default class AgentFrameworkPlugin extends GatewayPlugin {
     // 命令：/agent run|list|status|edit|help
     static commands = [{
         name: 'agent',
-        description: 'Agent 框架命令',
+        description: 'Agent 设置命令',
         handler: 'handleAgent',
         usage: '/agent <run|list|status|edit|help> [参数]',
     }];
@@ -190,7 +190,7 @@ export default class AgentFrameworkPlugin extends GatewayPlugin {
         // 也可被其他插件（如 agent-rp）在 IM 端 run 时同步推送到面板。
         this._registerNativeSurface();
 
-        this.logger.info('Agent 框架已加载，工具数: ' + this.toolRegistry.tools.size);
+        this.logger.info('Agent 设置已加载，工具数: ' + this.toolRegistry.tools.size);
     }
 
     async onUnload() {
@@ -441,7 +441,7 @@ export default class AgentFrameworkPlugin extends GatewayPlugin {
     async _cmdStatus(ctx) {
         const status = this.agentRunner.getStatus();
         const tools = this.toolRegistry.list();
-        const lines = ['📊 Agent 框架状态', ''];
+        const lines = ['📊 Agent 设置状态', ''];
         lines.push(`工具注册表: ${tools.length} 个工具`);
         lines.push(`活跃 Agent: ${status.activeAgents.length}`);
         lines.push(`总执行次数: ${status.totalRuns}`);
@@ -466,12 +466,12 @@ export default class AgentFrameworkPlugin extends GatewayPlugin {
     }
 
     async _cmdEdit(ctx) {
-        ctx.reply('请在网关面板的 Agent 框架区块中编辑 Agent YAML 定义，或直接编辑 data/plugins/agent-framework/agents/ 目录下的 .yaml 文件。');
+        ctx.reply('请在独立 Agent 前端页面（网关面板 → Agent 前端，或直接访问 /agent）中编辑 Agent 定义，或直接编辑 data/plugins/agent-framework/agents/ 目录下的 .yaml 文件。');
     }
 
     async _cmdHelp(ctx) {
         ctx.reply([
-            'Agent 框架帮助',
+            'Agent 设置帮助',
             '',
             '命令:',
             '  /agent run <名称> [消息]  - 启动Agent并可选发送首条消息',

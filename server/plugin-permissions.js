@@ -96,7 +96,7 @@ export const PERMISSIONS = {
     },
     'agent': {
         risk: 'medium',
-        desc: '使用 Agent 框架（注册工具/调度子代理）',
+        desc: '使用 Agent 设置（注册工具/调度子代理）',
         default: false,
     },
     'surface': {

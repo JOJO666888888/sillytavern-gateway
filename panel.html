@@ -4,8 +4,15 @@
     <div class="gateway-panel-inner">
         <!-- 面板头部 -->
         <div class="gateway-panel-header">
-            <h3><i class="fa-solid fa-tower-broadcast"></i> 多平台网关</h3>
+            <h3 class="gw-panel-title"><i class="fa-solid fa-tower-broadcast"></i> <span class="gw-title-text">多平台网关</span></h3>
             <span id="gateway_panel_status" class="gateway-status-badge disconnected">未连接</span>
+        </div>
+        <div class="gw-header-ornament">
+            <span class="gw-ornament-gem">&#9670;</span>
+            <span class="gw-ornament-line"></span>
+            <span class="gw-ornament-star">&#10022;</span>
+            <span class="gw-ornament-line"></span>
+            <span class="gw-ornament-gem">&#9670;</span>
         </div>
 
         <!-- 运行模式开关（游玩模式 / 网关模式）：默认游玩模式，不转发任何消息 -->
@@ -21,7 +28,7 @@
         </div>
 
         <!-- 自动更新 -->
-        <div class="gateway-section gateway-collapsible">
+        <div class="gateway-section gateway-collapsible" data-gw-theme="update">
             <div class="gateway-section-title gateway-collapse-toggle" data-toggle="gateway_update_body">
                 <i class="fa-solid fa-chevron-right gateway-collapse-arrow"></i>
                 <i class="fa-solid fa-arrows-rotate"></i> 自动更新
@@ -45,7 +52,7 @@
         </div>
 
         <!-- 连接设置 -->
-        <div class="gateway-section gateway-collapsible">
+        <div class="gateway-section gateway-collapsible" data-gw-theme="connection">
             <div class="gateway-section-title gateway-collapse-toggle" data-toggle="gateway_connection_body">
                 <i class="fa-solid fa-chevron-right gateway-collapse-arrow"></i>
                 <i class="fa-solid fa-link"></i> 连接
@@ -100,7 +107,7 @@
         </div>
 
         <!-- 平台配置 -->
-        <div class="gateway-section gateway-collapsible">
+        <div class="gateway-section gateway-collapsible" data-gw-theme="platform">
             <div class="gateway-section-title gateway-collapse-toggle" data-toggle="gateway_platform_body">
                 <i class="fa-solid fa-chevron-right gateway-collapse-arrow"></i>
                 <i class="fa-solid fa-sliders"></i> 平台配置
@@ -326,7 +333,7 @@
         </div>
 
         <!-- 自建推理管线（无需挂 ST 前端） -->
-        <div class="gateway-section gateway-collapsible">
+        <div class="gateway-section gateway-collapsible" data-gw-theme="runtime">
             <div class="gateway-section-title gateway-collapse-toggle" data-toggle="gateway_runtime_body">
                 <i class="fa-solid fa-chevron-right gateway-collapse-arrow"></i>
                 <i class="fa-solid fa-robot"></i> 自建推理管线
@@ -442,61 +449,21 @@
             </div>
         </div>
 
-        <!-- Agent 框架 -->
-        <div class="gateway-section gateway-collapsible">
-            <div class="gateway-section-title gateway-collapse-toggle" data-toggle="gateway_agent_body">
-                <i class="fa-solid fa-chevron-right gateway-collapse-arrow"></i>
-                <i class="fa-solid fa-robot"></i> Agent 框架
+        <!-- Agent 前端入口（独立页面：Agent 设置 + Agent 剧场，不依赖 SillyTavern） -->
+        <div class="gateway-section" data-gw-theme="agent-entry">
+            <div class="gateway-section-title">
+                <i class="fa-solid fa-sitemap"></i> Agent 前端
+                <button id="gateway_panel_open_agent" class="menu_button gateway-agent-entry-btn" title="打开 Agent 前端（Agent 设置 + Agent 剧场，独立页面）">
+                    <i class="fa-solid fa-arrow-up-right-from-square"></i> Agent 前端
+                </button>
             </div>
-            <div id="gateway_agent_body" class="gateway-collapse-body" style="display:none;">
-
-                <!-- Agent 列表 -->
-                <div class="gateway-section-subtitle">
-                    🤖 Agent 列表
-                    <button id="gateway_agent_refresh" class="menu_button" title="刷新"><i class="fa-solid fa-rotate-right"></i></button>
-                    <button id="gateway_agent_new" class="menu_button" title="新建Agent"><i class="fa-solid fa-plus"></i> 新建Agent</button>
-                    <button id="gateway_agent_from_default" class="menu_button" title="从默认方案创建副本"><i class="fa-solid fa-copy"></i> 从默认方案创建副本</button>
-                </div>
-                <div id="gateway_agent_list" class="gateway-adapters-status">
-                    <div class="gateway-empty-hint">未加载</div>
-                </div>
-
-                <!-- 工具注册表 -->
-                <div class="gateway-section-subtitle">
-                    🔧 工具注册表
-                    <button id="gateway_agent_tools_refresh" class="menu_button" title="刷新工具"><i class="fa-solid fa-rotate-right"></i></button>
-                </div>
-                <div id="gateway_agent_tools" class="gateway-adapters-status">
-                    <div class="gateway-empty-hint">未加载</div>
-                </div>
-
-                <!-- 运行日志 -->
-                <div class="gateway-section-subtitle">
-                    📋 运行日志（最近10条）
-                    <button id="gateway_agent_logs_refresh" class="menu_button" title="刷新日志"><i class="fa-solid fa-rotate-right"></i></button>
-                </div>
-                <div id="gateway_agent_logs" class="gateway-adapters-status">
-                    <div class="gateway-empty-hint">暂无执行记录</div>
-                </div>
-
-                <!-- Agent YAML 编辑器 -->
-                <div id="gateway_agent_editor" class="gateway-agent-editor" style="display:none;">
-                    <div class="gateway-section-subtitle">
-                        ✏️ Agent YAML 编辑器
-                        <span id="gateway_agent_editing_name" class="gateway-hint"></span>
-                    </div>
-                    <textarea id="gateway_agent_yaml" class="text_pole gateway-agent-yaml" rows="16" placeholder="name: my-agent&#10;displayName: 我的Agent&#10;description: ...&#10;tools:&#10;  - ...&#10;model:&#10;  temperature: 0.8&#10;  maxTokens: 2048&#10;maxSteps: 10"></textarea>
-                    <div class="gateway-field-row" style="margin-top:8px;">
-                        <button id="gateway_agent_save" class="menu_button gateway-save-btn"><i class="fa-solid fa-floppy-disk"></i> 保存</button>
-                        <button id="gateway_agent_cancel" class="menu_button"><i class="fa-solid fa-xmark"></i> 取消</button>
-                    </div>
-                </div>
-
+            <div class="gateway-collapse-body" style="padding-top:4px;">
+                <span class="gateway-hint">Agent 设置与 Agent 剧场已迁移到独立前端页面（<code>/agent</code>）。点击「Agent 前端」在新标签访问；该页面不依赖 SillyTavern，其内部可独立配置网关地址与鉴权 Token。</span>
             </div>
         </div>
 
         <!-- 网关全局日志 -->
-        <div class="gateway-section gateway-collapsible">
+        <div class="gateway-section gateway-collapsible" data-gw-theme="logs">
             <div class="gateway-section-title gateway-collapse-toggle" data-toggle="gateway_logs_body">
                 <i class="fa-solid fa-chevron-right gateway-collapse-arrow"></i>
                 <i class="fa-solid fa-list-ul"></i> 网关日志
@@ -520,133 +487,8 @@
             </div>
         </div>
 
-        <!-- Agent 剧场（Task 4） -->
-        <div class="gateway-section gateway-collapsible gateway-agent-theatre-section">
-            <div class="gateway-section-title gateway-collapse-toggle" data-toggle="gateway_theatre_body">
-                <i class="fa-solid fa-chevron-right gateway-collapse-arrow"></i>
-                <i class="fa-solid fa-masks-theater"></i> Agent 剧场
-                <span id="gateway_theatre_state" class="gateway-adapter-state">-</span>
-            </div>
-            <div id="gateway_theatre_body" class="gateway-collapse-body" style="display:none;">
-
-            <!-- 顶部工具栏：Profile / 文风 / 视角 -->
-            <div class="gateway-theatre-toolbar">
-                <div class="gateway-theatre-toolbar-field">
-                    <label>Profile</label>
-                    <select id="gateway_theatre_profile" class="text_pole" title="选择 Agent Profile">
-                        <option value="default-rp">default-rp</option>
-                    </select>
-                </div>
-                <div class="gateway-theatre-toolbar-field">
-                    <label>文风</label>
-                    <input type="text" id="gateway_theatre_style" class="text_pole" placeholder="留空用 Profile 默认">
-                </div>
-                <div class="gateway-theatre-toolbar-field">
-                    <label>视角</label>
-                    <select id="gateway_theatre_viewmode" class="text_pole" title="视角模式">
-                        <option value="actor">actor（角色视角）</option>
-                        <option value="director">director（导演视角）</option>
-                        <option value="first">first（第一人称）</option>
-                    </select>
-                </div>
-                <div class="gateway-theatre-toolbar-field">
-                    <label>会话</label>
-                    <input type="text" id="gateway_theatre_session" class="text_pole" placeholder="native:default" value="native:default" title="platform:chatId 格式的会话标识">
-                </div>
-                <button id="gateway_theatre_clear" class="menu_button" title="清空当前正文流与历史">
-                    <i class="fa-solid fa-eraser"></i> 清空
-                </button>
-                <span id="gateway_theatre_status" class="gateway-status-badge disconnected">未连接</span>
-            </div>
-
-            <!-- 三栏布局：左配置侧栏 / 中正文+选项 / 右状态+时间线 -->
-            <div class="gateway-theatre-layout">
-                <!-- 左侧：配置侧栏（边玩边改） -->
-                <div class="gateway-theatre-sidebar">
-                    <div class="gateway-section-subtitle">⚙️ 配置（边玩边改）</div>
-                    <div class="gateway-field">
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="gateway_theatre_stream_stream" checked> 实时流式显示
-                        </label>
-                    </div>
-                    <div class="gateway-field">
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="gateway_theatre_show_events" checked> 显示事件流
-                        </label>
-                    </div>
-                    <div class="gateway-field">
-                        <label>工具白名单（YAML）</label>
-                        <textarea id="gateway_theatre_tools_yaml" class="text_pole gateway-theatre-yaml" rows="6" placeholder="tools:&#10;  - state.*&#10;  - memory.*&#10;  - narrative.generate"></textarea>
-                    </div>
-                    <div class="gateway-field">
-                        <label>Profile YAML（保存即热重载）</label>
-                        <textarea id="gateway_theatre_profile_yaml" class="text_pole gateway-theatre-yaml" rows="14" placeholder="name: default-rp&#10;displayName: 默认RP&#10;tools: []&#10;model:&#10;  temperature: 0.8&#10;  maxTokens: 4096&#10;maxSteps: 10"></textarea>
-                    </div>
-                    <div class="gateway-field-row">
-                        <button id="gateway_theatre_save_profile" class="menu_button gateway-save-btn" title="保存 Profile 并通知引擎热重载">
-                            <i class="fa-solid fa-floppy-disk"></i> 保存热重载
-                        </button>
-                        <button id="gateway_theatre_reload_profile" class="menu_button" title="从服务器重新加载当前 Profile YAML">
-                            <i class="fa-solid fa-rotate-right"></i> 重新加载
-                        </button>
-                    </div>
-                    <div id="gateway_theatre_save_hint" class="gateway-hint" style="display:none;"></div>
-
-                    <!-- AI 助手：自然语言修改配置（Task: AI 辅助页面修改系统） -->
-                    <div class="gateway-field">
-                        <label>🤖 AI 助手（自然语言修改配置）</label>
-                        <textarea id="gateway_theatre_ai_input" class="text_pole" rows="3" placeholder="用大白话描述你想怎么改，例如：&#10;• 把文风变得更黑暗一点&#10;• 增加一个审查角色一致性的子代理&#10;• 让叙事更长更详细"></textarea>
-                        <div class="gateway-field-row">
-                            <button id="gateway_theatre_ai_plan" class="menu_button"><i class="fa-solid fa-wand-magic-sparkles"></i> 生成修改方案</button>
-                            <button id="gateway_theatre_ai_undo" class="menu_button" title="撤销上次 AI 修改"><i class="fa-solid fa-rotate-left"></i> 撤销</button>
-                            <span id="gateway_theatre_ai_history" class="gateway-hint"></span>
-                        </div>
-                        <div id="gateway_theatre_ai_plan_view" class="gateway-ai-plan-view" style="display:none;"></div>
-                    </div>
-                </div>
-
-                <!-- 中间：正文流 + 事件流 + 选项区 + 输入框 -->
-                <div class="gateway-theatre-main">
-                    <div class="gateway-section-subtitle">
-                        📖 正文流
-                        <span id="gateway_theatre_turn_info" class="gateway-hint"></span>
-                    </div>
-                    <div id="gateway_theatre_narrative" class="gateway-theatre-narrative">
-                        <div class="gateway-empty-hint">在下方输入消息或点击选项开始 Agent RP</div>
-                    </div>
-                    <div id="gateway_theatre_events_inline" class="gateway-theatre-events-inline" style="display:none;"></div>
-
-                    <div class="gateway-section-subtitle">🎯 选项区</div>
-                    <div id="gateway_theatre_options" class="gateway-theatre-options">
-                        <div class="gateway-empty-hint">（选项将在 Agent 输出后出现）</div>
-                    </div>
-
-                    <div class="gateway-theatre-input-row">
-                        <textarea id="gateway_theatre_input" class="text_pole gateway-theatre-input" rows="2" placeholder="输入消息，或直接点击上方选项..."></textarea>
-                        <button id="gateway_theatre_send" class="menu_button gateway-save-btn" title="发送消息触发 Agent run">
-                            <i class="fa-solid fa-paper-plane"></i> 发送
-                        </button>
-                    </div>
-                </div>
-
-                <!-- 右侧：状态面板 + 时间线 -->
-                <div class="gateway-theatre-right">
-                    <div class="gateway-section-subtitle">📍 状态面板</div>
-                    <div id="gateway_theatre_state_panel" class="gateway-theatre-state-panel">
-                        <div class="gateway-empty-hint">（状态将在首次 run 后显示）</div>
-                    </div>
-
-                    <div class="gateway-section-subtitle">📊 时间线</div>
-                    <div id="gateway_theatre_timeline" class="gateway-theatre-timeline">
-                        <div class="gateway-empty-hint">（事件流将在此显示）</div>
-                    </div>
-                </div>
-            </div>
-            </div>
-        </div>
-
         <!-- 插件管理 -->
-        <div class="gateway-section gateway-collapsible">
+        <div class="gateway-section gateway-collapsible" data-gw-theme="plugin">
             <div class="gateway-section-title gateway-collapse-toggle" data-toggle="gateway_plugin_body">
                 <i class="fa-solid fa-chevron-right gateway-collapse-arrow"></i>
                 <i class="fa-solid fa-puzzle-piece"></i> 插件管理
@@ -694,7 +536,7 @@
         </div>
 
         <!-- 编写参考：提供插件开发规范指南下载 -->
-        <div class="gateway-section gateway-collapsible gateway-docs-section">
+        <div class="gateway-section gateway-collapsible gateway-docs-section" data-gw-theme="docs">
             <div class="gateway-section-title gateway-collapse-toggle" data-toggle="gateway_docs_body">
                 <i class="fa-solid fa-chevron-right gateway-collapse-arrow"></i>
                 <i class="fa-solid fa-book-open"></i> 编写参考
@@ -713,7 +555,7 @@
         </div>
 
         <!-- 正则过滤器设置（抽屉式：点击标题展开/收起，插件配置区块标准格式） -->
-        <div class="gateway-section gateway-collapsible" id="gateway_regex_section">
+        <div class="gateway-section gateway-collapsible" id="gateway_regex_section" data-gw-theme="regex">
             <div class="gateway-section-title gateway-collapse-toggle" data-toggle="gateway_regex_body">
                 <i class="fa-solid fa-chevron-right gateway-collapse-arrow"></i>
                 <i class="fa-solid fa-filter"></i> 正则过滤器
@@ -818,460 +660,3 @@
         </div>
     </div>
 </div>
-
-<script>
-(function () {
-    'use strict';
-
-    // ── 辅助：从 DOM 读取网关地址与鉴权 token，发起 API 请求 ──
-    function gwFetch(endpoint, options) {
-        options = options || {};
-        var url = ($('#gateway_panel_url').val() || 'http://127.0.0.1:3210').trim() + endpoint;
-        var token = ($('#gateway_panel_auth_token').val() || '').trim();
-        return fetch(url, Object.assign({}, options, {
-            headers: Object.assign(
-                { 'Content-Type': 'application/json' },
-                token ? { 'X-Gateway-Token': token } : {},
-                options.headers || {}
-            )
-        })).then(function (resp) {
-            if (!resp.ok) {
-                return resp.json().catch(function () { return {}; }).then(function (body) {
-                    throw new Error(body.error || ('HTTP ' + resp.status));
-                });
-            }
-            return resp.json();
-        });
-    }
-
-    function esc(str) {
-        return String(str == null ? '' : str)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;');
-    }
-
-    function fmtTime(ts) {
-        if (!ts) return '-';
-        var d = new Date(ts);
-        return d.toLocaleTimeString();
-    }
-
-    function fmtDuration(ms) {
-        if (!ms && ms !== 0) return '-';
-        if (ms < 1000) return ms + 'ms';
-        return (ms / 1000).toFixed(1) + 's';
-    }
-
-    // ── 简易对象 → YAML 序列化（用于编辑器回填） ──
-    function toYaml(obj, indent = 0) {
-        var pad = '  '.repeat(indent);
-        var lines = [];
-        if (obj === null || obj === undefined) return '';
-        if (typeof obj !== 'object') return String(obj);
-        if (Array.isArray(obj)) {
-            for (var i = 0; i < obj.length; i++) {
-                var item = obj[i];
-                if (item !== null && typeof item === 'object' && !Array.isArray(item)) {
-                    var entries = Object.entries(item);
-                    if (entries.length > 0) {
-                        lines.push(pad + '- ' + entries[0][0] + ': ' + yamlVal(entries[0][1], indent + 1));
-                        for (var j = 1; j < entries.length; j++) {
-                            lines.push(pad + '  ' + entries[j][0] + ': ' + yamlVal(entries[j][1], indent + 1));
-                        }
-                    }
-                } else {
-                    lines.push(pad + '- ' + yamlVal(item, indent));
-                }
-            }
-            return lines.join('\n');
-        }
-        for (var key in obj) {
-            if (!obj.hasOwnProperty(key)) continue;
-            var val = obj[key];
-            if (val !== null && typeof val === 'object') {
-                var sub = toYaml(val, indent + 1);
-                lines.push(pad + key + ':');
-                if (sub) lines.push(sub);
-            } else {
-                lines.push(pad + key + ': ' + yamlVal(val, indent));
-            }
-        }
-        return lines.join('\n');
-    }
-
-    function yamlVal(v) {
-        if (v === null || v === undefined) return 'null';
-        if (typeof v === 'string') return v;
-        if (typeof v === 'number' || typeof v === 'boolean') return String(v);
-        if (Array.isArray(v) || typeof v === 'object') {
-            return '\n' + toYaml(v, 1);
-        }
-        return String(v);
-    }
-
-    // ── 加载 Agent 列表 ──
-    function loadAgents() {
-        var el = $('#gateway_agent_list');
-        el.html('<div class="gateway-empty-hint">加载中...</div>');
-        gwFetch('/api/agents').then(function (data) {
-            if (data.error) {
-                el.html('<div class="gateway-empty-hint">' + esc(data.error) + '</div>');
-                return;
-            }
-            var agents = data.agents || [];
-            if (!agents.length) {
-                el.html('<div class="gateway-empty-hint">暂无 Agent，点击「新建Agent」创建</div>');
-                return;
-            }
-            var html = '<table class="gateway-agent-table"><thead><tr>' +
-                '<th>名称</th><th>描述</th><th>工具数</th><th>子代理数</th><th>操作</th>' +
-                '</tr></thead><tbody>';
-            agents.forEach(function (a) {
-                var desc = a.description || a.displayName || '';
-                html += '<tr>' +
-                    '<td><b>' + esc(a.name) + '</b></td>' +
-                    '<td>' + esc(desc) + '</td>' +
-                    '<td>' + (a.tools ? a.tools.length : 0) + '</td>' +
-                    '<td>' + (a.subAgents ? a.subAgents.length : 0) + '</td>' +
-                    '<td class="gateway-agent-actions">' +
-                        '<button class="menu_button gateway-agent-run-btn" data-name="' + esc(a.name) + '" title="运行"><i class="fa-solid fa-play"></i></button>' +
-                        '<button class="menu_button gateway-agent-edit-btn" data-name="' + esc(a.name) + '" title="编辑"><i class="fa-solid fa-pen"></i></button>' +
-                        '<button class="menu_button gateway-agent-del-btn" data-name="' + esc(a.name) + '" title="删除"><i class="fa-solid fa-trash"></i></button>' +
-                    '</td>' +
-                '</tr>';
-            });
-            html += '</tbody></table>';
-            el.html(html);
-        }).catch(function (e) {
-            el.html('<div class="gateway-empty-hint">加载失败: ' + esc(e.message) + '</div>');
-        });
-    }
-
-    // ── 加载工具注册表 ──
-    function loadAgentTools() {
-        var el = $('#gateway_agent_tools');
-        el.html('<div class="gateway-empty-hint">加载中...</div>');
-        gwFetch('/api/agents/tools').then(function (data) {
-            var tools = data.tools || [];
-            if (!tools.length) {
-                el.html('<div class="gateway-empty-hint">暂无注册工具</div>');
-                return;
-            }
-            var html = '<table class="gateway-agent-table"><thead><tr>' +
-                '<th>工具名</th><th>描述</th><th>来源</th>' +
-                '</tr></thead><tbody>';
-            tools.forEach(function (t) {
-                html += '<tr>' +
-                    '<td><code>' + esc(t.name) + '</code></td>' +
-                    '<td>' + esc(t.description || '') + '</td>' +
-                    '<td>' + esc(t.source || '') + '</td>' +
-                '</tr>';
-            });
-            html += '</tbody></table>';
-            el.html(html);
-        }).catch(function (e) {
-            el.html('<div class="gateway-empty-hint">加载失败: ' + esc(e.message) + '</div>');
-        });
-    }
-
-    // ── 加载运行日志 ──
-    function loadAgentLogs() {
-        var el = $('#gateway_agent_logs');
-        el.html('<div class="gateway-empty-hint">加载中...</div>');
-        gwFetch('/api/agents/logs').then(function (data) {
-            var logs = data.logs || [];
-            if (!logs.length) {
-                el.html('<div class="gateway-empty-hint">暂无执行记录</div>');
-                return;
-            }
-            // 只显示最近 10 条
-            logs = logs.slice(-10).reverse();
-            var html = '<table class="gateway-agent-table"><thead><tr>' +
-                '<th>Agent</th><th>开始时间</th><th>耗时</th><th>步数</th><th>状态</th>' +
-                '</tr></thead><tbody>';
-            logs.forEach(function (l) {
-                var status = l.success
-                    ? '<span class="gateway-status-badge connected">成功</span>'
-                    : '<span class="gateway-status-badge disconnected">失败</span>';
-                html += '<tr>' +
-                    '<td>' + esc(l.agent || '-') + '</td>' +
-                    '<td>' + fmtTime(l.startTime) + '</td>' +
-                    '<td>' + fmtDuration(l.duration) + '</td>' +
-                    '<td>' + (l.steps != null ? l.steps : '-') + '</td>' +
-                    '<td>' + status + '</td>' +
-                '</tr>';
-            });
-            html += '</tbody></table>';
-            el.html(html);
-        }).catch(function (e) {
-            el.html('<div class="gateway-empty-hint">加载失败: ' + esc(e.message) + '</div>');
-        });
-    }
-
-    // ── 编辑 Agent ──
-    function editAgent(name) {
-        gwFetch('/api/agents/' + encodeURIComponent(name)).then(function (def) {
-            var yaml = toYaml(def);
-            $('#gateway_agent_yaml').val(yaml);
-            $('#gateway_agent_editing_name').text('编辑: ' + name);
-            $('#gateway_agent_editor').show();
-            $('#gateway_agent_body').find('.gateway-agent-yaml').focus();
-        }).catch(function (e) {
-            if (typeof toastr !== 'undefined') toastr.error('加载Agent失败: ' + e.message);
-        });
-    }
-
-    // ── 保存 Agent ──
-    function saveAgent() {
-        var yaml = $('#gateway_agent_yaml').val().trim();
-        if (!yaml) {
-            if (typeof toastr !== 'undefined') toastr.warning('YAML 内容不能为空');
-            return;
-        }
-        gwFetch('/api/agents', {
-            method: 'POST',
-            body: JSON.stringify({ yaml: yaml })
-        }).then(function (data) {
-            if (typeof toastr !== 'undefined') toastr.success('Agent 已保存');
-            $('#gateway_agent_editor').hide();
-            $('#gateway_agent_yaml').val('');
-            $('#gateway_agent_editing_name').text('');
-            loadAgents();
-        }).catch(function (e) {
-            if (typeof toastr !== 'undefined') toastr.error('保存失败: ' + e.message);
-        });
-    }
-
-    // ── 运行 Agent（提示用户在 IM 中执行） ──
-    function runAgent(name) {
-        gwFetch('/api/agents/' + encodeURIComponent(name) + '/run', {
-            method: 'POST',
-            body: JSON.stringify({})
-        }).then(function (data) {
-            if (typeof toastr !== 'undefined') toastr.info(data.message || '请在IM中运行');
-        }).catch(function (e) {
-            if (typeof toastr !== 'undefined') toastr.error('操作失败: ' + e.message);
-        });
-    }
-
-    // ── 删除 Agent ──
-    function deleteAgent(name) {
-        if (!confirm('确定删除 Agent "' + name + '"？此操作不可撤销。')) return;
-        gwFetch('/api/agents/' + encodeURIComponent(name), {
-            method: 'DELETE'
-        }).then(function () {
-            if (typeof toastr !== 'undefined') toastr.success('Agent 已删除');
-            loadAgents();
-        }).catch(function (e) {
-            if (typeof toastr !== 'undefined') toastr.error('删除失败: ' + e.message);
-        });
-    }
-
-    // ── 新建 Agent（填充模板） ──
-    function newAgent() {
-        var template = [
-            'name: new-agent',
-            'displayName: 新Agent',
-            'description: 在此填写Agent描述',
-            'tools:',
-            '  - state.set',
-            '  - memory.recall',
-            'model:',
-            '  temperature: 0.8',
-            '  maxTokens: 2048',
-            'maxSteps: 10',
-            'context:',
-            '  historyLimit: 20',
-            ''
-        ].join('\n');
-        $('#gateway_agent_yaml').val(template);
-        $('#gateway_agent_editing_name').text('新建 Agent');
-        $('#gateway_agent_editor').show();
-    }
-
-    // ── 从默认方案创建副本（SubTask 6.6） ──
-    function fromDefaultAgent() {
-        var name = prompt('请输入新 Agent 的名称（仅字母数字及 ._ -，不能为 default-rp）：', 'my-rp');
-        if (!name) return;
-        name = name.trim();
-        if (!name) return;
-        if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(name)) {
-            if (typeof toastr !== 'undefined') toastr.error('名称仅允许字母数字及 ._ -，且以字母数字开头');
-            return;
-        }
-        if (name === 'default-rp') {
-            if (typeof toastr !== 'undefined') toastr.error('不能覆盖默认方案，请使用其他名称');
-            return;
-        }
-        var displayName = prompt('请输入显示名称（可留空）：', '') || '';
-        displayName = displayName.trim();
-        gwFetch('/api/agents/from-default', {
-            method: 'POST',
-            body: JSON.stringify({ name: name, displayName: displayName })
-        }).then(function (data) {
-            if (data.error) {
-                if (typeof toastr !== 'undefined') toastr.error('创建失败: ' + data.error);
-                return;
-            }
-            if (typeof toastr !== 'undefined') toastr.success('已从默认方案创建副本: ' + name);
-            loadAgents();
-        }).catch(function (e) {
-            if (typeof toastr !== 'undefined') toastr.error('创建失败: ' + e.message);
-        });
-    }
-
-    // ── 绑定事件 ──
-    function bindAgentEvents() {
-        // 刷新 / 新建 / 从默认方案创建副本
-        $('#gateway_agent_refresh').on('click', loadAgents);
-        $('#gateway_agent_new').on('click', newAgent);
-        $('#gateway_agent_from_default').on('click', fromDefaultAgent);
-        $('#gateway_agent_tools_refresh').on('click', loadAgentTools);
-        $('#gateway_agent_logs_refresh').on('click', loadAgentLogs);
-
-        // 保存 / 取消
-        $('#gateway_agent_save').on('click', saveAgent);
-        $('#gateway_agent_cancel').on('click', function () {
-            $('#gateway_agent_editor').hide();
-            $('#gateway_agent_yaml').val('');
-            $('#gateway_agent_editing_name').text('');
-        });
-
-        // 事件委托：运行 / 编辑 / 删除（HTML 重渲染后仍生效）
-        $('#gateway_agent_list')
-            .on('click', '.gateway-agent-run-btn', function () { runAgent($(this).data('name')); })
-            .on('click', '.gateway-agent-edit-btn', function () { editAgent($(this).data('name')); })
-            .on('click', '.gateway-agent-del-btn', function () { deleteAgent($(this).data('name')); });
-    }
-
-    // ── 监听 Agent 区块展开，首次展开时自动加载数据 ──
-    var agentLoaded = false;
-    function tryAutoLoad() {
-        if (agentLoaded) return;
-        var body = document.getElementById('gateway_agent_body');
-        if (body && body.style.display !== 'none') {
-            agentLoaded = true;
-            loadAgents();
-            loadAgentTools();
-            loadAgentLogs();
-        }
-    }
-
-    // 绑定事件（元素已在 DOM 中）
-    bindAgentEvents();
-
-    // 用 MutationObserver 监听折叠区块的 display 变化
-    var agentBody = document.getElementById('gateway_agent_body');
-    if (agentBody) {
-        var observer = new MutationObserver(function () { tryAutoLoad(); });
-        observer.observe(agentBody, { attributes: true, attributeFilter: ['style'] });
-        // 页面加载时若已展开，直接加载
-        tryAutoLoad();
-    }
-})();
-</script>
-
-<!-- Agent 剧场脚本加载器（Task 4.3-4.6） -->
-<!-- 当 "Agent 剧场" 区块展开且网关已连接时，动态注入 panel-agent-theatre.js -->
-<script>
-(function () {
-    'use strict';
-
-    var theatreLoaded = false;
-
-    /** 动态注入 panel-agent-theatre.js（从网关 URL 拉，避免相对路径问题） */
-    function loadTheatreScript() {
-        if (theatreLoaded) return;
-        if (window.__gatewayTheatreInit) { theatreLoaded = true; return; }
-        var urlEl = document.getElementById('gateway_panel_url');
-        if (!urlEl) return;
-        var base = (urlEl.value || 'http://127.0.0.1:3210').trim();
-        if (!base) return;
-        var s = document.createElement('script');
-        s.src = base + '/agent-theatre.js';
-        s.async = true;
-        s.onload = function () { console.log('[Gateway] Agent 剧场脚本已加载'); };
-        s.onerror = function () {
-            console.warn('[Gateway] Agent 剧场脚本加载失败，请确认网关地址正确并已启动');
-            if (typeof toastr !== 'undefined') {
-                toastr.warning('Agent 剧场脚本加载失败，请确认网关地址正确并已启动');
-            }
-        };
-        document.head.appendChild(s);
-        theatreLoaded = true;
-    }
-
-    /** 监听 Agent 剧场区块展开 */
-    function tryLoad() {
-        if (theatreLoaded) return;
-        var body = document.getElementById('gateway_theatre_body');
-        if (!body) return;
-        if (body.style.display !== 'none') {
-            loadTheatreScript();
-        }
-    }
-
-    // 用 MutationObserver 监听展开
-    var theatreBody = document.getElementById('gateway_theatre_body');
-    if (theatreBody) {
-        var observer = new MutationObserver(function () { tryLoad(); });
-        observer.observe(theatreBody, { attributes: true, attributeFilter: ['style'] });
-        // 页面加载时若已展开，直接加载
-        tryLoad();
-    }
-})();
-</script>
-
-<!-- AI 辅助修改脚本加载器（Task: AI 辅助页面修改系统） -->
-<!-- 当 "Agent 剧场" 区块展开时，于 panel-agent-theatre.js 之后动态注入 panel-ai-modifier.js -->
-<script>
-(function () {
-    'use strict';
-
-    var aiModifierLoaded = false;
-
-    /** 动态注入 panel-ai-modifier.js（从网关 URL 拉，避免相对路径问题） */
-    function loadAiModifierScript() {
-        if (aiModifierLoaded) return;
-        if (window.__gatewayAiModifierInit) { aiModifierLoaded = true; return; }
-        var urlEl = document.getElementById('gateway_panel_url');
-        if (!urlEl) return;
-        var base = (urlEl.value || 'http://127.0.0.1:3210').trim();
-        if (!base) return;
-        var s = document.createElement('script');
-        s.src = base + '/ai-modifier.js';
-        s.async = true;
-        s.onload = function () {
-            console.log('[Gateway] AI 助手脚本已加载');
-            // 脚本自动初始化，这里再做一次显式调用兜底
-            if (window.GatewayAiModifier && typeof window.GatewayAiModifier.init === 'function') {
-                try { window.GatewayAiModifier.init(); } catch (e) { /* 静默，脚本内部已 init 过 */ }
-            }
-        };
-        s.onerror = function () {
-            console.warn('[Gateway] AI 助手脚本加载失败，请确认网关地址正确并已启动');
-        };
-        document.head.appendChild(s);
-        aiModifierLoaded = true;
-    }
-
-    /** 监听 Agent 剧场区块展开 */
-    function tryLoad() {
-        if (aiModifierLoaded) return;
-        var body = document.getElementById('gateway_theatre_body');
-        if (!body) return;
-        if (body.style.display !== 'none') {
-            loadAiModifierScript();
-        }
-    }
-
-    var theatreBody = document.getElementById('gateway_theatre_body');
-    if (theatreBody) {
-        var observer = new MutationObserver(function () { tryLoad(); });
-        observer.observe(theatreBody, { attributes: true, attributeFilter: ['style'] });
-        tryLoad();
-    }
-})();
-</script>

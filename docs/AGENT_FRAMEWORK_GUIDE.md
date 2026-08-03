@@ -1006,10 +1006,12 @@ await ctx.surface.dispatch(agentRunResult, ctx, {
 
 ### 13.4 三套内置界面
 
-| 界面 | 适配器 | 说明 |
+| 界面 | 适配器/入口 | 说明 |
 |------|--------|------|
 | IM 增强 | `agent-rp`（`surfaceType: 'im'`） | 正文分段 + `>选项X：` 按钮（复用 option-splitter）+ 状态图（复用 message-to-image） |
-| Agent 专用前端 | `panel.html` "Agent 剧场" | SSE 订阅 AgentRunResult 流，时间线 + 状态面板 + 边玩边改 |
+| Agent 专用前端 | 独立页 `/agent`（`public/agent.html`） | 模块 B 改造后已从 ST 面板剥离：Agent 设置（折叠分组 + 统一保存）+ Agent 剧场（SSE 正文流/状态/时间线/AI 修改）；网关面板「Agent 前端」按钮或配置 `agentFrontendUrl` 访问 |
+
+> 历史备注：早期 Agent 剧场曾内嵌于 ST 网关设置面板（`panel.html`），模块 B 改造已迁移至独立页面，ST 面板仅保留「Agent 前端」入口按钮。
 
 ---
 

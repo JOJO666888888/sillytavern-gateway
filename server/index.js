@@ -28,6 +28,7 @@ import { registerRuntimeCommands } from './runtime/runtime-commands.js';
 import { createLLMService } from './llm-service.js';
 import { TheatreBroadcaster } from './agent/theatre-broadcaster.js';
 import { createAiModifierHandlers, createProfileStore } from './ai-modifier.js';
+import { createAgentFrontendValidateHandler } from './agent-frontend.js';
 import multer from 'multer';
 
 const logger = createLogger('server');
@@ -1090,6 +1091,29 @@ app.get('/ai-modifier.js', (req, res) => {
     res.type('application/javascript; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache');
     fs.createReadStream(file).pipe(res);
+});
+
+// ==================== Agent 前端 URL 校验 API ====================
+//
+// 供独立 Agent 前端页面（public/agent.html）"验证"按钮调用。
+// 注册在 /api/* 全局鉴权中间件之后，自动受 X-Gateway-Token 保护。
+// 逻辑抽在 server/agent-frontend.js（纯函数 + 可注入 fetch），
+// 见 test/agent-frontend.test.js。
+app.post('/api/agent-frontend/validate', createAgentFrontendValidateHandler({}));
+
+// ==================== Agent 前端静态页面（公开，无需鉴权） ====================
+//
+// public/agent.{html,css,js} 是独立 Agent 前端（Agent 设置 + Agent 剧场），
+// 通过 /agent 访问。页面本身不需要鉴权（公开静态页，不含敏感数据）；
+// 页面内所有 API 请求由前端自行携带 X-Gateway-Token。
+const PUBLIC_DIR = path.join(REPO_ROOT, 'public');
+app.use(express.static(PUBLIC_DIR));
+app.get('/agent', (req, res) => {
+    const file = path.join(PUBLIC_DIR, 'agent.html');
+    if (!fs.existsSync(file)) {
+        return res.status(404).send('agent.html not found');
+    }
+    res.sendFile(file);
 });
 
 // ==================== 启动服务 ====================

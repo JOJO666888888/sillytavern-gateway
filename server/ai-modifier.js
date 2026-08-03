@@ -426,7 +426,7 @@ export function createProfileStore({ getAgentFramework }) {
         writeYaml(profileName, yaml) {
             const af = getAgentFramework();
             if (!af || !af.agentLoader) {
-                throw new Error('Agent 框架未启用，无法保存 Profile');
+                throw new Error('Agent 设置（agent-framework 插件）未启用，无法保存 Profile');
             }
             af.agentLoader.save(profileName, yaml);
         },
