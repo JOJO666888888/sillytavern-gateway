@@ -742,9 +742,11 @@ export class LLMClient {
     async runTools(messages, tools, executor, options = {}) {
         const maxSteps = options.maxSteps ?? 5;
         const sampling = options.sampling || {};
+        const signal = options.signal || null;   // P2: 中止信号
         const convo = [...messages];
 
         for (let step = 0; step < maxSteps; step++) {
+            if (signal?.aborted) throw new Error('aborted');  // P2: 检查中止
             const { text, toolCalls } = await this.generateWithTools(convo, tools, sampling);
 
             if (!toolCalls.length) {
@@ -757,6 +759,7 @@ export class LLMClient {
 
             // 逐个执行工具，把结果作为 tool 消息回灌
             for (const call of toolCalls) {
+                if (signal?.aborted) throw new Error('aborted');  // P2: 工具执行中检查中止
                 let result;
                 try {
                     result = await executor(call.name, call.arguments);
@@ -841,10 +844,12 @@ export class LLMClient {
 
         const maxSteps = options.maxSteps ?? 5;
         const sampling = options.sampling || {};
+        const signal = options.signal || null;   // P2: 中止信号
         const onDelta = typeof options.onDelta === 'function' ? options.onDelta : null;
         const convo = [...messages];
 
         for (let step = 0; step < maxSteps; step++) {
+            if (signal?.aborted) throw new Error('aborted');  // P2: 检查中止
             let turn;
             const stepOnDelta = onDelta ? (delta, full) => onDelta(delta, full, step) : null;
             try {
@@ -866,6 +871,7 @@ export class LLMClient {
 
             // 逐个执行工具，把结果作为 tool 消息回灌
             for (const call of toolCalls) {
+                if (signal?.aborted) throw new Error('aborted');  // P2: 工具执行中检查中止
                 let result;
                 try {
                     result = await executor(call.name, call.arguments);

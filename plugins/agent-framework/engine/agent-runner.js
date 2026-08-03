@@ -35,7 +35,9 @@ export class AgentRunner {
     async run(definition, session, history, userMessage, ctx) {
         const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const startTime = Date.now();
-        this.activeRuns.set(runId, { definition, session, startTime });
+        // P2: 每个 run 持有一个 AbortController，abort(runId) 触发后 LLM 工具循环抛错中断
+        const controller = new AbortController();
+        this.activeRuns.set(runId, { definition, session, startTime, controller });
 
         // 工具循环中捕获的事件（待 runTools 完成后注入 AgentRunResult）
         const capturedEvents = [];
@@ -96,10 +98,12 @@ export class AgentRunner {
                 result = await ctx.llm.runToolsStream(messages, tools, executor, {
                     maxSteps,
                     sampling,
+                    // P2: 中止信号，abort 后 LLM 工具循环在 step 边界抛 Error('aborted') 中断
+                    signal: controller.signal,
                     onDelta: (delta, full, turn) => this.onTokenDelta?.(runId, delta, full, turn, sessionKey),
                 });
             } else {
-                result = await ctx.llm.runTools(messages, tools, executor, { maxSteps, sampling });
+                result = await ctx.llm.runTools(messages, tools, executor, { maxSteps, sampling, signal: controller.signal });
             }
 
             // 6. 草稿生成后 checkpoint
@@ -156,7 +160,13 @@ export class AgentRunner {
                 promoted,
             };
         } catch (e) {
-            this.logger.error(`[agent-runner] Agent "${definition.name}" 执行失败: ${e.message}`);
+            // P2: 识别"被中止"与"真失败"：abort 触发后 LLM 工具循环抛 Error('aborted') 或 AbortError
+            const isAborted = e?.name === 'AbortError' || e?.message === 'aborted';
+            if (isAborted) {
+                this.logger.info(`[agent-runner] Agent "${definition.name}" 已停止生成`);
+            } else {
+                this.logger.error(`[agent-runner] Agent "${definition.name}" 执行失败: ${e.message}`);
+            }
             // 失败/取消不 commit，workspace 保留供审计
             const logEntry = {
                 runId,
@@ -164,12 +174,15 @@ export class AgentRunner {
                 startTime,
                 endTime: Date.now(),
                 success: false,
+                aborted: isAborted,
                 error: e.message,
             };
             this.runLog.push(logEntry);
             if (this.runLog.length > 100) this.runLog.shift();
 
-            const errResult = AgentRunResult.fromRunResult(`Agent 执行出错: ${e.message}`, 0, runId, meta);
+            // P2: 被中止时提示文本为"已停止生成"，而非报错
+            const errText = isAborted ? '（已停止生成）' : `Agent 执行出错: ${e.message}`;
+            const errResult = AgentRunResult.fromRunResult(errText, 0, runId, meta);
             return {
                 runId,
                 result: errResult,
@@ -177,6 +190,8 @@ export class AgentRunner {
                 steps: 0,
                 error: e.message,
                 logs: logEntry,
+                // P2: 中止标记，server/index.js 据此广播 run_state=aborted
+                aborted: isAborted,
             };
         } finally {
             // 确保缓冲中的事件落盘（commit/rollback 已 flush，但失败路径不 commit）。
@@ -346,6 +361,21 @@ export class AgentRunner {
             chunks.push(paras.slice(i * perChunk, (i + 1) * perChunk).join('\n\n'));
         }
         return chunks;
+    }
+
+    /**
+     * 中止一个正在执行的 run（P2）。
+     * 触发该 run 的 AbortController，LLM 工具循环在 step 边界检查 signal.aborted 后抛错中断。
+     * @param {string} runId
+     * @returns {boolean} 是否找到并触发了中止（run 不存在/已结束返回 false）
+     */
+    abort(runId) {
+        const run = this.activeRuns.get(runId);
+        if (!run) return false;
+        if (run.controller && !run.controller.signal.aborted) {
+            run.controller.abort();
+        }
+        return true;
     }
 
     /**

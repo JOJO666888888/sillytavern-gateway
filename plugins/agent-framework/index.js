@@ -126,6 +126,8 @@ export default class AgentFrameworkPlugin extends GatewayPlugin {
                 this.agentLoader.agents.set(agentDef.name, agentDef);
             },
             getStatus: () => this.agentRunner.getStatus(),
+            // P2: 中止指定 run（透传 runner.abort），供 server/index.js 的 /api/agent-theatre/abort 调用
+            abortRun: (runId) => this.agentRunner.abort(runId),
             getWorkspaceManager: () => this.workspaceManager,
             /**
              * 协作总线（Phase 3）：供其他插件编程式发布/订阅 run 内协作消息。

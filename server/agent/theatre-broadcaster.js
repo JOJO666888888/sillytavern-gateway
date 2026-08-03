@@ -199,6 +199,16 @@ export class TheatreBroadcaster {
         this.broadcast(sessionKey, 'token_delta', { delta, runId });
     }
 
+    /**
+     * 推送 run 生命周期状态（P2）：running / aborting / aborted / completed / error。
+     * @param {string} sessionKey
+     * @param {string|null} runId - run 尚未生成时传 null（如 running 事件）
+     * @param {string} state
+     */
+    broadcastRunState(sessionKey, runId, state) {
+        this.broadcast(sessionKey, 'run_state', { runId: runId || null, state });
+    }
+
     /** 启动周期心跳 */
     _startHeartbeat() {
         if (this._heartbeatTimer) return;
