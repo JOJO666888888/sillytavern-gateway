@@ -6,7 +6,7 @@
     "description": "终端 Agent 框架：YAML 定义工作流、工具注册表、子代理调度、多阶段流水线。让用户在网关内实现多 Agent 创作流水线。",
     "main": "index.js",
     "priority": 40,
-    "enabled": false,
+    "enabled": true,
     "dependencies": [],
     "permissions": ["llm", "fs", "assets", "agent", "gateway.inbound", "sessions", "gateway.send", "surface"],
     "config": {

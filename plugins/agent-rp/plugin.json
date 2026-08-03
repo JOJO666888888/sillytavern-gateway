@@ -6,7 +6,7 @@
     "description": "AI 角色扮演插件（IM 界面适配器）：通过 /rp 命令启动 RP 会话，消费 AgentRunResult 渲染为 IM 富文本（正文分段 + 选项按钮 + 实时状态图）。支持群聊多 Bot 协同。agent-framework 未启用时自动回退到 chatStream 直调模式。",
     "main": "index.js",
     "priority": 50,
-    "enabled": false,
+    "enabled": true,
     "dependencies": [],
     "permissions": ["llm", "fs", "assets", "gateway.inbound", "sessions", "agent", "surface", "workspace"],
     "config": {
