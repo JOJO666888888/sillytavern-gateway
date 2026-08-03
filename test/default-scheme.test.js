@@ -389,16 +389,16 @@ describe('SubTask 6.8 - MemoryEngine namespace 隔离', () => {
         assert.strictEqual(engine.read('user', ''), '');
     });
 
-    test('recall 在指定 namespace 下只检索该 namespace', () => {
+    test('recall 在指定 namespace 下只检索该 namespace', async () => {
         const engine = new MemoryEngine(env.dir);
         engine.update('reference', 'Alice 见过龙', 'char:alice');
         engine.update('reference', 'Bob 见过巨人', 'char:bob');
 
-        const aliceResults = engine.recall('龙', 5, 'char:alice');
+        const aliceResults = await engine.recall('龙', 5, 'char:alice');
         assert.ok(aliceResults.some(r => r.content.includes('龙')));
         assert.ok(!aliceResults.some(r => r.content.includes('巨人')), 'Alice 不应看到 Bob 的记忆');
 
-        const bobResults = engine.recall('巨人', 5, 'char:bob');
+        const bobResults = await engine.recall('巨人', 5, 'char:bob');
         assert.ok(bobResults.some(r => r.content.includes('巨人')));
         assert.ok(!bobResults.some(r => r.content.includes('龙')), 'Bob 不应看到 Alice 的记忆');
     });
@@ -431,7 +431,7 @@ describe('SubTask 6.8 - MemoryEngine namespace 隔离', () => {
         assert.strictEqual(engine.read('project', null), '全局内容');
     });
 
-    test('recall 多类型公平：单类型段落多不占满结果上限', () => {
+    test('recall 多类型公平：单类型段落多不占满结果上限', async () => {
         const engine = new MemoryEngine(env.dir);
         // project 有 6 个匹配段落，reference 只有 1 个 —— 旧实现 project 前 5 段会占满 limit
         engine.update('project', [
@@ -440,17 +440,17 @@ describe('SubTask 6.8 - MemoryEngine namespace 隔离', () => {
         ].join('\n\n'));
         engine.update('reference', '只有一条关于龙的参考');
 
-        const results = engine.recall('龙', 5);
+        const results = await engine.recall('龙', 5);
         assert.ok(results.length <= 5, `结果数应 <= limit(5)，实际 ${results.length}`);
         assert.ok(results.some(r => r.type === 'reference'), 'reference 类型应有机会被检索到');
     });
 
-    test('recall 按命中关键词数排序', () => {
+    test('recall 按命中关键词数排序', async () => {
         const engine = new MemoryEngine(env.dir);
         engine.update('project', '龙 与 宝藏');
         engine.update('reference', '龙');
 
-        const results = engine.recall('龙 宝藏', 5);
+        const results = await engine.recall('龙 宝藏', 5);
         assert.ok(results.length >= 2, '应同时返回两段记忆');
         assert.strictEqual(results[0].type, 'project', '命中 2 词的段落应排最前');
         assert.strictEqual(results[0].content, '龙 与 宝藏');
@@ -458,10 +458,10 @@ describe('SubTask 6.8 - MemoryEngine namespace 隔离', () => {
         assert.ok(!('score' in results[0]), '返回对象不应包含 score 字段');
     });
 
-    test('recall 空查询返回空数组', () => {
+    test('recall 空查询返回空数组', async () => {
         const engine = new MemoryEngine(env.dir);
         engine.update('project', '任意内容');
-        assert.deepStrictEqual(engine.recall('   ', 5), []);
+        assert.deepStrictEqual(await engine.recall('   ', 5), []);
     });
 });
 

@@ -24,7 +24,7 @@ export function createMemoryTools(memoryEngine) {
             handler: async (args, ctx) => {
                 const limit = args.limit || 5;
                 const namespace = ctx?.session?.namespace || '';
-                const results = memoryEngine.recall(args.query, limit, namespace);
+                const results = await memoryEngine.recall(args.query, limit, namespace);
                 return results;
             },
         },

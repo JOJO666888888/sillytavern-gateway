@@ -25,6 +25,7 @@ import { StateManager } from './engine/state-manager.js';
 import { MemoryEngine } from './engine/memory-engine.js';
 import { WorkspaceManager } from './engine/workspace-manager.js';
 import { CollabBus } from './engine/collab-bus.js';
+import { createEmbedder } from './engine/embedder.js';
 import { ContextBuilder, extractDefinitionVar } from '../../server/agent/context-builder.js';
 
 // 工具
@@ -75,8 +76,11 @@ export default class AgentFrameworkPlugin extends GatewayPlugin {
 
         this.toolRegistry = new ToolRegistry();
         this.stateManager = new StateManager(DATA_DIR);
+        // 记忆检索器：inverted（默认，零依赖）/ embedding（需 embedder，见 _buildRetrieverOptions）
         this.memoryEngine = new MemoryEngine(DATA_DIR, {
             summaryInterval: this.getConfig('summaryInterval') ?? 10,
+            retriever: this.getConfig('memoryRetriever') || 'inverted',
+            retrieverOptions: this._buildRetrieverOptions(),
         });
         this.contextBuilder = new ContextBuilder({ dataDir: DATA_DIR });
         this.workspaceManager = new WorkspaceManager({ dataRoot: DATA_DIR, logger: this.logger });
@@ -383,6 +387,25 @@ export default class AgentFrameworkPlugin extends GatewayPlugin {
     _extractVar(definition, varName) {
         // 委托共享实现（语义与 agent-runner 的 meta.style 一致）
         return extractDefinitionVar(definition, varName);
+    }
+
+    /**
+     * 构建记忆检索器选项（任务 2b 延伸：嵌入向量引擎启用）。
+     * 仅当 memoryRetriever === 'embedding' 时注入 embedder：
+     * - embedderMode 'local'（默认，零依赖）：字符 n-gram hashing，离线可用
+     * - embedderMode 'api'：调用 OpenAI 兼容 /embeddings（embedderBaseUrl/embedderModel/embedderApiKey）
+     * @private
+     */
+    _buildRetrieverOptions() {
+        if ((this.getConfig('memoryRetriever') || 'inverted') !== 'embedding') return {};
+        const mode = this.getConfig('embedderMode') || 'local';
+        return {
+            embedder: createEmbedder(mode, {
+                baseUrl: this.getConfig('embedderBaseUrl') || '',
+                apiKey: this.getConfig('embedderApiKey') || '',
+                model: this.getConfig('embedderModel') || 'text-embedding-3-small',
+            }),
+        };
     }
 
     /**

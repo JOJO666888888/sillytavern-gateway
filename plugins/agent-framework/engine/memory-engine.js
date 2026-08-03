@@ -105,14 +105,17 @@ export class MemoryEngine {
     }
 
     /**
-     * 检索记忆（委托检索器：倒排 + TF-IDF + 配额制公平）
+     * 检索记忆（委托检索器：倒排 TF-IDF 或嵌入向量，配额制公平）
      * - 返回对象保持 { type, content, namespace } 契约不变（score 仅内部排序用）
+     * - 异步：嵌入检索需要调用 embedder（本地同步 / 外部 API 异步）
      * @param {string} query - 查询关键词（空格分隔多个词）
      * @param {number} [limit=5] - 结果上限
      * @param {string} [namespace] - 命名空间；未传或空则检索全局记忆
+     * @returns {Promise<Array<{type:string, content:string, namespace:string}>>}
      */
-    recall(query, limit = 5, namespace = '') {
-        return this._retriever.retrieve(query, limit, namespace).map(({ score, ...rest }) => rest);
+    async recall(query, limit = 5, namespace = '') {
+        const rows = await this._retriever.retrieve(query, limit, namespace);
+        return rows.map(({ score, ...rest }) => rest);
     }
 
     /**

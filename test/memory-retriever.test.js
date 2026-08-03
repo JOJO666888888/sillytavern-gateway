@@ -11,6 +11,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert';
 import { tmpDir } from './helpers.js';
 import { InvertedIndexRetriever, EmbeddingRetriever, createRetriever } from '../plugins/agent-framework/engine/memory-retriever.js';
+import { createEmbedder } from '../plugins/agent-framework/engine/embedder.js';
 import { MemoryEngine } from '../plugins/agent-framework/engine/memory-engine.js';
 
 /** 构造一个内存版数据源（模拟 MemoryEngine.read） */
@@ -79,16 +80,16 @@ describe('Memory 倒排检索（任务 2b）', () => {
         assert.ok(alice.every(x => x.namespace === 'char:alice'), '结果 namespace 应为 char:alice');
     });
 
-    test('update 后失效重查返回新内容（引擎接线）', () => {
+    test('update 后失效重查返回新内容（引擎接线）', async () => {
         const { dir, cleanup } = tmpDir();
         try {
             const engine = new MemoryEngine(dir);
             engine.update('project', '旧内容 关于龙');
-            let results = engine.recall('龙', 5);
+            let results = await engine.recall('龙', 5);
             assert.ok(results.some(x => x.content.includes('旧内容')), '首次检索应命中旧内容');
 
             engine.update('project', '新内容 关于凤凰');
-            results = engine.recall('凤凰', 5);
+            results = await engine.recall('凤凰', 5);
             assert.ok(results.some(x => x.content.includes('新内容')), 'update 后应能检索到新内容');
             assert.ok(!results.some(x => x.content.includes('旧内容')), 'update 后不应残留旧内容');
 
@@ -99,13 +100,13 @@ describe('Memory 倒排检索（任务 2b）', () => {
         }
     });
 
-    test('append 后失效重查（引擎接线）', () => {
+    test('append 后失效重查（引擎接线）', async () => {
         const { dir, cleanup } = tmpDir();
         try {
             const engine = new MemoryEngine(dir);
             engine.append('user', '第一段记忆');
             engine.append('user', '第二段记忆 关于喜好');
-            const results = engine.recall('喜好', 5);
+            const results = await engine.recall('喜好', 5);
             assert.ok(results.some(x => x.content.includes('第二段记忆')), 'append 后应能检索到新增内容');
         } finally {
             cleanup();
@@ -126,15 +127,15 @@ describe('Memory 倒排检索（任务 2b）', () => {
 });
 
 describe('EmbeddingRetriever 接口预留', () => {
-    test('无 embedder 时返回 [] 并 warn 一次', () => {
+    test('无 embedder 时返回 [] 并 warn 一次', async () => {
         const warnings = [];
         const origWarn = console.warn;
         console.warn = (msg) => { warnings.push(msg); };
         try {
             const r = new EmbeddingRetriever();
             r.setSources(() => '龙 的内容');
-            const first = r.retrieve('龙', 5);
-            const second = r.retrieve('龙', 5);
+            const first = await r.retrieve('龙', 5);
+            const second = await r.retrieve('龙', 5);
             assert.deepStrictEqual(first, [], '无 embedder 应返回 []');
             assert.deepStrictEqual(second, [], '重复调用仍返回 []');
             assert.strictEqual(warnings.filter(w => String(w).includes('未配置 embedder')).length, 1,
@@ -150,16 +151,75 @@ describe('EmbeddingRetriever 接口预留', () => {
         assert.ok(createRetriever('embedding') instanceof EmbeddingRetriever);
     });
 
-    test('MemoryEngine retriever 选项可切换为 embedding（无 embedder 空结果）', () => {
+    test('MemoryEngine retriever 选项可切换为 embedding（无 embedder 空结果）', async () => {
         const { dir, cleanup } = tmpDir();
         try {
             const engine = new MemoryEngine(dir, { retriever: 'embedding' });
             engine.update('project', '龙 的内容');
-            const results = engine.recall('龙', 5);
+            const results = await engine.recall('龙', 5);
             assert.deepStrictEqual(results, [], 'embedding 引擎未配置 embedder 时 recall 返回 []');
         } finally {
             cleanup();
         }
+    });
+});
+
+describe('嵌入向量引擎启用（createEmbedder）', () => {
+    test('local embedder：确定性 + 归一化 + 语义相关命中', async () => {
+        const { dir, cleanup } = tmpDir();
+        try {
+            const engine = new MemoryEngine(dir, {
+                retriever: 'embedding',
+                retrieverOptions: { embedder: createEmbedder('local') },
+            });
+            engine.update('project', '龙 与 宝藏 的传说\n\n关于 星空的 观测 记录');
+            const results = await engine.recall('龙 宝藏', 5);
+            assert.ok(results.length >= 1, 'embedding 引擎应返回命中段落');
+            assert.ok(results[0].content.includes('龙'), 'query 相关段落应排最前');
+            assert.ok(results.every(x => !('score' in x)), 'recall 返回对象不应含 score 字段');
+        } finally {
+            cleanup();
+        }
+    });
+
+    test('api embedder：mock /embeddings 端点返回向量', async () => {
+        const calls = [];
+        const origFetch = global.fetch;
+        global.fetch = async (url, init) => {
+            calls.push({ url: String(url), init });
+            return {
+                ok: true,
+                json: async () => ({ data: [{ embedding: [1, 0, 0, 1] }] }),
+            };
+        };
+        try {
+            const embedder = createEmbedder('api', { baseUrl: 'http://mock/v1', apiKey: 'sk-test' });
+            const vec = await embedder('龙');
+            assert.deepStrictEqual(vec, [1, 0, 0, 1]);
+            // 缓存：相同文本不重复请求
+            await embedder('龙');
+            assert.strictEqual(calls.length, 1, '相同文本应命中缓存，只请求一次');
+            assert.ok(String(calls[0].url).endsWith('/embeddings'), '应请求 /embeddings 端点');
+            assert.ok(String(calls[0].init.headers.Authorization).includes('sk-test'));
+        } finally {
+            global.fetch = origFetch;
+        }
+    });
+
+    test('api embedder：非 200 抛出可读错误', async () => {
+        const origFetch = global.fetch;
+        global.fetch = async () => ({ ok: false, status: 401, text: async () => 'Unauthorized' });
+        try {
+            const embedder = createEmbedder('api', { baseUrl: 'http://mock/v1' });
+            await assert.rejects(() => embedder('龙'), /401/);
+        } finally {
+            global.fetch = origFetch;
+        }
+    });
+
+    test('api embedder：未配置 baseUrl 抛出配置错误', async () => {
+        const embedder = createEmbedder('api', {});
+        await assert.rejects(() => embedder('龙'), /embedderBaseUrl/);
     });
 });
 

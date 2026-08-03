@@ -196,7 +196,7 @@ function sequential_feedback(subAgents, mainText):
 | 优先级 | 事项 |
 |---|---|
 | P0 | 网关 P0 改进（既有计划） |
-| P1 | 嵌入向量引擎启用（任务 2b 延伸：`createRetriever('embedding')` 接真实 embedder） |
+| P1 | 嵌入向量引擎启用（~~任务 2b 延伸~~ → **已完成**：`engine/embedder.js` + `memoryRetriever: embedding` 配置） |
 | P3 | 冲突仲裁 Agent / 投票共识 / 版本合并器 |
 | P4 | Pi/CC 桥接、RP 专用前端、ST 兼容前端桥（Phase 3 完整版） |
 

@@ -158,20 +158,31 @@ export class EmbeddingRetriever {
         this._loadFn = null;
         this._embedder = typeof options.embedder === 'function' ? options.embedder : null;
         this._docs = null; // 惰性缓存：{ type, content }[]
+        this._vecCache = new Map(); // text -> vector（进程内复用，避免重复嵌入）
     }
 
     setSources(loadFn) {
         this._loadFn = typeof loadFn === 'function' ? loadFn : null;
         this._docs = null;
+        this._vecCache.clear();
     }
 
     setEmbedder(fn) {
         this._embedder = typeof fn === 'function' ? fn : null;
         this._docs = null;
+        this._vecCache.clear();
     }
 
     invalidate() {
         this._docs = null;
+        this._vecCache.clear();
+    }
+
+    async _embed(text) {
+        if (this._vecCache.has(text)) return this._vecCache.get(text);
+        const v = await this._embedder(text);
+        if (Array.isArray(v)) this._vecCache.set(text, v);
+        return v;
     }
 
     _loadDocs(namespace) {
@@ -204,30 +215,31 @@ export class EmbeddingRetriever {
     }
 
     /**
-     * 嵌入检索（接口预留，同步契约以兼容 recall 返回数组）。
-     * 未配置 embedder 时返回 [] 并 warn 一次。
-     * 启用方式：new MemoryEngine(dir, { retriever: 'embedding', retrieverOptions: { embedder: fn } })
-     * （embedder 应为同步函数；异步向量化引擎接入时需在调用方做 await 包装）
+     * 嵌入检索（支持异步 embedder）。未配置 embedder 时返回 [] 并 warn 一次。
+     * 启用方式：new MemoryEngine(dir, { retriever: 'embedding', retrieverOptions: { embedder } })
+     * embedder 由 createEmbedder('local'|'api', opts) 生成，见 engine/embedder.js。
      * @param {string} query
      * @param {number} [limit=5]
      * @param {string} [namespace]
+     * @returns {Promise<Array<{type:string, content:string, namespace:string, score:number}>>}
      */
-    retrieve(query, limit = 5, namespace = '') {
+    async retrieve(query, limit = 5, namespace = '') {
         if (!this._embedder) {
             warnOnce('embedding-no-embedder',
                 'EmbeddingRetriever 未配置 embedder，本次检索返回空结果。'
-                + "启用方式：new MemoryEngine(dir, { retriever: 'embedding', retrieverOptions: { embedder: fn } })");
+                + "启用方式：new MemoryEngine(dir, { retriever: 'embedding', retrieverOptions: { embedder } })；"
+                + "embedder 用 createEmbedder('local'|'api', opts) 生成（见 engine/embedder.js）");
             return [];
         }
         const docs = this._loadDocs(namespace);
         if (docs.length === 0) return [];
 
-        const qv = this._embedder(query);
+        const qv = await this._embed(query);
         if (!Array.isArray(qv)) return [];
 
         const scored = [];
         for (const d of docs) {
-            const dv = this._embedder(d.content);
+            const dv = await this._embed(d.content);
             if (!Array.isArray(dv)) continue;
             scored.push({
                 type: d.type,
@@ -236,7 +248,9 @@ export class EmbeddingRetriever {
                 score: this._cosine(qv, dv),
             });
         }
-        return quotaSelect(scored, limit);
+        // 过滤零相似度（无重叠），避免噪声段落
+        const hits = scored.filter(s => s.score > 0);
+        return quotaSelect(hits, limit);
     }
 }
 
