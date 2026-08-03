@@ -91,12 +91,10 @@
             try { state.eventSource.close(); } catch (_) { /* ignore */ }
         }
         var sessionKey = state.session || 'native:default';
-        // EventSource 不支持自定义头，token 通过 query 参数传递（鉴权中间件已支持 query? 需确认）
-        // 这里走无 token 模式：若需鉴权，用户可在网关关闭 requireAuth 或在白名单内访问
+        // EventSource 无法设置自定义 header，token 通过 query 传递（后端中间件已支持 GET query token）
         var url = gatewayUrl() + '/api/agent-theatre/stream?session=' + encodeURIComponent(sessionKey);
         var token = gatewayToken();
-        // EventSource 不支持自定义 header，token 走 query（后端中间件读 header，所以这里靠无鉴权或同源）
-        // 实际方案：鉴权靠 Cookie 或同源，这里先尝试无 token；失败则提示
+        if (token) url += '&token=' + encodeURIComponent(token);
         try {
             state.eventSource = new EventSource(url);
         } catch (e) {

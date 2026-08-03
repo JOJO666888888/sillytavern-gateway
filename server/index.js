@@ -128,7 +128,10 @@ app.use((req, res, next) => {
     }
 
     const provided = req.headers['x-gateway-token'] ||
-        (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
+        (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '') ||
+        // EventSource(SSE) 无法设置自定义 header，只能通过 query 传递 token。
+        // 仅对 GET 请求、且仅在 header 缺 token 时回退，避免 token 常驻 URL。
+        (req.method === 'GET' ? (req.query.token || '') : '');
     if (!tokenEquals(String(provided), String(expected))) {
         return res.status(401).json({
             success: false,
@@ -509,13 +512,13 @@ app.post('/api/runtime/llm/models', async (req, res) => {
 // ==================== Agent 框架 API ====================
 
 app.get('/api/agents', (req, res) => {
-    const af = pluginManager?.loader.getPlugin('agent-framework');
+    const af = getReadyAgentFramework();
     if (!af) return res.json({ agents: [], error: 'Agent框架未启用' });
     res.json({ agents: af.agentLoader.list() });
 });
 
 app.get('/api/agents/tools', (req, res) => {
-    const af = pluginManager?.loader.getPlugin('agent-framework');
+    const af = getReadyAgentFramework();
     if (!af) return res.json({ tools: [] });
     res.json({ tools: af.toolRegistry.list() });
 });
@@ -527,7 +530,7 @@ app.get('/api/agents/logs', (req, res) => {
 });
 
 app.get('/api/agents/:name', (req, res) => {
-    const af = pluginManager?.loader.getPlugin('agent-framework');
+    const af = getReadyAgentFramework();
     if (!af) return res.status(404).json({ error: 'Agent框架未启用' });
     const def = af.agentLoader.get(req.params.name);
     if (!def) return res.status(404).json({ error: 'Agent不存在' });
@@ -535,7 +538,7 @@ app.get('/api/agents/:name', (req, res) => {
 });
 
 app.post('/api/agents', async (req, res) => {
-    const af = pluginManager?.loader.getPlugin('agent-framework');
+    const af = getReadyAgentFramework();
     if (!af) return res.status(503).json({ error: 'Agent框架未启用' });
     try {
         const { yaml } = req.body;
@@ -548,14 +551,14 @@ app.post('/api/agents', async (req, res) => {
 });
 
 app.delete('/api/agents/:name', (req, res) => {
-    const af = pluginManager?.loader.getPlugin('agent-framework');
+    const af = getReadyAgentFramework();
     if (!af) return res.status(503).json({ error: 'Agent框架未启用' });
     af.agentLoader.delete(req.params.name);
     res.json({ success: true });
 });
 
 app.post('/api/agents/:name/run', async (req, res) => {
-    const af = pluginManager?.loader.getPlugin('agent-framework');
+    const af = getReadyAgentFramework();
     if (!af) return res.status(503).json({ error: 'Agent框架未启用' });
     // 这里只返回提示，实际执行通过 IM 命令 /agent run
     res.json({ success: true, message: `请在IM中发送 /agent run ${req.params.name} 来启动Agent` });
@@ -572,7 +575,7 @@ app.post('/api/agents/:name/run', async (req, res) => {
  * 响应：{ success: true, agent: def }
  */
 app.post('/api/agents/from-default', async (req, res) => {
-    const af = pluginManager?.loader.getPlugin('agent-framework');
+    const af = getReadyAgentFramework();
     if (!af) return res.status(503).json({ error: 'Agent框架未启用' });
 
     try {
@@ -858,9 +861,25 @@ app.post('/api/gateway/update/apply', async (req, res) => {
  * agent-framework 已 onLoad 时返回 _agentService，否则返回 null。
  * @returns {object|null}
  */
+/**
+ * 获取"已就绪"的 agent-framework 插件实例。
+ *
+ * 注意：插件被禁用时 loader.getPlugin() 仍会返回实例（onLoad 未执行，
+ * _loaded=false），其 agentLoader/toolRegistry/agentRunner 均为 undefined。
+ * 面板端点若直接访问 af.agentLoader.list() 会抛 TypeError -> HTTP 500。
+ * 这里统一判空返回 null，让端点走现有的 !af 分支返回可读的 JSON 错误。
+ *
+ * @returns {object|null} 已就绪的插件实例，未启用/未就绪返回 null
+ */
+function getReadyAgentFramework() {
+    const af = pluginManager?.loader?.getPlugin('agent-framework');
+    if (!af || !af._loaded || !af.agentLoader) return null;
+    return af;
+}
+
 function getAgentService() {
     const af = pluginManager?.loader?.getPlugin('agent-framework');
-    return af?._instance?._agentService || null;
+    return af?._agentService || null;
 }
 
 /**
@@ -1044,8 +1063,8 @@ app.get('/api/agent-theatre/events/:runId', (req, res) => {
     const { runId } = req.params;
     const afterSeq = parseInt(req.query.afterSeq) || 0;
     const limit = parseInt(req.query.limit) || 100;
-    const af = pluginManager?.loader?.getPlugin('agent-framework');
-    const wm = af?._instance?.workspaceManager;
+    const af = getReadyAgentFramework();
+    const wm = af?.workspaceManager;
     if (!wm || typeof wm.getEvents !== 'function') {
         return res.status(503).json({ success: false, error: 'workspace-manager 不可用' });
     }
