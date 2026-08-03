@@ -83,6 +83,12 @@
         session: 'native:default',
     };
 
+    // 流式预览状态：token_delta 增量累积到正文区的"生成中"段落
+    var streaming = {
+        runId: null,
+        el: null,
+    };
+
     // ==================== SSE 订阅 ====================
 
     /** 建立 SSE 连接，订阅 AgentRunResult 流 */
@@ -127,6 +133,14 @@
             } catch (e) { console.warn('[theatre] state 解析失败', e); }
         });
 
+        // 流式 token 增量：Agent run 期间实时追加到正文区
+        state.eventSource.addEventListener('token_delta', function (ev) {
+            try {
+                var data = JSON.parse(ev.data);
+                handleTokenDelta(data);
+            } catch (e) { console.warn('[theatre] token_delta 解析失败', e); }
+        });
+
         state.eventSource.addEventListener('heartbeat', function () {
             // 心跳，无需处理
         });
@@ -150,11 +164,51 @@
 
     // ==================== 处理 AgentRunResult ====================
 
+    /**
+     * 处理流式 token 增量：累积到正文区的"生成中"段落。
+     * 新一轮 run 到来时重置预览；agent_result 落地后由 handleAgentResult 移除预览。
+     */
+    function handleTokenDelta(data) {
+        if (!data || !data.delta) return;
+        var el = $('gateway_theatre_narrative');
+        if (!el) return;
+        // 新一轮 run：重置流式预览
+        if (data.runId !== streaming.runId) {
+            streaming.runId = data.runId;
+            if (streaming.el && streaming.el.parentNode) streaming.el.remove();
+            streaming.el = null;
+        }
+        // 移除"思考中"光标（流式正文开始后不再需要）
+        var cursor = $('gateway_theatre_cursor');
+        if (cursor) cursor.remove();
+        if (!streaming.el) {
+            var empty = el.querySelector('.gateway-empty-hint');
+            if (empty) empty.remove();
+            var p = document.createElement('div');
+            p.className = 'gateway-theatre-paragraph gateway-theatre-streaming';
+            p.textContent = data.delta;
+            el.appendChild(p);
+            streaming.el = p;
+        } else {
+            streaming.el.textContent += data.delta;
+        }
+        el.scrollTop = el.scrollHeight;
+    }
+
+    /** 移除流式预览段落（agent_result 落地后调用，避免与完整正文重复） */
+    function clearStreamingPreview() {
+        if (streaming.el && streaming.el.parentNode) streaming.el.remove();
+        streaming.el = null;
+        streaming.runId = null;
+    }
+
     function handleAgentResult(payload) {
         if (!payload) return;
         state.currentRunId = payload.runId;
         state.lastResult = payload.result;
         var text = payload.text || '';
+        // 流式预览已实时渲染，落地时移除（避免与完整正文重复）
+        clearStreamingPreview();
         // 追加正文（保留旧内容，新内容追加到末尾）
         appendNarrative(text);
         // 渲染选项
@@ -216,6 +270,7 @@
         var inlineEl = $('gateway_theatre_events_inline');
         if (inlineEl) { inlineEl.innerHTML = ''; inlineEl.style.display = 'none'; }
         state.timelineEvents = [];
+        clearStreamingPreview();
     }
 
     // ==================== 渲染：选项区 ====================

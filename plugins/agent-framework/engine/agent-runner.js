@@ -15,6 +15,8 @@ export class AgentRunner {
         this.contextBuilder = options.contextBuilder || new ContextBuilder(options);
         this.workspaceManager = options.workspaceManager || null;
         this.logger = options.logger || console;
+        // 流式 token 增量回调：onTokenDelta(runId, delta, fullText, turn, sessionKey)
+        this.onTokenDelta = typeof options.onTokenDelta === 'function' ? options.onTokenDelta : null;
         this.activeRuns = new Map();
         this.runLog = [];
     }
@@ -78,14 +80,24 @@ export class AgentRunner {
                 pipeline = new Pipeline(definition.pipeline.stages);
             }
 
-            // 5. 执行 agent loop
+            // 5. 执行 agent loop（优先流式：实时转发 token 增量；引擎缺失/未知 provider 自动降级非流式）
             const sampling = {
                 temperature: definition.model?.temperature ?? 0.8,
                 max_tokens: definition.model?.maxTokens ?? 32768,
             };
             const maxSteps = definition.maxSteps || 10;
+            const sessionKey = `${session?.platform || 'unknown'}:${session?.chatId || 'unknown'}`;
 
-            const result = await ctx.llm.runTools(messages, tools, executor, { maxSteps, sampling });
+            let result;
+            if (typeof ctx.llm.runToolsStream === 'function') {
+                result = await ctx.llm.runToolsStream(messages, tools, executor, {
+                    maxSteps,
+                    sampling,
+                    onDelta: (delta, full, turn) => this.onTokenDelta?.(runId, delta, full, turn, sessionKey),
+                });
+            } else {
+                result = await ctx.llm.runTools(messages, tools, executor, { maxSteps, sampling });
+            }
 
             // 6. 草稿生成后 checkpoint
             if (useWorkspace && draftGenerated) {

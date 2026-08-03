@@ -525,6 +525,102 @@ export async function parseSSEStream(body, onEvent) {
 }
 
 /**
+ * 从流式事件中增量收集工具调用片段（写入 acc 累加器）。
+ *
+ * 各 provider 形态：
+ *   - OpenAI：choices[0].delta.tool_calls[]，按 index 归并，function.name/arguments 分片拼接
+ *   - Claude：content_block_start(tool_use 的 id/name) + content_block_delta(input_json_delta.partial_json)
+ *   - Gemini：parts[].functionCall 为完整对象（非增量），直接覆盖式收集
+ * 未知 provider 返回 false（调用方据此降级为非流式）。
+ * @param {string} provider
+ * @param {object} evt - 单个 SSE 事件
+ * @param {object} acc - 累加器（跨事件持有分片状态）
+ * @returns {boolean} 是否支持该 provider 的流式工具重建
+ */
+export function extractToolCallsDelta(provider, evt, acc) {
+    const p = (provider || 'openai').toLowerCase();
+
+    if (p === 'claude') {
+        acc.claudeBlocks = acc.claudeBlocks || {};
+        if (evt?.type === 'content_block_start' && evt.content_block?.type === 'tool_use') {
+            acc.claudeBlocks[evt.index] = {
+                id: evt.content_block.id,
+                name: evt.content_block.name,
+                json: '',
+            };
+        } else if (evt?.type === 'content_block_delta' && evt.delta?.type === 'input_json_delta') {
+            const block = acc.claudeBlocks[evt.index] || (acc.claudeBlocks[evt.index] = { id: '', name: '', json: '' });
+            block.json += evt.delta.partial_json || '';
+        }
+        return true;
+    }
+
+    if (p === 'gemini') {
+        const parts = evt?.candidates?.[0]?.content?.parts || [];
+        acc.geminiCalls = acc.geminiCalls || new Map();
+        let i = 0;
+        for (const x of parts) {
+            if (!x.functionCall) continue;
+            const name = x.functionCall.name || '';
+            const key = `${name}-${i++}`;
+            acc.geminiCalls.set(key, { id: key, name, arguments: x.functionCall.args || {} });
+        }
+        return true;
+    }
+
+    // openai 兼容
+    const deltas = evt?.choices?.[0]?.delta?.tool_calls || [];
+    if (deltas.length > 0) {
+        acc.openaiCalls = acc.openaiCalls || new Map();
+        for (const d of deltas) {
+            const idx = d.index ?? 0;
+            const cur = acc.openaiCalls.get(idx) || { id: d.id || '', name: '', argsJson: '' };
+            if (d.id) cur.id = d.id;
+            if (d.function?.name) cur.name += d.function.name;
+            if (d.function?.arguments) cur.argsJson += d.function.arguments;
+            acc.openaiCalls.set(idx, cur);
+        }
+    }
+    return p === 'openai';
+}
+
+/**
+ * 回合结束时把累加器中的分片工具调用收敛为完整数组。
+ * 无工具调用返回 null；有则返回 [{ id, name, arguments }]。
+ * @param {string} provider
+ * @param {object} acc - extractToolCallsDelta 写入的累加器
+ * @returns {Array|null}
+ */
+export function finalizeToolCalls(provider, acc) {
+    const p = (provider || 'openai').toLowerCase();
+
+    if (p === 'claude') {
+        const blocks = acc?.claudeBlocks ? Object.values(acc.claudeBlocks) : [];
+        if (blocks.length === 0) return null;
+        return blocks.map(b => {
+            let args = {};
+            try { args = b.json ? JSON.parse(b.json) : {}; } catch (_) { args = {}; }
+            return { id: b.id, name: b.name, arguments: args };
+        });
+    }
+
+    if (p === 'gemini') {
+        return acc?.geminiCalls?.size ? Array.from(acc.geminiCalls.values()) : null;
+    }
+
+    if (acc?.openaiCalls?.size) {
+        const calls = [];
+        for (const c of acc.openaiCalls.values()) {
+            let args = {};
+            try { args = c.argsJson ? JSON.parse(c.argsJson) : {}; } catch (_) { args = {}; }
+            calls.push({ id: c.id, name: c.name, arguments: args });
+        }
+        return calls;
+    }
+    return null;
+}
+
+/**
  * LLM 客户端
  */
 export class LLMClient {
@@ -650,6 +746,115 @@ export class LLMClient {
 
         for (let step = 0; step < maxSteps; step++) {
             const { text, toolCalls } = await this.generateWithTools(convo, tools, sampling);
+
+            if (!toolCalls.length) {
+                // 模型给出最终答复，结束
+                return { text, steps: step, messages: convo };
+            }
+
+            // 记录本轮 assistant 的工具调用
+            convo.push({ role: 'assistant', content: text || '', toolCalls });
+
+            // 逐个执行工具，把结果作为 tool 消息回灌
+            for (const call of toolCalls) {
+                let result;
+                try {
+                    result = await executor(call.name, call.arguments);
+                } catch (e) {
+                    result = { error: e.message };
+                }
+                const content = typeof result === 'string' ? result : JSON.stringify(result ?? null);
+                convo.push({ role: 'tool', toolCallId: call.id, name: call.name, content });
+            }
+        }
+
+        // 达到步数上限仍未收敛：再问一次「不给工具」逼出最终文本
+        const final = await this.generate(convo, sampling);
+        return { text: final, steps: maxSteps, messages: convo };
+    }
+
+    /**
+     * 流式单轮工具调用：边收边回调文本增量，同时从流式事件重建工具调用。
+     *
+     * 与 generateWithTools 同构（返回 { text, toolCalls }），但请求走 stream=true。
+     * 工具调用回合惯例 content 为空，实际转发到 onDelta 的主要是最终正文增量。
+     * @param {Array} messages
+     * @param {Array} tools
+     * @param {object} sampling
+     * @param {(delta: string, full: string) => void} [onDelta]
+     * @returns {Promise<{text: string, toolCalls: Array}>}
+     */
+    async generateWithToolsStream(messages, tools = [], sampling = {}, onDelta) {
+        const cfg = this.config;
+        if (!cfg.model) throw new Error('LLM model 未配置');
+
+        const provider = (cfg.provider || 'openai').toLowerCase();
+        const { url, headers, body } = buildRequest(cfg, messages, { ...sampling, tools }, true);
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), cfg.timeout ?? 120000);
+        const acc = {};
+        let fullText = '';
+        try {
+            const resp = await fetch(url, {
+                method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal,
+            });
+            if (!resp.ok) {
+                const errText = await resp.text().catch(() => '');
+                throw new Error(`LLM 流式工具请求失败 HTTP ${resp.status}: ${errText.slice(0, 300)}`);
+            }
+            await parseSSEStream(resp.body, (evt) => {
+                const delta = extractDelta(provider, evt);
+                if (delta) {
+                    fullText += delta;
+                    if (onDelta) {
+                        try { onDelta(delta, fullText); } catch (_) { /* 回调异常不影响收流 */ }
+                    }
+                }
+                extractToolCallsDelta(provider, evt, acc);
+            });
+            const toolCalls = finalizeToolCalls(provider, acc);
+            return { text: fullText.trim(), toolCalls: toolCalls || [] };
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+
+    /**
+     * 流式工具调用 agent 循环：与 runTools 同构，但每个模型回合走流式请求，
+     * 文本增量经 options.onDelta(delta, full, turn) 实时转发。
+     *
+     * 降级策略：
+     *   - 未知 provider（无法重建流式 tool_calls）→ 整体降级为非流式 runTools（功能零回归）
+     *   - 单个回合流式失败 → 该回合降级为 generateWithTools 兜底
+     *
+     * @param {Array} messages
+     * @param {Array} tools
+     * @param {(name: string, args: object) => Promise<any>|any} executor
+     * @param {object} [options] - { maxSteps?, sampling?, onDelta? }
+     * @returns {Promise<{text: string, steps: number, messages: Array}>}
+     */
+    async runToolsStream(messages, tools, executor, options = {}) {
+        const provider = (this.config.provider || 'openai').toLowerCase();
+        if (!['openai', 'claude', 'gemini'].includes(provider)) {
+            return this.runTools(messages, tools, executor, options);
+        }
+
+        const maxSteps = options.maxSteps ?? 5;
+        const sampling = options.sampling || {};
+        const onDelta = typeof options.onDelta === 'function' ? options.onDelta : null;
+        const convo = [...messages];
+
+        for (let step = 0; step < maxSteps; step++) {
+            let turn;
+            const stepOnDelta = onDelta ? (delta, full) => onDelta(delta, full, step) : null;
+            try {
+                turn = await this.generateWithToolsStream(convo, tools, sampling, stepOnDelta);
+            } catch (e) {
+                // 流式失败（网络/协议解析），该回合降级非流式，保证功能可用
+                logger.warn(`[llm] 流式工具回合失败，降级非流式: ${e.message}`);
+                turn = await this.generateWithTools(convo, tools, sampling);
+            }
+            const { text, toolCalls } = turn;
 
             if (!toolCalls.length) {
                 // 模型给出最终答复，结束

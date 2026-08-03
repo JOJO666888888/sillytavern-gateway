@@ -92,6 +92,9 @@ export default class AgentFrameworkPlugin extends GatewayPlugin {
             contextBuilder: this.contextBuilder,
             workspaceManager: this.workspaceManager,
             logger: this.logger,
+            // 流式 token 增量 → theatre-broadcaster 实时推送到 Agent 剧场 SSE 客户端
+            onTokenDelta: (runId, delta, full, turn, sessionKey) =>
+                this._broadcastTokenDelta(runId, delta, full, turn, sessionKey),
         });
 
         // 3. 注册内置工具
@@ -364,6 +367,21 @@ export default class AgentFrameworkPlugin extends GatewayPlugin {
     _extractVar(definition, varName) {
         // 委托共享实现（语义与 agent-runner 的 meta.style 一致）
         return extractDefinitionVar(definition, varName);
+    }
+
+    /**
+     * 把 agent run 的流式 token 增量广播给订阅该会话的 Agent 剧场 SSE 客户端。
+     * 广播器未就绪时静默跳过（流式仅为体验增强，不阻塞主流程）。
+     * @private
+     */
+    _broadcastTokenDelta(runId, delta, full, turn, sessionKey) {
+        const broadcaster = this._services?.theatreBroadcaster;
+        if (!broadcaster || typeof broadcaster.broadcastTokenDelta !== 'function') return;
+        try {
+            broadcaster.broadcastTokenDelta(sessionKey, delta, runId);
+        } catch (e) {
+            this.logger.warn?.(`[agent-framework] token 增量广播失败: ${e.message}`);
+        }
     }
 
     async _cmdList(ctx) {
