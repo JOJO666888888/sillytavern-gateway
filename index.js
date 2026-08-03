@@ -2639,7 +2639,7 @@ async function loadRuntimePanel() {
         $('#gateway_rt_baseurl').val(rt.llm?.baseUrl || '');
         $('#gateway_rt_apikey').val(rt.llm?.apiKey || '');
         $('#gateway_rt_model').val(rt.llm?.model || '');
-        $('#gateway_rt_budget').val(rt.tokenBudget ?? 8000);
+        $('#gateway_rt_budget').val(rt.tokenBudget ?? 1000000);
         $('#gateway_rt_stream').prop('checked', !!rt.stream);
     } catch (_) { /* 网关未连接 */ }
 

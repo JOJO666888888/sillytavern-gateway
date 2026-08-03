@@ -126,7 +126,11 @@ const DEFAULT_CONFIG = {
         presetsDir: 'assets/presets',
         chatsDir: 'data/chats',
         historyLimit: 30,                 // 注入 prompt 的历史条数（粗筛）
-        tokenBudget: 8000,                // 上下文 token 预算(0=不按token截断，仅按条数)
+        tokenBudget: 1000000,             // 上下文 token 预算(0=不按token截断，仅按条数)
+                                          // 2026 主流模型(DeepSeek V4/Kimi K2.6/GLM-5.2)上下文均为 1M。
+                                          // 注意：buildPrompt 会先预留 maxTokens(131072)给回复再算历史额度，
+                                          // 预算过小(如旧值 8000)会导致负数 → 全部历史被截断为 0 条。
+                                          // 1M 预算扣除预留后仍有 ~869K 给历史，30 条 historyLimit 完全够用。
         stream: false,                    // 是否使用流式生成
         maxImages: 4,                     // 单条消息最多送入模型的图片数
         worldScanDepth: 5,                // 世界书扫描最近几条消息
