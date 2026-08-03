@@ -1009,7 +1009,6 @@ await ctx.surface.dispatch(agentRunResult, ctx, {
 | 界面 | 适配器 | 说明 |
 |------|--------|------|
 | IM 增强 | `agent-rp`（`surfaceType: 'im'`） | 正文分段 + `>选项X：` 按钮（复用 option-splitter）+ 状态图（复用 message-to-image） |
-| ST 兼容桥 | `server/index.js` 路由 shim | `/api/generate` 触发 `ctx.agent.run`，回传 artifacts 给真实 ST 前端 |
 | Agent 专用前端 | `panel.html` "Agent 剧场" | SSE 订阅 AgentRunResult 流，时间线 + 状态面板 + 边玩边改 |
 
 ---

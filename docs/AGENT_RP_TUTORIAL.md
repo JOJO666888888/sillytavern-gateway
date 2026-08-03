@@ -91,7 +91,7 @@ Agent RP（本平台）：
 - **多平台常驻**：QQ / Telegram / Discord / 飞书 / 钉钉同时在线
 - **多会话独立**：每个 IM 会话绑定不同角色，互不干扰
 - **无浏览器依赖**：自建推理管线，不需要挂着 SillyTavern 前端
-- **三界面共享引擎**：IM 聊天界面、ST 兼容前端、Agent 专用前端，一套引擎驱动
+- **引擎共享**：IM 聊天界面与 Agent 专用前端共享同一套 Agent 引擎
 
 ---
 
@@ -1220,11 +1220,6 @@ pm2 startup
 - Workspace 所有文件操作经 `_safeResolve` 校验，拒绝 `..` 和绝对路径
 - 插件文件操作限定在 `data/plugins/<plugin-name>/` 下
 
-**ST 兼容桥安全**：
-- ST shim 路由复用网关鉴权（Bearer token）
-- 资产写操作防路径穿越
-- `/api/generate` 不暴露 LLM 密钥
-
 ---
 
 # 第四部分 · 附录
@@ -1373,10 +1368,6 @@ const adapters = ctx.surface.getAdapters();
 | GET | `/api/agent-theatre/stream` | SSE 订阅 AgentRunResult 流 |
 | POST | `/api/agent-theatre/input` | 提交用户输入触发 run |
 | GET | `/api/agent-theatre/events/:runId` | 查询历史事件 |
-| GET | `/api/characters` | ST 兼容：列出角色卡 |
-| GET | `/api/presets` | ST 兼容：列出预设 |
-| GET | `/api/worldinfo` | ST 兼容：列出世界书 |
-| POST | `/api/generate` | ST 兼容：生成（Agent 模式） |
 
 ---
 

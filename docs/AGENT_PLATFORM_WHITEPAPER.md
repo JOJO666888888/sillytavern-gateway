@@ -138,7 +138,7 @@ TauriTavern 已验证"Workspace-as-Truth + Journal/Checkpoint + Profile + Delega
 ```
 
 - **IM 适配器**：复用 `option-splitter`（选项按钮）、`message-to-image`（状态图），改造现有 `agent-rp`。文字模式兜底。
-- **ST 适配器**：HTTP 路由 shim（`/api/*`），用户自带 ST 前端直连网关，复用 ST 成熟 UI。零源码侵入。
+- **ST 适配器（已废弃）**：HTTP 路由 shim（`/api/*`），用户自带 ST 前端直连网关，复用 ST 成熟 UI。零源码侵入。
 - **Native 适配器**：`panel.html` 新增 "Agent 剧场"，WebSocket/SSE 订阅，实时 / 自适应 / 可边玩边改。
 
 ---
@@ -173,7 +173,7 @@ TauriTavern 已验证"Workspace-as-Truth + Journal/Checkpoint + Profile + Delega
 | Phase | 任务 | 依赖 |
 |-------|------|------|
 | Phase 2 | IM 界面增强适配器（正文分段 / 选项 / 状态图 / 群聊多 Bot） | Task 1 |
-| Phase 3 | ST 兼容前端桥（`/api/*` 路由 shim + 资产读写 + Agent generate） | Task 1 |
+| Phase 3 | ST 兼容前端桥（`/api/*` 路由 shim + 资产读写 + Agent generate）（已废弃） | Task 1 |
 | Phase 4 | Agent 专用前端（Agent 剧场 + WebSocket/SSE + 时间线 + 边玩边改） | Task 1 |
 | Phase 5 | Workspace + Journal（run 级 workspace + events.jsonl + checkpoint + commit/promote + 领域工具校验） | Task 1 |
 
@@ -208,7 +208,7 @@ TauriTavern 已验证"Workspace-as-Truth + Journal/Checkpoint + Profile + Delega
 
 - **IM 适配器**：IM 平台不支持流式显示，收集完整 `AgentRunResult` 后一次性渲染（正文分段发送）。现有 `agent-rp` 已是此模式。
 - **Native 适配器**：实时流式输出。引擎在工具循环 / 正文生成阶段，通过 `onEvent(event)` 把 token 增量推给 Native 适配器，前端不刷新页面增量渲染。
-- **ST 适配器**：`/api/generate` 是请求-响应模式，非流式；但 ST 前端自身支持流式显示，可在 shim 层把引擎的流式 token 透传给 ST 前端（SSE chunked response）。
+- **ST 适配器**：`/api/generate` 是请求-响应模式，非流式；但 ST 前端自身支持流式显示，可在 shim 层把引擎的流式 token 透传给 ST 前端（SSE chunked response）。（已废弃）
 
 ### 5.2 事件推送（非轮询）
 
@@ -271,7 +271,9 @@ TauriTavern 已验证"Workspace-as-Truth + Journal/Checkpoint + Profile + Delega
 - workspace 内文件操作（`file.write` 工具）的相对路径经 `safeResolve` 校验：解析后路径必须仍在 `runs/<run-id>/` 之下，否则抛 `路径越界`。
 - 现有 `createFsService` 已实现 `safeResolve`（`server/plugin-permissions.js`），workspace 的文件工具复用此模式。
 
-### 6.4 ST shim 的边界
+### 6.4 ST shim 的边界（已废弃）
+
+> ⚠️ 已废弃（2026-08-03）：ST 兼容前端桥方案已移除实现，本节仅作历史设计记录保留。
 
 - ST shim 只暴露 `/api/characters` / `/api/chats` / `/api/presets` / `/api/worldinfo` / `/api/generate` 等白名单路由，不暴露网关内部管理路由。
 - ST shim 的资产读写复用 `createAssetsService`（只读 + 路径校验）与 `card-loader.js`。

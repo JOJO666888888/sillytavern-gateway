@@ -415,6 +415,8 @@ interface SurfaceCtx {
 
 ### 3.5 ST 兼容路由 shim
 
+> ⚠️ 已废弃（2026-08-03）：ST 兼容前端桥方案已移除实现，本节仅作历史设计记录保留。
+
 ```ts
 // server/compat/st-shim.js - 新增
 // 挂载到 server/index.js 的 app 上
@@ -481,7 +483,7 @@ sillytavern-gateway/
 │   ├── compat/
 │   │   ├── astrbot-shim.js                 # [已有] AstrBot 路由 shim
 │   │   ├── index.js                        # [已有]
-│   │   └── st-shim.js                      # [新增] ST 兼容前端桥
+│   │   └── st-shim.js                      # [新增] ST 兼容前端桥（已废弃）
 │   ├── plugin-context.js                  # [改造] 新增 ctx.surface
 │   ├── plugin-permissions.js               # [改造] 新增 surface/workspace 权限
 │   └── index.js                            # [改造] 新增 ST shim 路由 + WebSocket/SSE 端点
@@ -558,7 +560,7 @@ data/plugins/agent-framework/
 | 路径 | 说明 |
 |------|------|
 | `server/agent/surface/dispatcher.js` | 表现层调度器（Task 1.3） |
-| `server/compat/st-shim.js` | ST 兼容路由 shim（Task 3.1） |
+| `server/compat/st-shim.js` | ST 兼容路由 shim（Task 3.1）（已废弃） |
 | `plugins/agent-framework/engine/workspace-manager.js` | run 级 workspace（Task 5.1） |
 | `plugins/agent-framework/engine/journal.js` | events.jsonl（Task 5.2） |
 | `data/plugins/agent-framework/runs/<run-id>/` | run 级 workspace 数据（运行时生成） |
@@ -594,11 +596,13 @@ data/plugins/agent-framework/
 
 ### 5.2 方式一：真实 ST 前端直连网关
 
+> ⚠️ 已废弃（2026-08-03）：ST 兼容前端桥方案已移除实现，本节仅作历史设计记录保留。
+
 网关实现了 ST 期望的 `/api/*` 契约，ST 前端无需改动即可直连。
 
 1. **启动 ST**：正常启动 SillyTavern（`npm start` in SillyTavern 目录）。
 2. **配置 ST 指向网关**：在 ST 的 API 设置中，将 API URL 指向网关地址（如 `http://127.0.0.1:3210`）。网关已实现以下 ST 路由：
-   - `GET /api/settings` - 返回最小可启动设置（ST 启动必需）
+   - `GET /api/settings` - 返回最小可启动设置（ST 启动必需）（已废弃）
    - `GET /csrf-token` - CSRF 桩（返回固定 token）
    - `GET /api/characters` / `GET /api/characters/:name` / `POST /api/characters` - 角色卡读写
    - `GET /api/chats/:name` / `GET /api/chats/:name/:fileId` / `POST /api/chats/:name/:fileId` - 聊天存档

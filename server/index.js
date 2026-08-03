@@ -26,7 +26,6 @@ import { NativeRuntime } from './runtime/pipeline.js';
 import { LLMClient } from './runtime/llm-client.js';
 import { registerRuntimeCommands } from './runtime/runtime-commands.js';
 import { createLLMService } from './llm-service.js';
-import { createStShim } from './compat/st-shim.js';
 import { TheatreBroadcaster } from './agent/theatre-broadcaster.js';
 import { createAiModifierHandlers, createProfileStore } from './ai-modifier.js';
 import multer from 'multer';
@@ -848,14 +847,6 @@ app.post('/api/gateway/update/apply', async (req, res) => {
     }
 });
 
-// ==================== ST 兼容前端桥（Task 3） ====================
-//
-// 让真实 SillyTavern 前端直连网关：模拟 ST 的 /api/* 契约，复用 assets/ 资产
-// 与 Agent 引擎。路由处理函数由 createStShim 工厂构造，依赖运行时实例。
-//
-// 注意：这些路由放在 /api/* 鉴权中间件之后，自动复用 X-Gateway-Token 鉴权。
-// 不需要单独的鉴权逻辑。
-
 /**
  * 取 agent-framework 插件暴露的 agent 服务（含 run 方法）。
  * agent-framework 已 onLoad 时返回 _agentService，否则返回 null。
@@ -881,68 +872,6 @@ function getAgentService() {
     const af = pluginManager?.loader?.getPlugin('agent-framework');
     return af?._agentService || null;
 }
-
-/**
- * 取 ST 兼容桥使用的资产目录。优先用 nativeRuntime.dirs（与自建管线一致），
- * 否则回退到仓库根的 assets/ + data/chats/。
- * @returns {{characters:string, worldbooks:string, presets:string, chats:string}}
- */
-function getStAssetDirs() {
-    if (nativeRuntime) return nativeRuntime.dirs;
-    return {
-        characters: path.join(REPO_ROOT, 'assets', 'characters'),
-        worldbooks: path.join(REPO_ROOT, 'assets', 'worldbooks'),
-        presets: path.join(REPO_ROOT, 'assets', 'presets'),
-        chats: path.join(REPO_ROOT, 'data', 'chats'),
-    };
-}
-
-// 构造 ST shim 处理函数（懒构造：首次请求时按当前依赖重新构造，
-// 避免在 nativeRuntime / agentService 还未就绪时固化依赖）
-function getStShim() {
-    return createStShim({
-        dirs: getStAssetDirs(),
-        nativeRuntime,
-        agentService: getAgentService(),
-        llmService,
-        configManager,
-        logger,
-    });
-}
-
-// —— ST 兼容路由（参考 SillyTavern 实际请求路径） ——
-app.get('/api/characters', (req, res) => getStShim().listCharacters(req, res));
-app.get('/api/characters/:name', (req, res) => getStShim().getCharacter(req, res));
-app.post('/api/characters', (req, res) => getStShim().writeCharacter(req, res));
-// ST 部分版本用 /api/character/get-single，这里一并支持
-app.get('/api/character/get-single', (req, res) => {
-    req.params = { name: req.query.name || req.query.ch_name || '' };
-    getStShim().getCharacter(req, res);
-});
-
-app.get('/api/chats/:characterName', (req, res) => getStShim().listChats(req, res));
-app.get('/api/chats/:characterName/:fileId', (req, res) => getStShim().readChat(req, res));
-app.post('/api/chats/:characterName/:fileId', (req, res) => getStShim().writeChat(req, res));
-// ST 用 /api/chats/get 拉取聊天，/api/chats/rename 重命名，这里映射到 readChat
-app.get('/api/chats/get', (req, res) => {
-    req.params = { characterName: req.query.file_name || '', fileId: req.query.chatId || req.query.file_name || '' };
-    getStShim().readChat(req, res);
-});
-
-app.get('/api/presets', (req, res) => getStShim().listPresets(req, res));
-app.get('/api/presets/:name', (req, res) => getStShim().getPreset(req, res));
-
-app.get('/api/worldinfo', (req, res) => getStShim().listWorldbooks(req, res));
-app.get('/api/worldinfo/:name', (req, res) => getStShim().getWorldbook(req, res));
-app.get('/api/worldinfo/get', (req, res) => {
-    req.params = { name: req.query.name || '' };
-    getStShim().getWorldbook(req, res);
-});
-
-app.post('/api/generate', (req, res) => getStShim().generate(req, res));
-
-app.get('/api/settings', (req, res) => getStShim().getSettings(req, res));
-app.get('/csrf-token', (req, res) => getStShim().getCsrfToken(req, res));
 
 // ==================== Agent 剧场 API（Task 4） ====================
 //

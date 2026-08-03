@@ -127,6 +127,8 @@ IM 文字模式作为兜底保留：若适配器未注册或会话未绑定，�
 
 ### 3.2 ST 兼容前端桥（HTTP 路由 shim）
 
+> ⚠️ 已废弃（2026-08-03）：ST 兼容前端桥方案已移除实现，本节仅作历史设计记录保留。
+
 **新建对象**：`server/compat/st-shim.js` + `server/index.js` 新增路由。
 
 用户在浏览器打开本地 SillyTavern 前端，后端地址指向网关。网关提供同源 HTTP 路由 shim，模拟 ST 的 `/api/*` 契约：
@@ -252,7 +254,7 @@ Agent 改变状态时，通过领域工具而非裸 JSON Patch：
 | **Journal + Checkpoint** | append-only `events.jsonl` + snapshot | `events.jsonl` + checkpoint 目录，JS 实现（`runs/<run-id>/events.jsonl` + `checkpoints/`） |
 | **Canonical IR + Provider** | `AgentModelRequest` 统一语义 | 复用现有 `server/runtime/llm-client.js` 多 provider，无需新建统一 IR |
 | **Delegation + Handoff** | 同 run 内 `AgentInvocation` | 复用现有 `engine/subagent-dispatcher.js`，补充 handoff 语义（见 §10.2） |
-| **Host Bridge 兼容** | 前端 fetch 拦截 + 路由 shim | 网关 HTTP `/api/*` 路由 shim（`server/compat/st-shim.js`），ST 前端直连 |
+| **Host Bridge 兼容** | 前端 fetch 拦截 + 路由 shim | 网关 HTTP `/api/*` 路由 shim（`server/compat/st-shim.js`），ST 前端直连（已废弃） |
 
 ### 6.1 不借鉴的部分
 
@@ -297,7 +299,7 @@ sillytavern-gateway/
 │   └── compat/
 │       ├── astrbot-shim.js           # 已有
 │       ├── index.js                  # 已有
-│       └── st-shim.js                # 【新增】ST 兼容前端桥（/api/* 路由 shim）
+│       └── st-shim.js                # 【新增】ST 兼容前端桥（/api/* 路由 shim）【已废弃】
 │
 ├── plugins/
 │   ├── agent-framework/
@@ -383,7 +385,7 @@ data/plugins/agent-framework/
 | `server/agent/surface/dispatcher.js` | 表现层调度器 |
 | `server/agent/surface/adapter-interface.js` | `SurfaceAdapter` 接口定义 |
 | `server/agent/surface/surface-ctx.js` | `SurfaceCtx` 构造 |
-| `server/compat/st-shim.js` | ST 兼容前端桥 |
+| `server/compat/st-shim.js` | ST 兼容前端桥（已废弃，实现已移除） |
 | `plugins/agent-framework/engine/workspace-manager.js` | run 级 workspace + checkpoint |
 | `plugins/agent-framework/engine/journal.js` | events.jsonl + 时间线重建 |
 | `plugins/agent-framework/templates/default-rp.yaml` | 默认方案 |
