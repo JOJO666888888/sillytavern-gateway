@@ -133,6 +133,38 @@ export default class MessageToImagePlugin extends GatewayPlugin {
         }
     }
 
+    // ==================== 跨插件时序协作 ====================
+
+    /**
+     * 通知等待方：本条消息的图片发送流程已结束（成功发送 N 张，或确定不会渲染/发送失败）。
+     *
+     * 与 option-splitter 的跨插件时序协作（软契约，见 plugins/option-splitter/media-wait.js）：
+     *   选项拆分插件在消息 metadata 上写入 _mediaWaitKey 后，正文会在这里被渲染成图片；
+     *   它需要等所有图片发完才补发选项，否则会出现"选项先于正文图片"的乱序。
+     *   此处通过网关事件总线发出完成信号，key 与该等待键对应。
+     *   没有等待键的消息不产生任何事件（零开销）。
+     *
+     * @param {object} message - 消息对象（读取 metadata._mediaWaitKey）
+     * @param {number} count - 成功发送的图片张数
+     * @param {boolean} success - 是否成功（false=未渲染或渲染/发送失败，不会再有图片）
+     */
+    _notifyMediaSent(message, count, success) {
+        const key = message?.metadata?._mediaWaitKey;
+        const gateway = this._services.gateway;
+        if (!key || !gateway || typeof gateway.emit !== 'function') return;
+        try {
+            gateway.emit('media-sent', {
+                key,
+                platform: message.platform,
+                chatId: message.chatId,
+                count,
+                success,
+            });
+        } catch (err) {
+            this._log('warn', `media-sent 通知发送失败: ${err.message}`);
+        }
+    }
+
     // ==================== 默认配置 ====================
 
     _ensureDefaults() {
@@ -147,6 +179,8 @@ export default class MessageToImagePlugin extends GatewayPlugin {
             fontFamily: 'Microsoft YaHei, sans-serif',
             cacheDays: 7,
             maxConcurrent: 2,
+            maxImageHeight: 1600,
+            pageFooter: true,
             templatePreset: 'novel-card',
             baseHtml: '',
             baseCss: '',
@@ -172,6 +206,8 @@ export default class MessageToImagePlugin extends GatewayPlugin {
                 imageFormat: this.getConfig('imageFormat') || 'png',
                 imageQuality: Number(this.getConfig('imageQuality')) || 90,
                 maxConcurrent: Number(this.getConfig('maxConcurrent')) || 2,
+                maxImageHeight: Number(this.getConfig('maxImageHeight')) || 1600,
+                pageFooter: this.getConfig('pageFooter') !== false,
                 fontFamily: this.getConfig('fontFamily') || 'Microsoft YaHei, sans-serif',
                 executablePath: this.getConfig('executablePath') || '',
                 logger: this._pluginLogger,
@@ -196,22 +232,31 @@ export default class MessageToImagePlugin extends GatewayPlugin {
         if (!message || !message.content) return message;
 
         // 开关检查
-        if (this.getConfig('enabled') !== true) return message;
+        if (this.getConfig('enabled') !== true) {
+            // 有等待方时明确告知"不会渲染"（count:0），避免对方空等超时
+            this._notifyMediaSent(message, 0, false);
+            return message;
+        }
 
         // 渲染引擎就绪检查
         if (!this._renderer || !this._renderer.ready) {
             this._log('warn', '渲染引擎未就绪，消息原样放行');
+            this._notifyMediaSent(message, 0, false);
             return message;
         }
 
         // 平台过滤
         const platforms = this.getConfig('applyToPlatforms') || [];
         if (platforms.length > 0 && !platforms.includes(message.platform)) {
+            this._notifyMediaSent(message, 0, false);
             return message;
         }
 
         // 递归守卫
-        if (message.metadata?._msg2imgProcessed) return message;
+        if (message.metadata?._msg2imgProcessed) {
+            this._notifyMediaSent(message, 0, false);
+            return message;
+        }
 
         // ⭐ 关键修复：消息队列重试去重守卫。
         //
@@ -242,6 +287,7 @@ export default class MessageToImagePlugin extends GatewayPlugin {
                 contentLength: message.content.length,
                 minLength: this.getConfig('minLength'),
             });
+            this._notifyMediaSent(message, 0, false);
             return message;
         }
 
@@ -328,8 +374,8 @@ export default class MessageToImagePlugin extends GatewayPlugin {
                 stRulesCount: stRules.length,
             });
 
-            // 渲染
-            const imageUrl = await this._renderer.render(
+            // 渲染（超长内容会分页，返回多张图片路径）
+            const imageUrls = await this._renderer.render(
                 this._escapeHtml(renderContent),
                 css,
                 template,
@@ -337,25 +383,9 @@ export default class MessageToImagePlugin extends GatewayPlugin {
                 variables
             );
 
-            this._log('info', `渲染成功 (${Date.now() - startTime}ms)`, { imageUrl });
+            this._log('info', `渲染成功 (${Date.now() - startTime}ms)`, { pages: imageUrls.length });
 
-            // 按目标平台转换媒体引用：QQ 保留 file:// URI，其它平台转为裸本地路径
-            // （见文件顶部 toMediaRef 说明——这是"图片一直发不出去、只能收到回退文本"
-            // 的另一个根因：Telegram/Discord 等适配器不认识 file:// scheme）。
-            const mediaRef = toMediaRef(imageUrl, originalMessage.platform);
-
-            // 构造图片消息
-            const imgMsg = new OutboundMessage({
-                platform: originalMessage.platform,
-                chatId: originalMessage.chatId,
-                chatType: originalMessage.chatType,
-                content: '',
-                mediaUrls: [mediaRef],
-                replyToId: originalMessage.replyToId || '',
-            });
-            imgMsg.metadata = { ...originalMessage.metadata, _msg2imgProcessed: true };
-
-            // 如果是截取模式（tagged），先发送剩余文本
+            // 如果是截取模式（tagged），先发送剩余文本（图片前发出，保持叙事顺序）
             if (isExcerpt) {
                 const tag = this.getConfig('renderTag') || 'maintext';
                 const tagRegex = new RegExp(`<${tag}>[\\s\\S]*?</${tag}>`, 'i');
@@ -372,10 +402,39 @@ export default class MessageToImagePlugin extends GatewayPlugin {
                 }
             }
 
-            // 发送图片
-            this._log('info', '发送图片消息', { platform: imgMsg.platform, chatId: imgMsg.chatId, mediaRef });
-            await gateway.sendDirect(imgMsg, { bypassFilters: true });
-            this._log('info', '图片消息已发送');
+            // 逐页发送图片（多页时依次发送，保证顺序；每页独立消息便于平台兼容与重试）
+            for (let i = 0; i < imageUrls.length; i++) {
+                // 按目标平台转换媒体引用：QQ 保留 file:// URI，其它平台转为裸本地路径
+                // （见文件顶部 toMediaRef 说明——这是"图片一直发不出去、只能收到回退文本"
+                // 的另一个根因：Telegram/Discord 等适配器不认识 file:// scheme）。
+                const mediaRef = toMediaRef(imageUrls[i], originalMessage.platform);
+
+                // 构造图片消息
+                const imgMsg = new OutboundMessage({
+                    platform: originalMessage.platform,
+                    chatId: originalMessage.chatId,
+                    chatType: originalMessage.chatType,
+                    content: '',
+                    mediaUrls: [mediaRef],
+                    replyToId: originalMessage.replyToId || '',
+                });
+                imgMsg.metadata = { ...originalMessage.metadata, _msg2imgProcessed: true };
+
+                this._log('info', `发送图片消息 (第 ${i + 1}/${imageUrls.length} 页)`, {
+                    platform: imgMsg.platform, chatId: imgMsg.chatId, mediaRef,
+                });
+                await gateway.sendDirect(imgMsg, { bypassFilters: true });
+
+                // 多页之间加小延迟，避免触发平台频率限制或乱序
+                if (i < imageUrls.length - 1) {
+                    await this._delay(400);
+                }
+            }
+            this._log('info', `图片消息已发送，共 ${imageUrls.length} 张`);
+
+            // ⭐ 跨插件时序协作：通知等待方（option-splitter）"全部图片已发送完成"，
+            // 它收到该信号后才开始补发选项，保证正文图片先于选项出现。
+            this._notifyMediaSent(originalMessage, imageUrls.length, true);
         } catch (err) {
             this._log('error', `渲染失败，回退为原文本: ${err.message}`, {
                 stack: err.stack?.split('\n').slice(0, 3).join(' | '),
@@ -395,6 +454,8 @@ export default class MessageToImagePlugin extends GatewayPlugin {
             } catch (sendErr) {
                 this._log('error', `补发原文本也失败: ${sendErr.message}`);
             }
+            // 渲染失败不会再有图片：通知等待方"媒体流程已结束（0 张）"，避免其空等超时
+            this._notifyMediaSent(originalMessage, 0, false);
         }
     }
 
@@ -408,6 +469,11 @@ export default class MessageToImagePlugin extends GatewayPlugin {
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#39;');
+    }
+
+    /** 简易延迟（多页图片发送间隔，避免平台频率限制/乱序） */
+    _delay(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
     }
 
     // ==================== 定时缓存清理 ====================
@@ -544,6 +610,7 @@ export default class MessageToImagePlugin extends GatewayPlugin {
             `  最小长度: ${this.getConfig('minLength') ?? 100}`,
             `  图片格式: ${this.getConfig('imageFormat') || 'png'} (质量: ${this.getConfig('imageQuality') ?? 90})`,
             `  最大宽度: ${this.getConfig('maxWidth') ?? 800}px`,
+            `  最大页高: ${this.getConfig('maxImageHeight') ?? 1600}px (超长自动分页${this.getConfig('pageFooter') !== false ? '，带页码' : ''})`,
             `  模板预设: ${this.getConfig('templatePreset') || 'novel-card'}`,
             `  ST 规则: ${this.getConfig('stRules')?.length || 0} 条`,
             `  缓存: ${cacheCount} 个文件, ${cacheMB} MB`,
@@ -575,7 +642,7 @@ export default class MessageToImagePlugin extends GatewayPlugin {
             const stRules = this.getConfig('stRules') || [];
 
             this._log('info', '执行渲染测试命令');
-            const imageUrl = await this._renderer.render(
+            const imageUrls = await this._renderer.render(
                 this._escapeHtml(sampleText),
                 css,
                 template,
@@ -583,9 +650,12 @@ export default class MessageToImagePlugin extends GatewayPlugin {
                 { roleName: '师尊', time: new Date().toLocaleString('zh-CN', { hour12: false }), messageId: 'test' }
             );
 
-            this._log('info', '测试渲染成功', { imageUrl });
-            const mediaRef = toMediaRef(imageUrl, ctx.platform);
-            await ctx.reply('🧪 渲染测试结果：', { mediaUrls: [mediaRef] });
+            this._log('info', '测试渲染成功', { pages: imageUrls.length });
+            const mediaRefs = imageUrls.map(u => toMediaRef(u, ctx.platform));
+            const summary = imageUrls.length > 1
+                ? `🧪 渲染测试结果（${imageUrls.length} 张分页图片）：`
+                : '🧪 渲染测试结果：';
+            await ctx.reply(summary, { mediaUrls: mediaRefs });
         } catch (err) {
             this._log('error', `测试渲染失败: ${err.message}`);
             return ctx.reply(`❌ 渲染失败: ${err.message}`);

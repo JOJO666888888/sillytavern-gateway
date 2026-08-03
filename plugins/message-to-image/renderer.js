@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import { fileURLToPath } from 'url';
+import { computePagePlan, buildPageHtml, pageCacheKey, PAGE_FOOTER_HEIGHT } from './pagination.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -118,6 +119,8 @@ export class ImageRenderer {
             fontFamily: 'Microsoft YaHei, sans-serif',
             executablePath: '',
             headless: true,
+            maxImageHeight: 1600,  // 单页最大高度（px，超过则分页），保证各页尺寸一致
+            pageFooter: true,      // 分页时每张图底部显示页码
             ...options,
         };
         this.browser = null;
@@ -221,7 +224,7 @@ export class ImageRenderer {
      * @param {object} template - { html: string, preset: string }
      * @param {Array} rules - ST 正则规则数组
      * @param {object} variables - 变量占位符
-     * @returns {Promise<string>} file:/// 图片路径
+     * @returns {Promise<string[]>} file:/// 图片路径数组（超长内容分页时为多张）
      */
     async render(content, css, template, rules = [], variables = {}) {
         if (!this.ready) {
@@ -234,6 +237,7 @@ export class ImageRenderer {
             contentLength: content.length,
             preset: template?.preset,
             rulesCount: rules.length,
+            maxImageHeight: this.options.maxImageHeight,
         });
 
         // 1. 应用 ST 正则规则
@@ -248,25 +252,29 @@ export class ImageRenderer {
         const fullHtml = this._buildHtml(processedContent, css, template, variables);
         this.logger.debug(`[${renderId}] HTML 构建完成`, { htmlLength: fullHtml.length });
 
-        // 3. 缓存检查
-        const cacheKey = this._getCacheKey(fullHtml);
-        this.logger.debug(`[${renderId}] 缓存键`, { key: cacheKey });
-        const cachedPath = await this._getCachedImage(cacheKey);
-        if (cachedPath) {
+        // 3. 缓存快速路径：单页缓存键是确定性的（无需测量分页），命中直接返回。
+        //    多页缓存键依赖测量结果，在 _doRender 内检查。
+        //    缓存键掺入分页配置签名：调整 maxImageHeight/pageFooter 后旧缓存自动失效，
+        //    避免"配置已要求分页、却命中旧的单页长图缓存"的错配。
+        const configSig = `|maxH:${this.options.maxImageHeight}|foot:${this.options.pageFooter ? 1 : 0}`;
+        const baseKey = this._getCacheKey(`${fullHtml}${configSig}`);
+        const singleKey = pageCacheKey(baseKey, { paginated: false });
+        const fastCached = await this._getCachedImage(singleKey);
+        if (fastCached) {
             this.stats.cacheHits++;
             this.stats.totalRenders++;
-            this.logger.info(`[${renderId}] 缓存命中`, { path: cachedPath, duration: Date.now() - startTime });
-            return cachedPath;
+            this.logger.info(`[${renderId}] 缓存命中（单页）`, { path: fastCached, duration: Date.now() - startTime });
+            return [fastCached];
         }
         this.stats.cacheMisses++;
         this.logger.info(`[${renderId}] 缓存未命中，进入渲染队列`);
 
-        // 4. 队列+并发控制渲染
-        const result = await this._enqueueRender(fullHtml, cacheKey, renderId);
+        // 4. 队列+并发控制渲染（测量、分页、分页缓存检查均在 _doRender 内完成）
+        const result = await this._enqueueRender(fullHtml, baseKey, renderId);
         const duration = Date.now() - startTime;
         this.stats.totalRenders++;
         this.stats.totalRenderTime += duration;
-        this.logger.info(`[${renderId}] 渲染完成`, { path: result, duration: `${duration}ms` });
+        this.logger.info(`[${renderId}] 渲染完成`, { pages: result.length, duration: `${duration}ms` });
         return result;
     }
 
@@ -409,9 +417,9 @@ ${html}
     /**
      * 渲染队列：控制最大并发
      */
-    _enqueueRender(fullHtml, cacheKey, renderId) {
+    _enqueueRender(fullHtml, baseKey, renderId) {
         return new Promise((resolve, reject) => {
-            this.queue.push({ fullHtml, cacheKey, renderId, resolve, reject });
+            this.queue.push({ fullHtml, baseKey, renderId, resolve, reject });
             this._processQueue();
         });
     }
@@ -420,9 +428,9 @@ ${html}
         if (this.running >= this.options.maxConcurrent || this.queue.length === 0) return;
 
         this.running++;
-        const { fullHtml, cacheKey, renderId, resolve, reject } = this.queue.shift();
+        const { fullHtml, baseKey, renderId, resolve, reject } = this.queue.shift();
 
-        this._doRender(fullHtml, cacheKey, renderId)
+        this._doRender(fullHtml, baseKey, renderId)
             .then(resolve)
             .catch(reject)
             .finally(() => {
@@ -432,99 +440,79 @@ ${html}
     }
 
     /**
-     * 实际渲染逻辑 - 关键断点
+     * 实际渲染逻辑
+     *
+     * 分页流程：载入完整文档测量总高度 → 计算分页方案 → 分页缓存检查 → 逐页渲染。
+     * 分页采用"平移 + 视窗裁剪"而非文本拆分，保证：
+     *   1. 段落/行内格式与原始排版完全一致；
+     *   2. 每页图片尺寸恒定（maxWidth × pageHeight），宽高比一致；
+     *   3. 页码页脚独立于裁剪区，不遮挡正文。
      */
-    async _doRender(fullHtml, cacheKey, renderId) {
-        this.logger.debug(`[${renderId}] 步骤1: 获取页面池 Page`);
+    async _doRender(fullHtml, baseKey, renderId) {
         const poolItem = this._acquirePage();
         if (!poolItem) {
             throw new Error('页面池耗尽（所有 Page 都在使用中）');
         }
-
         const { page } = poolItem;
-        const fileName = `${cacheKey}.${this.options.imageFormat}`;
-        const filePath = path.join(this.cacheDir, fileName);
 
         try {
-            // 用 domcontentloaded 而不是 networkidle0。
-            //
-            // 我们喂进去的 HTML 是**全内联**的（模板 + CSS 都是字符串，没有外链
-            // 资源），页面根本不发网络请求。而 networkidle0 的语义是"500ms 内网络
-            // 连接数为 0"——对一个不发请求的页面，它要么立刻满足，要么因为浏览器
-            // 自己的某个后台连接（组件更新、扩展、Debian 的 chromium 包装脚本注入的
-            // --enable-remote-extensions 等）一直不满足，然后卡满 timeout。
-            //
-            // 真机踩过：同一份 HTML、同一个 /usr/bin/chromium，在独立进程里
-            // 1.8 秒渲染完，在 systemd 起的网关服务里 100% 卡满 15 秒超时，
-            // 报 "Navigation timeout of 15000 ms exceeded"，用户只会看到
-            // "渲染失败，回退为原文本"。换成 domcontentloaded 后 190ms 完成。
-            //
-            // 外链资源（用户自定义 baseHtml 里引用图片）由下面显式等待 <img> 兜住，
-            // 比 networkidle0 精确、也不会被无关的后台连接拖死。
-            this.logger.debug(`[${renderId}] 步骤2: 设置页面内容 (setContent)`);
-            await page.setContent(fullHtml, { waitUntil: 'domcontentloaded', timeout: 15000 });
-            this.logger.debug(`[${renderId}] 步骤2 完成: 页面内容已加载`);
+            // 1. 载入完整文档（测量用），等待字体与图片就绪
+            this.logger.debug(`[${renderId}] 步骤1: 载入内容并测量总高度`);
+            await this._setPageContent(page, fullHtml, renderId);
+            await this._waitPageReady(page);
 
-            this.logger.debug(`[${renderId}] 步骤3: 等待字体与图片就绪`);
-            await page.evaluateHandle('document.fonts.ready');
-            // 自定义模板可能引用图片（外链或 data:）。逐个等待其 load/error，
-            // 单张最多等 5 秒，避免一张挂掉的图拖垮整次渲染。
-            await page.evaluate(async () => {
-                const imgs = Array.from(document.images || []);
-                await Promise.all(imgs.map((img) => {
-                    if (img.complete) return null;
-                    return new Promise((resolve) => {
-                        const done = () => resolve(null);
-                        img.addEventListener('load', done, { once: true });
-                        img.addEventListener('error', done, { once: true });
-                        setTimeout(done, 5000);
-                    });
-                }));
+            const totalHeight = await page.evaluate(() => {
+                const el = document.querySelector('.render-root');
+                return el ? Math.ceil(el.scrollHeight) : 0;
             });
-            this.logger.debug(`[${renderId}] 步骤3 完成: 字体与图片已就绪`);
-
-            this.logger.debug(`[${renderId}] 步骤4: 查询 .render-root 元素`);
-            const element = await page.$('.render-root');
-            if (!element) {
+            if (!totalHeight) {
                 throw new Error('模板中缺少 .render-root 元素（截图目标不存在）');
             }
-            this.logger.debug(`[${renderId}] 步骤4 完成: 找到 .render-root`);
+            this.logger.debug(`[${renderId}] 内容总高度`, { totalHeight, maxImageHeight: this.options.maxImageHeight });
 
-            this.logger.debug(`[${renderId}] 步骤5: 获取元素边界框`);
-            const box = await element.boundingBox();
-            if (!box) {
-                throw new Error('无法获取 .render-root 的边界框');
-            }
-            this.logger.debug(`[${renderId}] 步骤5 完成`, { width: box.width, height: box.height });
+            // 2. 计算分页方案（单页 / 多页）
+            const plan = computePagePlan(totalHeight, this.options.maxImageHeight, PAGE_FOOTER_HEIGHT);
+            const cacheKey = pageCacheKey(baseKey, plan);
+            this.logger.debug(`[${renderId}] 分页方案`, plan);
 
-            const screenshotOptions = {
-                path: filePath,
-                type: this.options.imageFormat,
-                clip: {
-                    x: 0,
-                    y: 0,
-                    width: this.options.maxWidth,
-                    height: Math.ceil(box.height),
-                },
-                omitBackground: false,
-            };
-
-            if (this.options.imageFormat === 'jpeg') {
-                screenshotOptions.quality = this.options.imageQuality;
+            // 3. 分页缓存检查：所有页都存在才命中
+            const cachedUrls = await this._checkCachedPages(cacheKey, plan);
+            if (cachedUrls) {
+                this.stats.cacheHits++;
+                this.stats.totalRenders++;
+                this.logger.info(`[${renderId}] 缓存命中（${plan.pageCount} 页）`, { pages: cachedUrls.length });
+                return cachedUrls;
             }
 
-            this.logger.debug(`[${renderId}] 步骤6: 执行截图`, { format: this.options.imageFormat, path: filePath });
-            await page.screenshot(screenshotOptions);
-            this.logger.debug(`[${renderId}] 步骤6 完成: 图片已保存`);
+            // 4. 逐页渲染（复用同一个 Page，保证字体/布局一致）
+            this.logger.debug(`[${renderId}] 缓存未命中，开始渲染 ${plan.pageCount} 页`);
+            const urls = [];
+            for (let i = 0; i < plan.pageCount; i++) {
+                const pageNo = i + 1;
+                const filePath = path.join(this.cacheDir, this._pageFileName(cacheKey, plan, i));
 
-            // 验证文件确实生成
-            if (!existsSync(filePath)) {
-                throw new Error(`截图后文件不存在: ${filePath}`);
+                if (plan.paginated) {
+                    const pageHtml = buildPageHtml(
+                        fullHtml, i, plan.pageCount,
+                        plan.pageHeight, plan.viewportHeight,
+                        PAGE_FOOTER_HEIGHT, this.options.pageFooter
+                    );
+                    await this._setPageContent(page, pageHtml, renderId);
+                    await this._waitPageReady(page);
+                    await this._screenshotElement(page, '.render-page', filePath, plan.pageHeight, renderId, pageNo, plan.pageCount);
+                } else {
+                    await this._screenshotElement(page, '.render-root', filePath, null, renderId, pageNo, plan.pageCount);
+                }
+
+                if (!existsSync(filePath)) {
+                    throw new Error(`截图后文件不存在: ${filePath}`);
+                }
+                urls.push(toFileUrl(filePath));
+                this.logger.debug(`[${renderId}] 第 ${pageNo}/${plan.pageCount} 页已保存`, { path: filePath });
             }
 
-            const fileUrl = toFileUrl(filePath);
-            this.logger.debug(`[${renderId}] 步骤7 完成: 返回 file URL`, { url: fileUrl });
-            return fileUrl;
+            this.logger.info(`[${renderId}] 全部页面已生成`, { count: urls.length });
+            return urls;
         } catch (err) {
             this.stats.failures++;
             this.logger.error(`[${renderId}] 渲染失败`, {
@@ -536,6 +524,98 @@ ${html}
         } finally {
             this._releasePage(poolItem);
         }
+    }
+
+    /**
+     * 设置页面内容。
+     * 用 domcontentloaded 而不是 networkidle0 —— 喂进去的 HTML 全内联、无网络请求，
+     * networkidle0 会被浏览器后台连接拖死（真机在 systemd 起的服务里 100% 卡满 15s 超时），
+     * 换成 domcontentloaded 后约 190ms 完成。外链资源由 _waitPageReady 显式兜住。
+     */
+    async _setPageContent(page, html, renderId) {
+        this.logger.debug(`[${renderId}] 设置页面内容 (setContent)`);
+        await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    }
+
+    /**
+     * 等待字体与图片就绪（测量与分页渲染共用）
+     */
+    async _waitPageReady(page) {
+        await page.evaluateHandle('document.fonts.ready');
+        // 自定义模板可能引用图片（外链或 data:）。逐个等待其 load/error，
+        // 单张最多等 5 秒，避免一张挂掉的图拖垮整次渲染。
+        await page.evaluate(async () => {
+            const imgs = Array.from(document.images || []);
+            await Promise.all(imgs.map((img) => {
+                if (img.complete) return null;
+                return new Promise((resolve) => {
+                    const done = () => resolve(null);
+                    img.addEventListener('load', done, { once: true });
+                    img.addEventListener('error', done, { once: true });
+                    setTimeout(done, 5000);
+                });
+            }));
+        });
+    }
+
+    /**
+     * 对指定元素截图并保存。单页时截 .render-root（自然高度）；
+     * 分页时截 .render-page（固定 pageHeight），保证各页尺寸一致。
+     */
+    async _screenshotElement(page, selector, filePath, fixedHeight, renderId, pageNo, pageCount) {
+        const element = await page.$(selector);
+        if (!element) {
+            throw new Error(`截图目标不存在: ${selector}`);
+        }
+        const box = await element.boundingBox();
+        if (!box) {
+            throw new Error(`无法获取 ${selector} 的边界框`);
+        }
+
+        const height = fixedHeight ? Math.ceil(fixedHeight) : Math.ceil(box.height);
+        const screenshotOptions = {
+            path: filePath,
+            type: this.options.imageFormat,
+            clip: {
+                x: Math.round(box.x),
+                y: Math.round(box.y),
+                width: this.options.maxWidth,
+                height,
+            },
+            omitBackground: false,
+        };
+        if (this.options.imageFormat === 'jpeg') {
+            screenshotOptions.quality = this.options.imageQuality;
+        }
+
+        this.logger.debug(`[${renderId}] 截图 ${selector}${pageNo ? `（第 ${pageNo}/${pageCount} 页）` : ''}`, {
+            format: this.options.imageFormat, path: filePath, width: this.options.maxWidth, height,
+        });
+        await page.screenshot(screenshotOptions);
+    }
+
+    /** 分页文件名：多页 p1/p2...，单页直接用缓存键 */
+    _pageFileName(cacheKey, plan, pageIndex) {
+        return plan.paginated
+            ? `${cacheKey}.p${pageIndex + 1}.${this.options.imageFormat}`
+            : `${cacheKey}.${this.options.imageFormat}`;
+    }
+
+    /**
+     * 分页缓存检查：所有页文件都存在才返回 URL 数组，任一缺失视为整体未命中
+     */
+    async _checkCachedPages(cacheKey, plan) {
+        const urls = [];
+        for (let i = 0; i < plan.pageCount; i++) {
+            const filePath = path.join(this.cacheDir, this._pageFileName(cacheKey, plan, i));
+            try {
+                await fs.access(filePath);
+                urls.push(toFileUrl(filePath));
+            } catch {
+                return null;
+            }
+        }
+        return urls;
     }
 
     _acquirePage() {

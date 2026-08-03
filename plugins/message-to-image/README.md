@@ -8,6 +8,7 @@ SillyTavern Gateway 插件：将 AI 回复内容渲染为精美图片发送。�
 - 复用 SillyTavern 正则美化规则（支持导入角色卡 Regex）
 - 内置 4 套预设模板（小说卡片、Galgame对话框、终端暗色、极简白底）
 - 支持自定义 HTML 模板和 CSS
+- 超长内容自动分页：按固定页高切分为多张等尺寸图片（含页码页脚），避免超长图不便查看
 - Puppeteer 渲染引擎，Browser 复用 + Page 池 + LRU 文件缓存
 - 三种渲染模式：auto（长度阈值）/ always（全部）/ tagged（标签内容）
 - 并发控制和定时缓存清理

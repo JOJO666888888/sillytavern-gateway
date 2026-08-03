@@ -92,35 +92,47 @@
             "description": "图片最大宽度（像素）",
             "ui": { "group": "渲染", "order": 11, "min": 200, "step": 50, "unit": "px" }
         },
+        "maxImageHeight": {
+            "type": "number",
+            "default": 1600,
+            "description": "单张图片最大高度（像素）。内容超过该高度自动分页为多张等尺寸图片，避免超长图不便查看",
+            "ui": { "group": "渲染", "order": 12, "min": 400, "step": 100, "unit": "px" }
+        },
+        "pageFooter": {
+            "type": "boolean",
+            "default": true,
+            "description": "分页时在每张图底部显示页码（如：第 1/3 页）",
+            "ui": { "group": "渲染", "order": 13 }
+        },
         "maxConcurrent": {
             "type": "number",
             "default": 2,
             "description": "最大并发渲染数（防止内存爆炸）",
-            "ui": { "group": "渲染", "order": 12, "min": 1, "max": 10, "step": 1 }
+            "ui": { "group": "渲染", "order": 14, "min": 1, "max": 10, "step": 1 }
         },
         "cacheDays": {
             "type": "number",
             "default": 7,
             "description": "缓存文件保留天数（超过后自动清理）",
-            "ui": { "group": "渲染", "order": 13, "min": 1, "step": 1, "unit": "天" }
+            "ui": { "group": "渲染", "order": 15, "min": 1, "step": 1, "unit": "天" }
         },
         "executablePath": {
             "type": "string",
             "default": "",
             "description": "Chrome 可执行文件路径（留空=自动检测系统已安装的 Chrome/Chromium。如自动检测失败请手动指定）",
-            "ui": { "group": "渲染", "order": 14, "placeholder": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe 或 /usr/bin/chromium-browser" }
+            "ui": { "group": "渲染", "order": 16, "placeholder": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe 或 /usr/bin/chromium-browser" }
         },
         "applyToPlatforms": {
             "type": "array",
             "default": [],
             "description": "仅对这些平台生效（空数组=全部平台）",
-            "ui": { "group": "过滤", "order": 15, "inputMode": "csv", "placeholder": "qq,telegram,discord" }
+            "ui": { "group": "过滤", "order": 17, "inputMode": "csv", "placeholder": "qq,telegram,discord" }
         },
         "stRules": {
             "type": "array",
             "default": [],
             "description": "ST 正则规则（通过 /msg2img import-st 导入，或在此手动填写 JSON 数组）",
-            "ui": { "group": "正则规则", "order": 16, "inputMode": "textarea" }
+            "ui": { "group": "正则规则", "order": 18, "inputMode": "textarea" }
         }
     }
 }
