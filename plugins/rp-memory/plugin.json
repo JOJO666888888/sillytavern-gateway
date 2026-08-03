@@ -1,0 +1,44 @@
+{
+    "name": "rp-memory",
+    "displayName": "RP记忆管理",
+    "version": "1.0.0",
+    "author": "露水情缘",
+    "description": "提取AI回复中的<summary>作为长期记忆，剥离<think>/<summary>标签后转发，拼接历史摘要作为上下文注入新消息",
+    "main": "index.js",
+    "priority": 100,
+    "enabled": true,
+    "dependencies": [],
+    "permissions": ["config"],
+    "config": {
+        "contextSummaries": {
+            "type": "number",
+            "default": 10,
+            "description": "每次注入上下文时携带的最近摘要数量"
+        },
+        "stripThinkTags": {
+            "type": "boolean",
+            "default": false,
+            "description": "是否直接剥离 <think>...</think> 思维链标签（设为 false 时配合 formatThinkTags 使用）"
+        },
+        "formatThinkTags": {
+            "type": "boolean",
+            "default": true,
+            "description": "是否将 <think> 内容格式化为「内心独白」转发给用户（stripThinkTags 为 false 时生效）"
+        },
+        "stripSummaryTags": {
+            "type": "boolean",
+            "default": true,
+            "description": "是否剥离 <summary>...</summary> 标签（剥离后不发送给用户，但仍会存储）"
+        },
+        "injectContext": {
+            "type": "boolean",
+            "default": true,
+            "description": "是否在用户消息前注入历史摘要作为上下文"
+        },
+        "maxSummaries": {
+            "type": "number",
+            "default": 100,
+            "description": "每个记忆组最多保存的摘要数量（超出后自动删除最旧的）"
+        }
+    }
+}

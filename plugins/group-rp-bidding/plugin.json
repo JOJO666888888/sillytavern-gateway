@@ -1,0 +1,29 @@
+{
+    "name": "group-rp-bidding",
+    "displayName": "趣味群聊抢答RP",
+    "version": "1.0.0",
+    "author": "JOJO",
+    "description": "群聊场景下的多人抢答角色扮演插件。AI叙述剧情后开启抢答窗口，第一个抢答的玩家内容将推进剧情。",
+    "main": "index.js",
+    "priority": 100,
+    "enabled": true,
+    "dependencies": [],
+    "permissions": ["config"],
+    "config": {
+        "endMarker": {
+            "type": "string",
+            "default": "【本轮结束】",
+            "description": "AI输出中用于触发抢答的结束标记字符串"
+        },
+        "bidTimeout": {
+            "type": "number",
+            "default": 30,
+            "description": "抢答超时时间（秒），超时后自动重置并提示/skip"
+        },
+        "implicitBid": {
+            "type": "boolean",
+            "default": true,
+            "description": "是否将抢答阶段内的任意群消息视为抢答（false则仅/bid命令有效）"
+        }
+    }
+}

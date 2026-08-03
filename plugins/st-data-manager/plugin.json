@@ -1,0 +1,34 @@
+{
+    "name": "st-data-manager",
+    "displayName": "ST数据管理",
+    "version": "1.0.0",
+    "author": "JOJO",
+    "description": "远程管理SillyTavern角色卡/世界书/预设，支持群聊绑定角色卡实现多会话隔离",
+    "main": "index.js",
+    "priority": 100,
+    "enabled": true,
+    "dependencies": [],
+    "permissions": ["config"],
+    "config": {
+        "stUrl": {
+            "type": "string",
+            "default": "http://localhost:8000",
+            "description": "SillyTavern 后端地址"
+        },
+        "stAuth": {
+            "type": "string",
+            "default": "",
+            "description": "ST Basic Auth 凭证 (base64(user:pass))，无认证则留空"
+        },
+        "stDataDir": {
+            "type": "string",
+            "default": "",
+            "description": "ST 的 data 目录路径（预设上传用，留空则仅用 API）"
+        },
+        "bindings": {
+            "type": "object",
+            "default": {},
+            "description": "会话-角色绑定表 { 'platform:chatId': { characterName, avatar, activeScene } }"
+        }
+    }
+}
