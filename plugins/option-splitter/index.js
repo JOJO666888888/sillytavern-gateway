@@ -83,6 +83,7 @@ export default class OptionSplitterPlugin extends GatewayPlugin {
             optionPrefix: '',
             mediaWaitTimeout: 20000,
             applyToPlatforms: [],
+            buttonPlatforms: ['telegram'],
         };
         for (const [key, val] of Object.entries(defaults)) {
             if (this.getConfig(key) === undefined) this.setConfig(key, val);
@@ -100,6 +101,12 @@ export default class OptionSplitterPlugin extends GatewayPlugin {
         if (!message || !message.content) return message;
         if (this.getConfig('enabled') === false) return message;
 
+        // 共存规则：上游已设置 buttons 时不处理，直接放行
+        // 这允许 agent-rp 或其他插件直接设置 buttons 而不被 option-splitter 干扰
+        if (message.buttons) {
+            return message;
+        }
+
         // 平台过滤
         const platforms = this.getConfig('applyToPlatforms') || [];
         if (platforms.length > 0 && !platforms.includes(message.platform)) return message;
@@ -109,6 +116,20 @@ export default class OptionSplitterPlugin extends GatewayPlugin {
 
         // 没有选项 -> 原样放行
         if (options.length === 0) return message;
+
+        // 原生按钮路径：平台在 buttonPlatforms 中时，设置 buttons 并跳过文本拆分
+        const buttonPlatforms = this.getConfig('buttonPlatforms') || [];
+        if (buttonPlatforms.includes(message.platform)) {
+            // 从内容中移除选项行，只保留正文
+            message.content = mainText;
+            // 设置结构化按钮
+            message.buttons = options.map(o => ({
+                text: o.content,
+                callbackId: `select:option:${o.index}`,
+            }));
+            this.logger.info(`原生按钮: ${options.length} 个选项转为 buttons（平台=${message.platform}）`);
+            return message;
+        }
 
         const outputFormat = this.getConfig('outputFormat') || 'sequential';
 
@@ -379,6 +400,7 @@ export default class OptionSplitterPlugin extends GatewayPlugin {
                 `  去前缀: ${this.getConfig('stripPrefix') !== false ? '是' : '否'}`,
                 `  选项前缀: "${this.getConfig('optionPrefix') || ''}"`,
                 `  生效平台: ${p.length ? p.join(', ') : '全部'}`,
+                `  原生按钮平台: ${(this.getConfig('buttonPlatforms') || []).join(', ') || '无'}`,
             ].join('\n')
         );
     }

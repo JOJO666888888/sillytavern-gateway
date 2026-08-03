@@ -110,6 +110,11 @@ export class OutboundMessage {
         this.mediaUrls = this.media.map(m => m.url || m.localPath).filter(Boolean);
         this.replyToId = data.replyToId || '';
         this.metadata = data.metadata || {};          // 平台特定元数据
+        // 结构化按钮（P1 契约扩展）：平台原生按钮，如 Telegram inline_keyboard
+        // 每个按钮：{ text: string, callbackId: string, data?: string }
+        // callbackId 用于回调标识（点击后转为 InboundMessage.content），data 为平台特定附加数据
+        // null 表示无按钮；空数组等同于 null
+        this.buttons = Array.isArray(data.buttons) && data.buttons.length > 0 ? data.buttons : null;
     }
 }
 

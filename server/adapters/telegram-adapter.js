@@ -192,8 +192,40 @@ export class TelegramAdapter extends PlatformAdapter {
      */
     handleCallbackQuery(query) {
         this.logger.debug(`回调查询: ${query.data}`);
-        // 可以在这里处理按钮交互
+
+        // answer callback 以消除 Telegram 客户端的 loading 动画
         this.bot.answerCallbackQuery(query.id);
+
+        // P1: 把按钮点击转为标准入站消息
+        const msg = query.message;
+        if (!msg || !query.data) return;
+
+        const chat = msg.chat;
+        const from = query.from;
+
+        // 白名单检查
+        if (this.config.allowedUsers?.length > 0) {
+            if (!this.config.allowedUsers.includes(String(from.id))) {
+                this.logger.debug(`用户 ${from.id} 不在白名单中，忽略回调查询`);
+                return;
+            }
+        }
+
+        const inboundMsg = new InboundMessage({
+            platform: 'telegram',
+            messageId: String(msg.message_id),
+            chatId: String(chat.id),
+            chatType: chat.type === 'private' ? 'private' : 'group',
+            senderId: String(from.id),
+            senderName: from.first_name + (from.last_name ? ` ${from.last_name}` : ''),
+            content: query.data,  // callbackId 作为 content
+            timestamp: Date.now(),
+            mentioned: true,  // 按钮点击视为主动交互
+            replyToId: String(msg.message_id),
+            raw: query,
+        });
+
+        this.emit('message', inboundMsg);
     }
 
     /**
@@ -219,16 +251,32 @@ export class TelegramAdapter extends PlatformAdapter {
                     options.reply_to_message_id = message.replyToId;
                 }
 
+                // P1: 结构化按钮转为 Telegram inline_keyboard
+                if (message.buttons && message.buttons.length > 0) {
+                    options.reply_markup = {
+                        inline_keyboard: message.buttons.map(btn => [{
+                            text: btn.text,
+                            callback_data: btn.callbackId || btn.data || '',
+                        }]),
+                    };
+                }
+
                 // 分段发送长文本
                 const segments = this.splitMessage(message.content, 4096);
-                for (const segment of segments) {
+                for (let i = 0; i < segments.length; i++) {
                     try {
-                        await this.bot.sendMessage(chatId, segment, options);
+                        // 仅在最后一段附加 inline_keyboard（避免每段都有按钮）
+                        const segOptions = (i === segments.length - 1) ? options : {
+                            parse_mode: options.parse_mode,
+                            reply_to_message_id: options.reply_to_message_id,
+                        };
+                        await this.bot.sendMessage(chatId, segments[i], segOptions);
                     } catch (error) {
                         // Markdown 解析失败时，回退到纯文本
                         if (error.message.includes('parse')) {
-                            delete options.parse_mode;
-                            await this.bot.sendMessage(chatId, segment, options);
+                            const fallbackOpts = { ...segOptions };
+                            delete fallbackOpts.parse_mode;
+                            await this.bot.sendMessage(chatId, segments[i], fallbackOpts);
                         } else {
                             throw error;
                         }
@@ -239,6 +287,20 @@ export class TelegramAdapter extends PlatformAdapter {
                         await this.delay(300);
                     }
                 }
+            } else if (message.buttons && message.buttons.length > 0) {
+                // 无正文但有按钮：发送一条占位消息 + inline_keyboard
+                const options = {
+                    reply_markup: {
+                        inline_keyboard: message.buttons.map(btn => [{
+                            text: btn.text,
+                            callback_data: btn.callbackId || btn.data || '',
+                        }]),
+                    },
+                };
+                if (message.replyToId) {
+                    options.reply_to_message_id = message.replyToId;
+                }
+                await this.bot.sendMessage(chatId, '请选择：', options);
             }
 
             // 发送图片

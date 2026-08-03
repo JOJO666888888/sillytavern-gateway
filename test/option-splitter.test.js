@@ -411,7 +411,177 @@ describe('message-to-image: media-sent 信号发出', () => {
             metadata: { _mediaWaitKey: 'k3', _msg2imgTriggered: true },
         };
         const result = m2i.filterOutbound(msg);
-        assert.strictEqual(result, null, '重试守卫 → 丢弃');
+        assert.strictEqual(result, null, '重试守卫 -> 丢弃');
         assert.strictEqual(gw.emitted.length, 0, '不应重复发信号，避免误报完成');
+    });
+});
+
+// ====================================================================
+// 4. option-splitter 原生按钮共存规则（P1 契约面扩展）
+// ====================================================================
+
+describe('option-splitter: 原生按钮共存规则', () => {
+    const body = '酒馆里灯火通明，旅人推门而入。';
+    const content = `${body}\n\n>选项一：向酒保打听消息\n>选项二：独自坐在角落观察`;
+
+    test('上游已设置 buttons 时，option-splitter 直接放行（不处理）', () => {
+        const gw = new FakeGateway();
+        const splitter = makeSplitter(gw, { buttonPlatforms: ['telegram'] });
+        gw.outboundFilters = [
+            { name: 'option-splitter', priority: 5, filter: (m) => splitter.filterOutbound(m) },
+        ];
+
+        // 上游已设置 buttons
+        const msg = {
+            platform: 'telegram',
+            chatId: 'c1',
+            chatType: 'private',
+            content,
+            buttons: [{ text: '自定义', callbackId: 'custom-cb' }],
+        };
+        const result = splitter.filterOutbound(msg);
+
+        // buttons 不被覆盖
+        assert.strictEqual(result, msg);
+        assert.strictEqual(result.buttons.length, 1);
+        assert.strictEqual(result.buttons[0].text, '自定义');
+        // content 不被修改（选项行仍在）
+        assert.ok(result.content.includes('>选项一：'));
+        // 没有补发任何消息
+        assert.strictEqual(gw.sent.length, 0);
+    });
+
+    test('平台在 buttonPlatforms 中时，选项转为 buttons（不补发文本消息）', () => {
+        const gw = new FakeGateway();
+        const splitter = makeSplitter(gw, { buttonPlatforms: ['telegram'] });
+        gw.outboundFilters = [
+            { name: 'option-splitter', priority: 5, filter: (m) => splitter.filterOutbound(m) },
+        ];
+
+        const msg = {
+            platform: 'telegram',
+            chatId: 'c1',
+            chatType: 'private',
+            content,
+            buttons: null,
+        };
+        const result = splitter.filterOutbound(msg);
+
+        // buttons 被设置
+        assert.ok(result.buttons, '应设置 buttons');
+        assert.strictEqual(result.buttons.length, 2);
+        assert.strictEqual(result.buttons[0].text, '向酒保打听消息');
+        assert.strictEqual(result.buttons[0].callbackId, 'select:option:一');
+        assert.strictEqual(result.buttons[1].text, '独自坐在角落观察');
+        assert.strictEqual(result.buttons[1].callbackId, 'select:option:二');
+
+        // content 中选项行被移除，只保留正文
+        assert.strictEqual(result.content, body);
+        assert.ok(!result.content.includes('>选项'));
+
+        // 没有补发任何文本消息
+        assert.strictEqual(gw.sent.length, 0);
+    });
+
+    test('平台不在 buttonPlatforms 中时，保持 sequential 文本拆分', async () => {
+        const gw = new FakeGateway();
+        const splitter = makeSplitter(gw, {
+            buttonPlatforms: ['telegram'],
+            outputFormat: 'sequential',
+            initialDelay: 1,
+            optionDelay: 1,
+        });
+        gw.outboundFilters = [
+            { name: 'option-splitter', priority: 5, filter: (m) => splitter.filterOutbound(m) },
+        ];
+
+        const msg = {
+            platform: 'qq',
+            chatId: 'c1',
+            chatType: 'private',
+            content,
+            buttons: null,
+        };
+        const result = splitter.filterOutbound(msg);
+
+        // buttons 仍为 null（未走原生按钮路径）
+        assert.strictEqual(result.buttons, null);
+        // content 被改为正文
+        assert.strictEqual(result.content, body);
+
+        // 等待异步补发完成
+        await sleep(50);
+        assert.strictEqual(gw.sent.length, 2, '应补发 2 条选项文本');
+        assert.strictEqual(gw.sent[0].content, '选项一：向酒保打听消息');
+        assert.strictEqual(gw.sent[1].content, '选项二：独自坐在角落观察');
+    });
+
+    test('batch 模式不受 buttons 影响（平台不在 buttonPlatforms 中时）', () => {
+        const gw = new FakeGateway();
+        const splitter = makeSplitter(gw, {
+            buttonPlatforms: ['telegram'],
+            outputFormat: 'batch',
+        });
+        gw.outboundFilters = [
+            { name: 'option-splitter', priority: 5, filter: (m) => splitter.filterOutbound(m) },
+        ];
+
+        const msg = {
+            platform: 'qq',
+            chatId: 'c1',
+            chatType: 'private',
+            content,
+            buttons: null,
+        };
+        const result = splitter.filterOutbound(msg);
+
+        // batch 模式合并进正文
+        assert.ok(result.content.includes('选项一：'), '选项合并进正文');
+        // buttons 仍为 null（batch 不走原生按钮）
+        assert.strictEqual(result.buttons, null);
+    });
+
+    test('buttonPlatforms 为空时，所有平台走文本拆分', async () => {
+        const gw = new FakeGateway();
+        const splitter = makeSplitter(gw, {
+            buttonPlatforms: [],
+            outputFormat: 'sequential',
+            initialDelay: 1,
+            optionDelay: 1,
+        });
+        gw.outboundFilters = [
+            { name: 'option-splitter', priority: 5, filter: (m) => splitter.filterOutbound(m) },
+        ];
+
+        const msg = {
+            platform: 'telegram',
+            chatId: 'c1',
+            chatType: 'private',
+            content,
+            buttons: null,
+        };
+        const result = splitter.filterOutbound(msg);
+
+        assert.strictEqual(result.buttons, null);
+        await sleep(50);
+        assert.strictEqual(gw.sent.length, 2, '应补发 2 条选项文本');
+    });
+
+    test('上游设置 buttons + 平台在 buttonPlatforms 中：仍放行上游 buttons', () => {
+        const gw = new FakeGateway();
+        const splitter = makeSplitter(gw, { buttonPlatforms: ['telegram'] });
+
+        const upstreamButtons = [{ text: '上游按钮', callbackId: 'upstream-cb' }];
+        const msg = {
+            platform: 'telegram',
+            chatId: 'c1',
+            chatType: 'private',
+            content,
+            buttons: upstreamButtons,
+        };
+        const result = splitter.filterOutbound(msg);
+
+        assert.strictEqual(result.buttons, upstreamButtons, '上游 buttons 不被覆盖');
+        assert.strictEqual(gw.sent.length, 0);
     });
 });

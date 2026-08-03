@@ -74,6 +74,12 @@
             "default": [],
             "description": "仅对这些平台生效（空数组=全部平台），如 qq,telegram",
             "ui": { "group": "过滤", "order": 10, "inputMode": "csv", "placeholder": "qq,telegram,discord" }
+        },
+        "buttonPlatforms": {
+            "type": "array",
+            "default": ["telegram"],
+            "description": "走原生按钮的平台列表（逗号分隔），如 telegram。这些平台上的选项会被转为平台原生按钮而非文本拆分",
+            "ui": { "group": "发送", "order": 11, "inputMode": "csv", "placeholder": "telegram" }
         }
     }
 }
