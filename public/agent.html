@@ -183,6 +183,9 @@
                     <label>会话</label>
                     <input type="text" id="agent_theatre_session" class="text_pole" placeholder="native:default" value="native:default" title="platform:chatId 格式的会话标识">
                 </div>
+                <button id="agent_theatre_rerun" class="menu_button" title="用上一轮的输入重新跑一次">
+                    <i class="fa-solid fa-rotate-right"></i> 重跑
+                </button>
                 <button id="agent_theatre_clear" class="menu_button" title="清空当前正文流与历史">
                     <i class="fa-solid fa-eraser"></i> 清空
                 </button>
@@ -211,6 +214,9 @@
                     <div class="gateway-field-row">
                         <button id="agent_theatre_save_profile" class="menu_button gateway-save-btn" title="保存 Profile 并通知引擎热重载">
                             <i class="fa-solid fa-floppy-disk"></i> 保存热重载
+                        </button>
+                        <button id="agent_theatre_validate_run" class="menu_button" title="保存后用探测输入跑一次验证">
+                            <i class="fa-solid fa-flask"></i> 试运行
                         </button>
                         <button id="agent_theatre_reload_profile" class="menu_button" title="从服务器重新加载当前 Profile YAML">
                             <i class="fa-solid fa-rotate-right"></i> 重新加载
@@ -251,6 +257,10 @@
                         <textarea id="agent_theatre_input" class="text_pole gateway-theatre-input" rows="2" placeholder="输入消息，或直接点击上方选项..."></textarea>
                         <button id="agent_theatre_send" class="menu_button gateway-save-btn" title="发送消息触发 Agent run">
                             <i class="fa-solid fa-paper-plane"></i> 发送
+                        </button>
+                        <!-- P2: 停止生成按钮，run 运行时显示（由前端 run_state 状态机控制显隐） -->
+                        <button id="agent_theatre_stop" class="menu_button" style="display:none" title="停止当前生成">
+                            <i class="fa-solid fa-stop"></i> 停止
                         </button>
                     </div>
                 </div>

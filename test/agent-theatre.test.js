@@ -239,6 +239,76 @@ describe('TheatreBroadcaster - 消息类型封装', () => {
     });
 });
 
+describe('TheatreBroadcaster - run_state 广播（P2 停止生成）', () => {
+    let b;
+    beforeEach(() => { b = new TheatreBroadcaster(); });
+    afterEach(() => { b.shutdown(); });
+
+    test('broadcastRunState 推送 run_state 事件且数据正确', () => {
+        const res = mockSseRes();
+        b.addClient(res, 'native:default');
+        b.broadcastRunState('native:default', 'run-1', 'running');
+
+        const events = parseSseEvents(res.chunks);
+        const ev = events.find(e => e.event === 'run_state');
+        assert.ok(ev, '应推送 run_state 事件');
+        assert.strictEqual(ev.data.runId, 'run-1');
+        assert.strictEqual(ev.data.state, 'running');
+    });
+
+    test('broadcastRunState 未传 runId 时序列化为 null（running 早期事件）', () => {
+        const res = mockSseRes();
+        b.addClient(res, 'native:default');
+        b.broadcastRunState('native:default', null, 'running');
+
+        const events = parseSseEvents(res.chunks);
+        const ev = events.find(e => e.event === 'run_state');
+        assert.ok(ev);
+        assert.strictEqual(ev.data.runId, null);
+        assert.strictEqual(ev.data.state, 'running');
+    });
+
+    test('broadcastRunState 支持 aborted / completed / error 终态', () => {
+        const res = mockSseRes();
+        b.addClient(res, 'native:default');
+        b.broadcastRunState('native:default', 'run-1', 'aborting');
+        b.broadcastRunState('native:default', 'run-1', 'aborted');
+        b.broadcastRunState('native:default', 'run-1', 'completed');
+        b.broadcastRunState('native:default', null, 'error');
+
+        const events = parseSseEvents(res.chunks).filter(e => e.event === 'run_state');
+        assert.deepStrictEqual(events.map(e => e.data.state), ['aborting', 'aborted', 'completed', 'error']);
+        assert.strictEqual(events[1].data.runId, 'run-1');
+        assert.strictEqual(events[3].data.runId, null);
+    });
+
+    test('直接 broadcast run_state 事件同样可被解析（SSE 通用性）', () => {
+        const res = mockSseRes();
+        b.addClient(res, 'native:default');
+        b.broadcast('native:default', 'run_state', { runId: 'r1', state: 'aborted' });
+
+        const events = parseSseEvents(res.chunks);
+        const ev = events.find(e => e.event === 'run_state');
+        assert.ok(ev);
+        assert.strictEqual(ev.data.runId, 'r1');
+        assert.strictEqual(ev.data.state, 'aborted');
+    });
+
+    test('run_state 事件按 session 隔离推送', () => {
+        const resA = mockSseRes();
+        const resB = mockSseRes();
+        b.addClient(resA, 'native:chatA');
+        b.addClient(resB, 'native:chatB');
+
+        b.broadcastRunState('native:chatA', 'run-1', 'running');
+
+        const evA = parseSseEvents(resA.chunks).find(e => e.event === 'run_state');
+        const evB = parseSseEvents(resB.chunks).find(e => e.event === 'run_state');
+        assert.ok(evA, '会话 A 应收到 run_state');
+        assert.ok(!evB, '会话 B 不应收到 run_state');
+    });
+});
+
 describe('TheatreBroadcaster - SSE 协议格式', () => {
     let b;
     beforeEach(() => { b = new TheatreBroadcaster(); });
@@ -428,5 +498,162 @@ describe('TheatreBroadcaster - 集成场景', () => {
         assert.ok(mobileEv);
         assert.strictEqual(panelEv.data.text, '同步内容');
         assert.strictEqual(mobileEv.data.text, '同步内容');
+    });
+});
+
+// ==================== rerun 输入推导逻辑测试 ====================
+
+/**
+ * 复刻 server/index.js 中 /api/agent-theatre/input 路由的 actualInput 推导逻辑。
+ * 该逻辑深度耦合在 Express 路由内（依赖 theatreSessions、agentService 等模块级变量），
+ * 无法直接单元测试路由本身，这里提取核心推导逻辑做守护测试。
+ *
+ * 规则：
+ *   - 非 rerun：actualInput = input || (callbackId ? `[选项回调] ${callbackId}` : '')
+ *   - rerun：从 sess.lastInput 推导，若以 'select:' 开头视为 callbackId
+ *
+ * @param {object} args - { input, callbackId, rerun, sess }
+ * @returns {{ actualInput: string, shouldUpdateLastInput: boolean, hasLastInput: boolean }}
+ */
+function deriveActualInput({ input, callbackId, rerun, sess }) {
+    const hasLastInput = !!(sess && sess.lastInput);
+    let actualInput = '';
+
+    if (rerun) {
+        const lastInput = sess.lastInput;
+        if (typeof lastInput === 'string' && lastInput.startsWith('select:')) {
+            actualInput = `[选项回调] ${lastInput}`;
+        } else {
+            actualInput = lastInput || '';
+        }
+    } else {
+        actualInput = input || '';
+        if (!actualInput && callbackId) {
+            actualInput = `[选项回调] ${callbackId}`;
+        }
+    }
+
+    const shouldUpdateLastInput = !rerun;
+    return { actualInput, shouldUpdateLastInput, hasLastInput };
+}
+
+describe('rerun 输入推导逻辑', () => {
+    test('普通文本输入：lastInput 存文本，rerun 时原样返回', () => {
+        const sess = { lastInput: '向森林深处走去', turn: 2 };
+        const r = deriveActualInput({ rerun: true, sess });
+        assert.strictEqual(r.actualInput, '向森林深处走去');
+        assert.strictEqual(r.shouldUpdateLastInput, false);
+        assert.strictEqual(r.hasLastInput, true);
+    });
+
+    test('callbackId 输入：lastInput 存 select: 前缀，rerun 时还原为 [选项回调] 格式', () => {
+        const sess = { lastInput: 'select:option:1', turn: 1 };
+        const r = deriveActualInput({ rerun: true, sess });
+        assert.strictEqual(r.actualInput, '[选项回调] select:option:1');
+        assert.strictEqual(r.shouldUpdateLastInput, false);
+    });
+
+    test('rerun 时 lastInput 为空应被拦截（hasLastInput=false）', () => {
+        const sess = { lastInput: null, turn: 0 };
+        const r = deriveActualInput({ rerun: true, sess });
+        assert.strictEqual(r.hasLastInput, false);
+        assert.strictEqual(r.actualInput, '');
+    });
+
+    test('rerun 时 lastInput 为 undefined（首次会话）应被拦截', () => {
+        const sess = {};
+        const r = deriveActualInput({ rerun: true, sess });
+        assert.strictEqual(r.hasLastInput, false);
+    });
+
+    test('非 rerun 普通输入：actualInput 用 input，shouldUpdateLastInput=true', () => {
+        const r = deriveActualInput({ input: '你好世界', callbackId: null, rerun: false, sess: {} });
+        assert.strictEqual(r.actualInput, '你好世界');
+        assert.strictEqual(r.shouldUpdateLastInput, true);
+    });
+
+    test('非 rerun callbackId 输入：actualInput 用 [选项回调] 格式', () => {
+        const r = deriveActualInput({ input: null, callbackId: 'select:option:2', rerun: false, sess: {} });
+        assert.strictEqual(r.actualInput, '[选项回调] select:option:2');
+        assert.strictEqual(r.shouldUpdateLastInput, true);
+    });
+
+    test('非 rerun input+callbackId 同时存在：input 优先', () => {
+        const r = deriveActualInput({ input: '自由文本', callbackId: 'select:option:1', rerun: false, sess: {} });
+        assert.strictEqual(r.actualInput, '自由文本');
+    });
+
+    test('rerun 与非 rerun 对同一 lastInput 推导结果一致（callbackId 场景）', () => {
+        const callbackId = 'select:option:3';
+        // 非 rerun 首次
+        const first = deriveActualInput({ input: null, callbackId, rerun: false, sess: {} });
+        // rerun 复用
+        const sess = { lastInput: callbackId };
+        const rerun = deriveActualInput({ rerun: true, sess });
+        assert.strictEqual(first.actualInput, rerun.actualInput);
+    });
+
+    test('rerun 与非 rerun 对同一 lastInput 推导结果一致（普通文本场景）', () => {
+        const text = '探索废弃的城堡';
+        const first = deriveActualInput({ input: text, callbackId: null, rerun: false, sess: {} });
+        const sess = { lastInput: text };
+        const rerun = deriveActualInput({ rerun: true, sess });
+        assert.strictEqual(first.actualInput, rerun.actualInput);
+    });
+});
+
+// ==================== validate-run 参数校验逻辑测试 ====================
+
+/**
+ * 复刻 server/index.js 中 /api/agent-theatre/validate-run 的参数校验逻辑。
+ *
+ * @param {object} body - { name, yaml }
+ * @returns {{ valid: boolean, error?: string }}
+ */
+function validateRunParams(body) {
+    const { name, yaml } = body || {};
+    if (!name || !yaml) {
+        return { valid: false, error: '需要 name 和 yaml' };
+    }
+    return { valid: true };
+}
+
+describe('validate-run 参数校验', () => {
+    test('缺少 name 时返回无效', () => {
+        const r = validateRunParams({ yaml: 'name: test' });
+        assert.strictEqual(r.valid, false);
+        assert.strictEqual(r.error, '需要 name 和 yaml');
+    });
+
+    test('缺少 yaml 时返回无效', () => {
+        const r = validateRunParams({ name: 'default-rp' });
+        assert.strictEqual(r.valid, false);
+        assert.strictEqual(r.error, '需要 name 和 yaml');
+    });
+
+    test('name 和 yaml 都为空时返回无效', () => {
+        const r = validateRunParams({});
+        assert.strictEqual(r.valid, false);
+    });
+
+    test('body 为 null/undefined 时返回无效', () => {
+        const r = validateRunParams(null);
+        assert.strictEqual(r.valid, false);
+    });
+
+    test('name 和 yaml 都存在时返回有效', () => {
+        const r = validateRunParams({ name: 'default-rp', yaml: 'name: default-rp\nmodel:\n  temperature: 0.8' });
+        assert.strictEqual(r.valid, true);
+        assert.strictEqual(r.error, undefined);
+    });
+
+    test('name 为空字符串时返回无效', () => {
+        const r = validateRunParams({ name: '', yaml: 'name: test' });
+        assert.strictEqual(r.valid, false);
+    });
+
+    test('yaml 为空字符串时返回无效', () => {
+        const r = validateRunParams({ name: 'default-rp', yaml: '' });
+        assert.strictEqual(r.valid, false);
     });
 });

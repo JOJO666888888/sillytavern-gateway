@@ -449,6 +449,9 @@
         timelineEvents: [],
         profile: 'default-rp',
         session: 'native:default',
+        // P2: run 生命周期状态机：idle | running | aborting | aborted | completed | error
+        // 由 SSE run_state 事件驱动（server/index.js 广播）
+        runState: 'idle',
     };
 
     var streaming = { runId: null, el: null };
@@ -506,6 +509,14 @@
             } catch (e) { console.warn('[agent-frontend] token_delta 解析失败', e); }
         });
 
+        // P2: run 生命周期状态（running / aborting / aborted / completed / error）
+        es.addEventListener('run_state', function (ev) {
+            try {
+                var data = JSON.parse(ev.data);
+                handleRunState(data);
+            } catch (e) { console.warn('[agent-frontend] run_state 解析失败', e); }
+        });
+
         es.addEventListener('heartbeat', function () { /* 心跳，无需处理 */ });
 
         es.addEventListener('error', function () {
@@ -525,6 +536,53 @@
     }
 
     // ==================== Agent 剧场：正文 / 事件 ====================
+
+    // P2: run 生命周期状态机处理（SSE run_state 事件驱动 UI）
+    function handleRunState(data) {
+        if (!data || !data.state) return;
+        theatre.runState = data.state;
+        if (data.runId) theatre.currentRunId = data.runId;
+        renderRunState();
+    }
+
+    // P2: 按 runState 渲染停止按钮 / 发送按钮 / 状态徽标
+    function renderRunState() {
+        var stopBtn = $('agent_theatre_stop');
+        var sendBtn = $('agent_theatre_send');
+        var badge = $('agent_theatre_status');
+        var restoreStopBtn = function () {
+            if (!stopBtn) return;
+            stopBtn.style.display = 'none';
+            stopBtn.disabled = false;
+            stopBtn.innerHTML = '<i class="fa-solid fa-stop"></i> 停止';
+        };
+        switch (theatre.runState) {
+            case 'running':
+                if (stopBtn) { stopBtn.style.display = ''; stopBtn.disabled = false; stopBtn.innerHTML = '<i class="fa-solid fa-stop"></i> 停止'; }
+                if (sendBtn) sendBtn.disabled = true;
+                if (badge) { badge.textContent = '生成中...'; badge.className = 'gateway-status-badge connected'; }
+                break;
+            case 'aborting':
+                if (stopBtn) { stopBtn.style.display = ''; stopBtn.disabled = true; stopBtn.textContent = '停止中...'; }
+                if (sendBtn) sendBtn.disabled = true;
+                if (badge) { badge.textContent = '正在停止...'; badge.className = 'gateway-status-badge connected'; }
+                break;
+            case 'aborted':
+                restoreStopBtn();
+                if (sendBtn) sendBtn.disabled = false;
+                if (badge) { badge.textContent = '已停止'; badge.className = 'gateway-status-badge disconnected'; }
+                break;
+            case 'completed':
+            case 'error':
+                restoreStopBtn();
+                if (sendBtn) sendBtn.disabled = false;
+                if (badge && theatre.connected) { badge.textContent = '已连接'; badge.className = 'gateway-status-badge connected'; }
+                break;
+            default: // idle
+                restoreStopBtn();
+                if (sendBtn) sendBtn.disabled = false;
+        }
+    }
 
     function handleTokenDelta(data) {
         if (!data || !data.delta) return;
@@ -564,6 +622,12 @@
         if (!payload) return;
         theatre.currentRunId = payload.runId;
         theatre.lastResult = payload.result;
+        // P2: 兜底——run 结果已落地但未收到 run_state 终态（如 SSE 短暂断线），
+        // 直接把状态机推进到 completed，恢复 UI
+        if (theatre.runState === 'running' || theatre.runState === 'aborting') {
+            theatre.runState = 'completed';
+            renderRunState();
+        }
         var text = payload.text || '';
         clearStreamingPreview();
         appendNarrative(text);
@@ -748,17 +812,20 @@
 
     // ==================== Agent 剧场：发送 ====================
 
-    function sendInput(text, callbackId) {
+    function sendInput(text, callbackId, options) {
+        options = options || {};
         var body = {
             input: text || '',
             session: theatre.session || 'native:default',
             profile: theatre.profile,
         };
         if (callbackId) body.callbackId = callbackId;
+        if (options.rerun) body.rerun = true;
         var styleEl = $('agent_theatre_style');
         if (styleEl && styleEl.value) body.style = styleEl.value;
 
-        if (text) appendUserMessage(text);
+        // 重跑时不重复追加用户消息（上一轮已有）
+        if (text && !options.rerun) appendUserMessage(text);
 
         var narrative = $('agent_theatre_narrative');
         if (narrative) {
@@ -772,6 +839,10 @@
             narrative.scrollTop = narrative.scrollHeight;
         }
 
+        // P2: 本地状态机先进入 running（SSE run_state 事件随后到达驱动 UI，此处兜底保证按钮即时反应）
+        theatre.runState = 'running';
+        renderRunState();
+
         agentFetch('/api/agent-theatre/input', {
             method: 'POST',
             body: JSON.stringify(body),
@@ -780,6 +851,9 @@
             if (c) c.remove();
             if (!data.success) {
                 showToast('error', 'Agent run 失败: ' + (data.error || '未知错误'));
+                // P2: run 未启动，恢复状态机
+                theatre.runState = 'idle';
+                renderRunState();
                 return;
             }
             // handleAgentResult 会被 SSE 推送触发；无 SSE 时兜底渲染
@@ -866,6 +940,39 @@
             }
         }).catch(function (e) {
             showToast('error', '保存失败: ' + e.message);
+        });
+    }
+
+    function validateRun() {
+        var name = theatre.profile;
+        var ta = $('agent_theatre_profile_yaml');
+        var yaml = (ta && ta.value) || '';
+        if (!yaml.trim()) {
+            showToast('warning', 'YAML 内容不能为空');
+            return;
+        }
+
+        var btn = $('agent_theatre_validate_run');
+        if (btn) { btn.disabled = true; btn.textContent = '试运行中...'; }
+
+        agentFetch('/api/agent-theatre/validate-run', {
+            method: 'POST',
+            body: JSON.stringify({ name: name, yaml: yaml }),
+        }).then(function (data) {
+            if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-flask"></i> 试运行'; }
+            if (data.success) {
+                showToast('success', '验证通过：保存成功 + run 已完成');
+                showSaveHint('✅ 验证通过，Profile 可正常运行');
+                // 把试运行结果渲染到正文区
+                if (data.text) {
+                    handleAgentResult({ runId: data.runId, result: data.result, text: data.text });
+                }
+            } else {
+                showToast('error', '验证失败: ' + (data.error || '未知错误'));
+            }
+        }).catch(function (e) {
+            if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-flask"></i> 试运行'; }
+            showToast('error', '试运行失败: ' + e.message);
         });
     }
 
@@ -1172,6 +1279,21 @@
             if (input) input.value = '';
         });
 
+        // P2: 剧场：停止生成（run 运行时调用 /abort，UI 由 SSE run_state 事件驱动）
+        var stopBtn = $('agent_theatre_stop');
+        if (stopBtn) stopBtn.addEventListener('click', function () {
+            if (theatre.runState !== 'running') return;
+            agentFetch('/api/agent-theatre/abort', {
+                method: 'POST',
+                body: JSON.stringify({ session: theatre.session || 'native:default' }),
+            }).then(function (data) {
+                if (!data.success) { showToast('error', '停止失败: ' + (data.error || '未知错误')); return; }
+                // aborting 状态由 SSE run_state 事件驱动（/abort 端点广播）
+            }).catch(function (e) {
+                showToast('error', '停止请求失败: ' + e.message);
+            });
+        });
+
         var inputEl = $('agent_theatre_input');
         if (inputEl) inputEl.addEventListener('keydown', function (e) {
             if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
@@ -1191,6 +1313,16 @@
         // 清空
         var clearBtn = $('agent_theatre_clear');
         if (clearBtn) clearBtn.addEventListener('click', clearNarrative);
+
+        // 重跑
+        var rerunBtn = $('agent_theatre_rerun');
+        if (rerunBtn) rerunBtn.addEventListener('click', function () {
+            if (!theatre.lastResult) {
+                showToast('warning', '还没有上一轮可重跑');
+                return;
+            }
+            sendInput(null, null, { rerun: true });
+        });
 
         // Profile 切换
         var profileSel = $('agent_theatre_profile');
@@ -1221,6 +1353,8 @@
         // 保存热重载 / 重新加载
         var saveBtn = $('agent_theatre_save_profile');
         if (saveBtn) saveBtn.addEventListener('click', saveProfileYaml);
+        var validateBtn = $('agent_theatre_validate_run');
+        if (validateBtn) validateBtn.addEventListener('click', validateRun);
         var reloadBtn = $('agent_theatre_reload_profile');
         if (reloadBtn) reloadBtn.addEventListener('click', function () { loadProfileYaml(theatre.profile); });
 

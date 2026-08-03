@@ -29,6 +29,7 @@ import { createLLMService } from './llm-service.js';
 import { TheatreBroadcaster } from './agent/theatre-broadcaster.js';
 import { createAiModifierHandlers, createProfileStore } from './ai-modifier.js';
 import { createAgentFrontendValidateHandler } from './agent-frontend.js';
+import { resolveTheatreRerun, createTheatreValidateRunHandler } from './agent-theatre-routes.js';
 import multer from 'multer';
 
 const logger = createLogger('server');
@@ -908,9 +909,9 @@ app.get('/api/agent-theatre/stream', (req, res) => {
 app.post('/api/agent-theatre/input', async (req, res) => {
     const sessionKey = _theatreSessionKey(req);
     const body = req.body || {};
-    const { input, profile, callbackId, character, worldbook, style } = body;
+    const { input, profile, callbackId, character, worldbook, style, rerun } = body;
 
-    if (!input && !callbackId) {
+    if (!input && !callbackId && !rerun) {
         return res.status(400).json({ success: false, error: '需要 input 或 callbackId' });
     }
 
@@ -925,18 +926,47 @@ app.post('/api/agent-theatre/input', async (req, res) => {
     // 维护会话状态
     const sess = theatreSessions.get(sessionKey) || { profile: profile || 'default-rp', turn: 0 };
     if (profile) sess.profile = profile;
+
+    // 重跑：复用上一轮输入
+    if (rerun) {
+        if (!sess.lastInput) {
+            return res.status(400).json({ success: false, error: '没有上一轮输入可重跑' });
+        }
+    }
+
     sess.turn += 1;
-    sess.lastInput = input || callbackId;
+    // 非 rerun 时才更新 lastInput
+    if (!rerun) {
+        sess.lastInput = input || callbackId;
+    }
     theatreSessions.set(sessionKey, sess);
 
     // 选项回调：callbackId 形如 "select:option:1"，转成 "选择选项1: <text>" 作为 input
-    let actualInput = input || '';
-    if (!actualInput && callbackId) {
-        actualInput = `[选项回调] ${callbackId}`;
+    let actualInput = '';
+    if (rerun) {
+        // 重跑时复用上一轮的 actualInput 推导
+        const lastInput = sess.lastInput;
+        // 判断 lastInput 是 callbackId 还是普通 input（callbackId 通常以 select: 开头）
+        if (typeof lastInput === 'string' && lastInput.startsWith('select:')) {
+            actualInput = `[选项回调] ${lastInput}`;
+        } else {
+            actualInput = lastInput || '';
+        }
+    } else {
+        actualInput = input || '';
+        if (!actualInput && callbackId) {
+            actualInput = `[选项回调] ${callbackId}`;
+        }
     }
 
     // 解析 sessionKey -> platform:chatId
     const [platform, chatId] = sessionKey.split(':');
+
+    // P2: run 执行前标记 running（供 /abort 端点判断是否有进行中的 run）并广播 run_state
+    sess.running = true;
+    sess.lastRunId = null;
+    theatreSessions.set(sessionKey, sess);
+    theatreBroadcaster.broadcastRunState(sessionKey, null, 'running');
 
     try {
         // 触发 Agent run
@@ -956,6 +986,10 @@ app.post('/api/agent-theatre/input', async (req, res) => {
                 style: style || sess.style,
             },
         );
+
+        // P2: run 结束，清理 running 标记并广播终态（runner 被中止时返回 aborted:true）
+        sess.running = false;
+        theatreBroadcaster.broadcastRunState(sessionKey, runResult.runId, runResult.aborted ? 'aborted' : 'completed');
 
         sess.lastRunId = runResult.runId;
         sess.lastResult = runResult.result?.toJSON?.() || null;
@@ -983,7 +1017,101 @@ app.post('/api/agent-theatre/input', async (req, res) => {
             result: sess.lastResult,
         });
     } catch (e) {
+        // P2: 异常兜底：清理 running 标记并广播 error 终态
+        sess.running = false;
+        theatreBroadcaster.broadcastRunState(sessionKey, null, 'error');
         logger.error(`[theatre] Agent run 失败: ${e.message}`);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+/**
+ * POST /api/agent-theatre/abort - 停止当前正在执行的 run（P2）。
+ *
+ * run 执行中（LLM 工具循环）调用 agentService.abortRun(runId) 触发 AbortController，
+ * runner 返回 aborted:true 结果，/input 路由随后广播 run_state=aborted。
+ */
+app.post('/api/agent-theatre/abort', async (req, res) => {
+    const sessionKey = _theatreSessionKey(req);
+    const sess = theatreSessions.get(sessionKey);
+    if (!sess || !sess.running) {
+        return res.json({ success: false, error: '当前没有正在执行的 run' });
+    }
+    const agentService = getAgentService();
+    if (!agentService || typeof agentService.abortRun !== 'function') {
+        return res.status(503).json({ success: false, error: 'agent-framework 插件未加载或不支持 abort' });
+    }
+    // 定位当前 run：优先 sess.lastRunId（run 完成后回传）；执行中 runId 尚未回传时，
+    // 从 activeRuns 取该会话正在运行的 run（单会话单 run 架构下安全）
+    let runId = sess.lastRunId;
+    if (!runId) {
+        const status = (typeof agentService.getStatus === 'function') ? agentService.getStatus() : null;
+        const active = status?.activeAgents || [];
+        if (active.length > 0) runId = active[active.length - 1].runId;
+    }
+    if (!runId) {
+        return res.json({ success: false, error: '当前没有正在执行的 run' });
+    }
+    const ok = agentService.abortRun(runId);
+    if (!ok) {
+        return res.json({ success: false, error: 'run 不存在或已结束' });
+    }
+    theatreBroadcaster.broadcastRunState(sessionKey, runId, 'aborting');
+    res.json({ success: true, runId, state: 'aborting' });
+});
+
+/** POST /api/agent-theatre/validate-run - 保存 Profile 并验证可运行性 */
+app.post('/api/agent-theatre/validate-run', async (req, res) => {
+    const body = req.body || {};
+    const { name, yaml, probeInput } = body;
+
+    if (!name || !yaml) {
+        return res.status(400).json({ success: false, error: '需要 name 和 yaml' });
+    }
+
+    const af = getReadyAgentFramework();
+    if (!af) {
+        return res.status(503).json({ success: false, error: 'Agent框架未启用' });
+    }
+    const agentService = getAgentService();
+    if (!agentService || typeof agentService.run !== 'function') {
+        return res.status(503).json({ success: false, error: 'agent-framework 插件未加载' });
+    }
+    if (!llmService) {
+        return res.status(503).json({ success: false, error: 'runtime.llm 未配置' });
+    }
+
+    try {
+        // 步骤 1：保存（解析校验 + 热重载）
+        const def = af.agentLoader.save(name, yaml);
+
+        // 步骤 2：用探测输入跑一次
+        const input = probeInput || '你好';
+        const sessionKey = _theatreSessionKey(req);
+        const [platform, chatId] = sessionKey.split(':');
+        const runResult = await agentService.run(
+            name,
+            input,
+            {
+                platform: platform || 'native',
+                chatId: chatId || 'validate',
+            },
+            {
+                llm: llmService,
+                history: [],
+            },
+        );
+
+        const mainText = runResult.result?.getMainText?.() || runResult.text || '';
+        res.json({
+            success: true,
+            saved: true,
+            runId: runResult.runId,
+            text: mainText,
+            result: runResult.result?.toJSON?.() || null,
+        });
+    } catch (e) {
+        logger.error(`[theatre] validate-run 失败: ${e.message}`);
         res.status(500).json({ success: false, error: e.message });
     }
 });
