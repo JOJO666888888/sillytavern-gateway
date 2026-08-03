@@ -58,12 +58,98 @@ EOF
     chmod 600 "$ENV_FILE" 2>/dev/null || true
 }
 
-# ── 颜色输出 ──
-info()    { printf '\033[36m[INFO]\033[0m %s\n' "$*"; }
-warn()    { printf '\033[33m[WARN]\033[0m %s\n' "$*"; }
-error()   { printf '\033[31m[ERROR]\033[0m %s\n' "$*" >&2; }
-success() { printf '\033[32m[OK]\033[0m %s\n' "$*"; }
-dim()     { printf '\033[2m%s\033[0m\n' "$*"; }
+# ── RP 主题色彩方案 ──
+# 主色调：紫罗兰（魔法/神秘） | 辅助色：兰紫（梦幻） | 强调色：金橙（史诗/传奇）
+C_PRI='\033[38;5;99m'     # 主色调  紫罗兰
+C_SEC='\033[38;5;171m'    # 辅助色  兰紫
+C_ACC='\033[38;5;214m'    # 强调色  金橙
+C_OK='\033[38;5;42m'      # 成功    翡翠绿
+C_WARN='\033[38;5;178m'   # 警告    琥珀金
+C_ERR='\033[38;5;196m'    # 错误    绯红
+C_DIM='\033[38;5;244m'    # 暗色    石板灰
+C_BOLD='\033[1m'
+C_RESET='\033[0m'
+
+# ── RP 主题提示函数 ──
+info()    { printf "${C_BOLD}${C_SEC}✦${C_RESET} ${C_SEC}%s${C_RESET}\n" "$*"; }
+warn()    { printf "${C_BOLD}${C_WARN}⚠${C_RESET} ${C_WARN}%s${C_RESET}\n" "$*"; }
+error()   { printf "${C_BOLD}${C_ERR}✖${C_RESET} ${C_ERR}%s${C_RESET}\n" "$*" >&2; }
+success() { printf "${C_BOLD}${C_OK}✔${C_RESET} ${C_OK}%s${C_RESET}\n" "$*"; }
+dim()     { printf "${C_DIM}%s${C_RESET}\n" "$*"; }
+
+# ── RP ASCII 艺术标题（渐变 banner）──
+show_banner() {
+    local v="${SCRIPT_VERSION:-1.1.1}"
+    echo ""
+    printf "  ${C_PRI}⚔${C_RESET} ${C_ACC}✦${C_RESET}${C_DIM}══════════════════════════════════════${C_RESET}${C_ACC}✦${C_RESET} ${C_PRI}⚔${C_RESET}\n"
+    printf "       ${C_BOLD}${C_PRI}◆${C_RESET}  ${C_BOLD}${C_SEC}SILLYTAVERN GATEWAY${C_RESET}  ${C_BOLD}${C_PRI}◆${C_RESET}\n"
+    printf "        ${C_ACC}✦ 角色扮演叙事网关 · 一键管理 v${v} ✦${C_RESET}\n"
+    printf "  ${C_PRI}⚔${C_RESET} ${C_ACC}✦${C_RESET}${C_DIM}══════════════════════════════════════${C_RESET}${C_ACC}✦${C_RESET} ${C_PRI}⚔${C_RESET}\n"
+    echo ""
+}
+
+# ── RP 主题分隔线 ──
+rp_divider() {
+    printf "  ${C_DIM}─${C_RESET} ${C_ACC}✦${C_RESET} ${C_DIM}────────────────────────────────────${C_RESET} ${C_ACC}✦${C_RESET} ${C_DIM}─${C_RESET}\n"
+}
+
+# ── 金色高亮文本 ──
+rp_hl() { printf "${C_BOLD}${C_ACC}%s${C_RESET}" "$*"; }
+
+# ── 状态徽章 ──
+rp_badge() {
+    # rp_badge <状态>  → 状态: ok|warn|err|info
+    case "$1" in
+        ok)   printf "${C_BOLD}${C_OK}●${C_RESET} ${C_OK}%s${C_RESET}" "${2:-OK}" ;;
+        warn) printf "${C_BOLD}${C_WARN}●${C_RESET} ${C_WARN}%s${C_RESET}" "${2:-警告}" ;;
+        err)  printf "${C_BOLD}${C_ERR}●${C_RESET} ${C_ERR}%s${C_RESET}" "${2:-错误}" ;;
+        info) printf "${C_BOLD}${C_SEC}●${C_RESET} ${C_SEC}%s${C_RESET}" "${2:-信息}" ;;
+        *)    printf "%s" "$2" ;;
+    esac
+}
+
+# ── 加载动画（spinner）：后台任务旋转指示器 ──
+# 用法: rp_spin "正在下载" git clone <url> <dest>
+# 成功时静默返回 0，失败时回放日志尾部并返回非零
+rp_spin() {
+    local msg="$1"; shift
+    local out
+    out="$(mktemp /tmp/rp-spin.XXXXXX 2>/dev/null || echo /tmp/rp-spin.log)"
+    "$@" > "$out" 2>&1 &
+    local pid=$!
+    # 用数组避免 ${s:pos:1} 在 macOS bash3 按字节偏移导致的乱码
+    local -a spin=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+    local i=0
+    while kill -0 "$pid" 2>/dev/null; do
+        printf "\r  ${C_SEC}%s${C_RESET} ${msg}..." "${spin[$((i % 10))]}"
+        i=$((i + 1))
+        sleep 0.1
+    done
+    printf "\r\033[K"
+    wait "$pid"
+    local rc=$?
+    if [ "$rc" -ne 0 ]; then
+        tail -20 "$out" 2>/dev/null || true
+    fi
+    rm -f "$out" 2>/dev/null || true
+    return "$rc"
+}
+
+# ── 进度条（写入当前行，需配合 \r 刷新）──
+# 用法: progress_bar <已完成> <总量> [标签]
+progress_bar() {
+    local done="$1" total="$2" label="${3:-}"
+    local pct=0
+    if [ "${total:-0}" -gt 0 ] 2>/dev/null; then
+        pct=$((done * 100 / total))
+    fi
+    [ "$pct" -gt 100 ] 2>/dev/null && pct=100
+    local filled=$((pct / 4)) i
+    local bar=""
+    for ((i = 0; i < filled; i++)); do bar="${bar}${C_OK}▰${C_RESET}"; done
+    for ((i = filled; i < 25; i++)); do bar="${bar}${C_DIM}▱${C_RESET}"; done
+    printf "\r  ${C_ACC}▸${C_RESET} %s ${C_PRI}[%s]${C_RESET} ${C_SEC}%3d%%${C_RESET}  " "$label" "$bar" "$pct"
+}
 
 # ── 检测安装目录 ──
 # 优先级: 环境文件 > 脚本父目录 > 当前目录
@@ -240,17 +326,21 @@ get_auth_token_retry() {
         local pid=""
         [ -f "$PID_FILE" ] && pid="$(cat "$PID_FILE" 2>/dev/null)"
         if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+            printf "\r\033[K"
             return 1  # 进程已死，不再等待
         fi
         local token
         token="$(get_auth_token)"
         if [ -n "$token" ]; then
+            printf "\r\033[K"
             echo "$token"
             return 0
         fi
+        progress_bar "$((i + 1))" "$max_retries" "等待 Token 生成"
         sleep 1
         i=$((i + 1))
     done
+    printf "\r\033[K"
     return 1
 }
 
@@ -590,8 +680,7 @@ cmd_install() {
             return 1
         fi
     else
-        info "正在克隆仓库..."
-        git clone "$GATEWAY_REPO" "$dest" || { error "git clone 失败"; return 1; }
+        rp_spin "正在克隆仓库" git clone "$GATEWAY_REPO" "$dest" || { error "git clone 失败"; return 1; }
     fi
 
     cd "$dest"
@@ -602,8 +691,7 @@ cmd_install() {
     PLUGINS_DIR="$dest/plugins"
     PID_FILE="$CONFIG_DIR/gateway.pid"
 
-    info "安装依赖..."
-    npm install || { error "npm install 失败"; return 1; }
+    rp_spin "正在安装依赖" npm install || { error "npm install 失败"; return 1; }
 
     # ── SillyTavern 扩展目录链接 ──
     # 前端扩展必须在 ST 的 third-party 目录才能被加载
@@ -626,12 +714,12 @@ cmd_install() {
     local token=""
     token="$(get_auth_token_retry 15)"
     echo ""
-    echo "  ════════════════════════════════════════════════════════"
-    echo "  ║              鉴权 Token 获取与配置引导                  ║"
-    echo "  ════════════════════════════════════════════════════════"
+    printf "  ${C_PRI}╔════════════════════════════════════════════════════╗${C_RESET}\n"
+    printf "  ${C_PRI}║${C_RESET}   ${C_BOLD}${C_SEC}◆ 鉴权 Token 获取与配置引导${C_RESET}\n"
+    printf "  ${C_PRI}╠════════════════════════════════════════════════════╣${C_RESET}\n"
     echo ""
     if [ -n "$token" ]; then
-        printf "  \033[33m鉴权 Token:\033[0m %s\n" "$token"
+        printf "  ${C_BOLD}${C_ACC}鉴权 Token:${C_RESET} %s\n" "$token"
         echo ""
         echo "  ┌─────────────────────────────────────────────────────┐"
         echo "  │  请按以下步骤将 Token 填入 SillyTavern:               │"
@@ -900,10 +988,8 @@ cmd_update() {
     fi
 
     # 更新
-    info "拉取代码..."
-    git pull || { error "git pull 失败"; return 1; }
-    info "安装依赖..."
-    npm install || { error "npm install 失败"; return 1; }
+    rp_spin "正在拉取代码" git pull || { error "git pull 失败"; return 1; }
+    rp_spin "正在安装依赖" npm install || { error "npm install 失败"; return 1; }
 
     # 如运行中则重启
     if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE" 2>/dev/null)" 2>/dev/null; then
@@ -1082,14 +1168,19 @@ start_gateway() {
         info "已获取 Termux 唤醒锁"
     fi
 
-    # 等待启动
-    info "等待启动..."
+    # 等待启动（带旋转动画）
+    printf "  ${C_SEC}⠿${C_RESET} ${C_SEC}等待启动${C_RESET}..."
     local i=0
+    local -a spin_chars=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+    local si=0
     while [ $i -lt 15 ]; do
+        printf "\r  ${C_SEC}%s${C_RESET} ${C_SEC}等待启动${C_RESET}... ${C_DIM}(%d/15s)${C_RESET}" "${spin_chars[$((si % 10))]}" "$((i + 1))"
+        si=$((si + 1))
         sleep 1
         local c
         c="$(check_port)"
         if [ "$c" != "000" ] && [ "$c" != "" ]; then
+            printf "\r\033[K"
             success "网关已启动 (PID: $pid, 端口: $PORT)"
             save_env
             log_action "INFO" "网关启动 PID=$pid 端口=$PORT"
@@ -1097,6 +1188,7 @@ start_gateway() {
         fi
         # 检查进程是否还活着
         if ! kill -0 "$pid" 2>/dev/null; then
+            printf "\r\033[K"
             error "网关启动失败，进程已退出"
             dim "  查看日志: $LOG_DIR/gateway-stdout.log"
             rm -f "$PID_FILE"
@@ -1104,6 +1196,7 @@ start_gateway() {
         fi
         i=$((i + 1))
     done
+    printf "\r\033[K"
 
     warn "启动超时（15秒），网关可能仍在初始化中"
     dim "  查看日志: $LOG_DIR/gateway-stdout.log"
@@ -1198,32 +1291,32 @@ get_status() {
     fi
 
     echo ""
-    printf "  ╔══════════════════════════════════════╗\n"
-    printf "  ║     SillyTavern Gateway 状态          ║\n"
-    printf "  ╠══════════════════════════════════════╣\n"
+    printf "  ${C_PRI}╔════════════════════════════════════════════════════╗${C_RESET}\n"
+    printf "  ${C_PRI}║${C_RESET}   ${C_BOLD}${C_SEC}◆ SillyTavern Gateway 状态${C_RESET}\n"
+    printf "  ${C_PRI}╠════════════════════════════════════════════════════╣${C_RESET}\n"
 
     if $running; then
-        printf "  ║  状态: \033[32m● 运行中\033[0m  PID: %-12s║\n" "$pid"
+        printf "  ${C_PRI}║${C_RESET}  状态: ${C_BOLD}${C_OK}● 运行中${C_RESET}  ${C_DIM}PID %s${C_RESET}\n" "$pid"
         # 运行时长
         local uptime=""
         if [ "$OS_TYPE" = "macos" ] || [ "$OS_TYPE" = "linux" ] || [ "$OS_TYPE" = "termux" ]; then
             local elapsed
             elapsed="$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ' || echo "?")"
-            printf "  ║  运行时长: %-28s║\n" "$elapsed"
+            printf "  ${C_PRI}║${C_RESET}  ${C_DIM}运行时长:${C_RESET} ${C_SEC}%s${C_RESET}\n" "$elapsed"
         fi
-        printf "  ║  端口: %-31s║\n" "$PORT"
+        printf "  ${C_PRI}║${C_RESET}  ${C_DIM}端口:${C_RESET} ${C_ACC}%s${C_RESET}\n" "$PORT"
         # 版本
         local ver=""
         [ -f "$INSTALL_DIR/package.json" ] && ver="$(json_get "$INSTALL_DIR/package.json" "version")"
-        printf "  ║  版本: %-31s║\n" "${ver:-未知}"
-        printf "  ║  目录: %-31s║\n" "$INSTALL_DIR"
+        printf "  ${C_PRI}║${C_RESET}  ${C_DIM}版本:${C_RESET} ${C_SEC}%s${C_RESET}\n" "${ver:-未知}"
+        printf "  ${C_PRI}║${C_RESET}  ${C_DIM}目录:${C_RESET} ${C_DIM}%s${C_RESET}\n" "$INSTALL_DIR"
 
         # 平台连接状态
         local api_resp
         api_resp="$(api_call GET /api/gateway/status 2>/dev/null || echo "")"
         if [ -n "$api_resp" ] && [ "$api_resp" != "" ]; then
-            echo "  ╠══════════════════════════════════════╣"
-            echo "  ║  平台连接状态:                        ║"
+            printf "  ${C_PRI}╠════════════════════════════════════════════════════╣${C_RESET}\n"
+            printf "  ${C_PRI}║${C_RESET}  ${C_ACC}◈ 平台连接状态${C_RESET}:\n"
             echo "$api_resp" | node -e "
                 let d='';
                 process.stdin.on('data',c=>d+=c);
@@ -1234,21 +1327,22 @@ get_status() {
                         for(const[name,a]of Object.entries(adapters)){
                             const st=a.connected?'✅已连接':'❌未连接';
                             const en=a.enabled?'启用':'禁用';
-                            console.log('  ║  '+name+': '+st+' ('+en+')');
+                            const col=a.connected?'\x1b[38;5;42m':'\x1b[38;5;196m';
+                            console.log('  \x1b[38;5;99m║\x1b[0m    '+name+': '+col+st+'\x1b[0m ('+en+')');
                         }
                     }catch{}
                 });
             " 2>/dev/null || true
         fi
     else
-        printf "  ║  状态: \033[31m● 已停止\033[0m                 ║\n"
-        printf "  ║  端口: %-31s║\n" "$PORT"
+        printf "  ${C_PRI}║${C_RESET}  状态: ${C_BOLD}${C_ERR}● 已停止${C_RESET}\n"
+        printf "  ${C_PRI}║${C_RESET}  ${C_DIM}端口:${C_RESET} ${C_ACC}%s${C_RESET}\n" "$PORT"
         local ver=""
         [ -f "$INSTALL_DIR/package.json" ] && ver="$(json_get "$INSTALL_DIR/package.json" "version")"
-        printf "  ║  版本: %-31s║\n" "${ver:-未知}"
-        printf "  ║  目录: %-31s║\n" "$INSTALL_DIR"
+        printf "  ${C_PRI}║${C_RESET}  ${C_DIM}版本:${C_RESET} ${C_SEC}%s${C_RESET}\n" "${ver:-未知}"
+        printf "  ${C_PRI}║${C_RESET}  ${C_DIM}目录:${C_RESET} ${C_DIM}%s${C_RESET}\n" "$INSTALL_DIR"
     fi
-    printf "  ╚══════════════════════════════════════╝\n"
+    printf "  ${C_PRI}╚════════════════════════════════════════════════════╝${C_RESET}\n"
     echo ""
 }
 
@@ -2321,27 +2415,27 @@ cmd_runtime() {
         fi
 
         echo ""
-        printf "  ╔══════════════════════════════════════╗\n"
-        printf "  ║     自建推理管线配置                   ║\n"
-        printf "  ╠══════════════════════════════════════╣\n"
-        printf "  ║  状态: %-31s%s║\n" "$rt_status$api_status" ""
-        printf "  ║  LLM Provider: %-23s║\n" "${llm_provider:-未设置}"
-        printf "  ║  LLM Model:    %-23s║\n" "${llm_model:-未设置}"
-        printf "  ║  LLM Base URL: %-23s║\n" "${llm_baseurl:-默认}"
+        printf "  ${C_PRI}╔══════════════════════════════════════╗${C_RESET}\n"
+        printf "  ${C_PRI}║${C_RESET}      ${C_BOLD}${C_SEC}◆ 自建推理管线配置${C_RESET}\n"
+        printf "  ${C_PRI}╠══════════════════════════════════════╣${C_RESET}\n"
+        printf "  ${C_PRI}║${C_RESET}  状态: ${C_ACC}%s${C_RESET}${C_SEC}%s${C_RESET}\n" "$rt_status" "$api_status"
+        printf "  ${C_PRI}║${C_RESET}  ${C_DIM}LLM Provider:${C_RESET} ${C_SEC}%s${C_RESET}\n" "${llm_provider:-未设置}"
+        printf "  ${C_PRI}║${C_RESET}  ${C_DIM}LLM Model:${C_RESET}    ${C_SEC}%s${C_RESET}\n" "${llm_model:-未设置}"
+        printf "  ${C_PRI}║${C_RESET}  ${C_DIM}LLM Base URL:${C_RESET} ${C_SEC}%s${C_RESET}\n" "${llm_baseurl:-默认}"
         if [ -n "$llm_apikey" ]; then
             local masked_key="***${llm_apikey: -4}"
-            printf "  ║  LLM API Key:  %-23s║\n" "$masked_key"
+            printf "  ${C_PRI}║${C_RESET}  ${C_DIM}LLM API Key:${C_RESET}  ${C_SEC}%s${C_RESET}\n" "$masked_key"
         else
-            printf "  ║  LLM API Key:  %-23s║\n" "未设置"
+            printf "  ${C_PRI}║${C_RESET}  ${C_DIM}LLM API Key:${C_RESET}  ${C_WARN}未设置${C_RESET}\n"
         fi
-        printf "  ╠══════════════════════════════════════╣\n"
-        printf "  ║  1) 启用推理管线                      ║\n"
-        printf "  ║  2) 禁用推理管线                      ║\n"
-        printf "  ║  3) 配置 LLM                          ║\n"
-        printf "  ║  4) 查看运行状态                      ║\n"
-        printf "  ║  0) 返回                              ║\n"
-        printf "  ╚══════════════════════════════════════╝\n"
-        printf "  选择: "
+        printf "  ${C_PRI}╠══════════════════════════════════════╣${C_RESET}\n"
+        printf "  ${C_PRI}║${C_RESET}  ${C_BOLD}${C_ACC}1${C_RESET}) 启用推理管线\n"
+        printf "  ${C_PRI}║${C_RESET}  ${C_BOLD}${C_ACC}2${C_RESET}) 禁用推理管线\n"
+        printf "  ${C_PRI}║${C_RESET}  ${C_BOLD}${C_ACC}3${C_RESET}) 配置 LLM\n"
+        printf "  ${C_PRI}║${C_RESET}  ${C_BOLD}${C_ACC}4${C_RESET}) 查看运行状态\n"
+        printf "  ${C_PRI}║${C_RESET}  ${C_BOLD}${C_ACC}0${C_RESET}) 返回\n"
+        printf "  ${C_PRI}╚══════════════════════════════════════╝${C_RESET}\n"
+        printf "  ${C_ACC}➤ 选择: ${C_RESET}"
 
         local choice
         read -r choice
@@ -3394,9 +3488,9 @@ agent_show_editor_hints() {
 agent_interactive_menu() {
     while true; do
         echo ""
-        printf "  ╔══════════════════════════════════════╗\n"
-        printf "  ║       Agent 方案配置管理              ║\n"
-        printf "  ╠══════════════════════════════════════╣\n"
+        printf "  ${C_PRI}╔══════════════════════════════════════╗${C_RESET}\n"
+        printf "  ${C_PRI}║${C_RESET}       ${C_BOLD}${C_SEC}Agent 方案配置管理${C_RESET}\n"
+        printf "  ${C_PRI}╠══════════════════════════════════════╣${C_RESET}\n"
 
         # 显示 Agent 列表概览
         local d
@@ -3408,24 +3502,24 @@ agent_interactive_menu() {
             local content tname def tc sc
             content="$(cat "$f")"
             tname="$(agent_get_name "$content")"
-            if agent_is_default "$content"; then def=" [默认]"; else def=""; fi
+            if agent_is_default "$content"; then def=" ${C_ACC}[默认]${C_RESET}"; else def=""; fi
             tc="$(agent_yaml_count_tools "$content")"
             sc="$(agent_yaml_count_subagents "$content")"
-            printf "  ║  %d) %-14s%s 工具:%-2s 子代理:%-2s    ║\n" \
+            printf "  ${C_PRI}║${C_RESET}  ${C_BOLD}%d)${C_RESET} ${C_SEC}%-14s${C_RESET}%s ${C_DIM}工具:${C_RESET}${C_ACC}%-2s${C_RESET} ${C_DIM}子代理:${C_RESET}${C_ACC}%-2s${C_RESET}\n" \
                 "$idx" "${tname:-$(basename "$f" .yaml)}" "$def" "$tc" "$sc"
             agent_files+=("$tname")
             idx=$((idx + 1))
         done
-        [ ${#agent_files[@]} -eq 0 ] && printf "  ║  (暂无 Agent)                        ║\n"
+        [ ${#agent_files[@]} -eq 0 ] && printf "  ${C_PRI}║${C_RESET}  ${C_WARN}(暂无 Agent)${C_RESET}\n"
 
-        printf "  ╠══════════════════════════════════════╣\n"
-        printf "  ║  n) 新建    t) 从模板   c) 复制      ║\n"
-        printf "  ║  e) 编辑    v) 查看     d) 删除      ║\n"
-        printf "  ║  i) 导入    x) 导出     s) 子代理    ║\n"
-        printf "  ║  l) 日志    T) 工具                  ║\n"
-        printf "  ║  0) 返回                              ║\n"
-        printf "  ╚══════════════════════════════════════╝\n"
-        printf "  选择: "
+        printf "  ${C_PRI}╠══════════════════════════════════════╣${C_RESET}\n"
+        printf "  ${C_PRI}║${C_RESET}  ${C_BOLD}${C_ACC}n${C_RESET}) 新建    ${C_BOLD}${C_ACC}t${C_RESET}) 从模板   ${C_BOLD}${C_ACC}c${C_RESET}) 复制\n"
+        printf "  ${C_PRI}║${C_RESET}  ${C_BOLD}${C_ACC}e${C_RESET}) 编辑    ${C_BOLD}${C_ACC}v${C_RESET}) 查看     ${C_BOLD}${C_ACC}d${C_RESET}) 删除\n"
+        printf "  ${C_PRI}║${C_RESET}  ${C_BOLD}${C_ACC}i${C_RESET}) 导入    ${C_BOLD}${C_ACC}x${C_RESET}) 导出     ${C_BOLD}${C_ACC}s${C_RESET}) 子代理\n"
+        printf "  ${C_PRI}║${C_RESET}  ${C_BOLD}${C_ACC}l${C_RESET}) 日志    ${C_BOLD}${C_ACC}T${C_RESET}) 工具\n"
+        printf "  ${C_PRI}║${C_RESET}  ${C_BOLD}${C_ACC}0${C_RESET}) 返回\n"
+        printf "  ${C_PRI}╚══════════════════════════════════════╝${C_RESET}\n"
+        printf "  ${C_ACC}➤ 选择: ${C_RESET}"
 
         local choice; read -r choice
 
@@ -3526,9 +3620,9 @@ cmd_show_token() {
     [ -z "${INSTALL_DIR:-}" ] && { error "未检测到安装目录"; return 1; }
 
     echo ""
-    printf "  ╔══════════════════════════════════════════╗\n"
-    printf "  ║       网关鉴权 Token 获取                 ║\n"
-    printf "  ╠══════════════════════════════════════════╣\n"
+    printf "  ${C_PRI}╔════════════════════════════════════════════════════╗${C_RESET}\n"
+    printf "  ${C_PRI}║${C_RESET}   ${C_BOLD}${C_SEC}◆ 网关鉴权 Token 获取${C_RESET}\n"
+    printf "  ${C_PRI}╠════════════════════════════════════════════════════╣${C_RESET}\n"
 
     local token=""
     local token_source=""
@@ -3566,18 +3660,14 @@ cmd_show_token() {
 
     # 3. 输出结果
     if [ -n "$token" ]; then
-        printf "  ║  状态: \033[32m✅ 已获取\033[0m                    ║\n"
-        printf "  ╠══════════════════════════════════════════╣\n"
-        printf "  ║                                          ║\n"
-        printf "  ║  Token:                                  ║\n"
-        printf "  ║  \033[33m%s\033[0m\n" "$token"
-        printf "  ║                                          ║\n"
-        printf "  ║  来源: %-34s║\n" "${token_source:0:34}"
-        printf "  ║  端口: %-34s║\n" "$PORT"
-        printf "  ║                                          ║\n"
-        printf "  ║  连接地址: http://localhost:%-12s║\n" "$PORT"
-        printf "  ║                                          ║\n"
-        printf "  ╚══════════════════════════════════════════╝\n"
+        printf "  ${C_PRI}║${C_RESET}  状态: ${C_BOLD}${C_OK}✅ 已获取${C_RESET}\n"
+        printf "  ${C_PRI}╠════════════════════════════════════════════════════╣${C_RESET}\n"
+        printf "  ${C_PRI}║${C_RESET}   ${C_ACC}◈ Token 凭证${C_RESET}:\n"
+        printf "  ${C_BOLD}${C_ACC}  %s${C_RESET}\n" "$token"
+        printf "  ${C_PRI}║${C_RESET}  ${C_DIM}来源:${C_RESET} %s\n" "${token_source:0:36}"
+        printf "  ${C_PRI}║${C_RESET}  ${C_DIM}端口:${C_RESET} ${C_ACC}%s${C_RESET}\n" "$PORT"
+        printf "  ${C_PRI}║${C_RESET}  ${C_DIM}连接地址:${C_RESET} ${C_SEC}http://localhost:${PORT}${C_RESET}\n"
+        printf "  ${C_PRI}╚════════════════════════════════════════════════════╝${C_RESET}\n"
         echo ""
         info "在 SillyTavern 中使用:"
         dim "  1. 打开 SillyTavern → 扩展 → Multi-Platform Gateway"
@@ -3588,8 +3678,8 @@ cmd_show_token() {
         warn "⚠ Token 是网关的访问凭证，请勿泄露给他人"
         log_action "INFO" "用户获取了鉴权 Token"
     else
-        printf "  ║  状态: \033[31m❌ 未获取\033[0m                    ║\n"
-        printf "  ╚══════════════════════════════════════════╝\n"
+        printf "  ${C_PRI}║${C_RESET}  状态: ${C_BOLD}${C_ERR}❌ 未获取${C_RESET}\n"
+        printf "  ${C_PRI}╚════════════════════════════════════════════════════╝${C_RESET}\n"
         echo ""
         error "未能获取鉴权 Token"
         echo ""
@@ -3664,33 +3754,43 @@ EOF
 }
 
 main_menu() {
+    local first_show=1
     while true; do
         # 获取状态
-        local status_icon="● 已停止"
-        local status_color="\033[31m"
+        local running=false
+        local pid=""
         if [ -f "$PID_FILE" ] 2>/dev/null; then
-            local pid
             pid="$(cat "$PID_FILE" 2>/dev/null)"
             if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-                status_icon="● 运行中 (PID $pid)"
-                status_color="\033[32m"
+                running=true
             fi
         fi
 
+        # 首次进入展示完整 RP banner
+        if [ "$first_show" = "1" ]; then
+            show_banner
+            first_show=0
+        fi
+
         echo ""
-        printf "  ╔══════════════════════════════════════╗\n"
-        printf "  ║   SillyTavern Gateway 管理工具 v%-5s ║\n" "$SCRIPT_VERSION"
-        printf "  ╠══════════════════════════════════════╣\n"
-        printf "  ║  状态: ${status_color}%-22s\033[0m║\n" "$status_icon"
-        printf "  ╠══════════════════════════════════════╣\n"
-        printf "  ║  1) 安装      2) 更新      3) 卸载   ║\n"
-        printf "  ║  4) 启动      5) 停止      6) 重启   ║\n"
-        printf "  ║  7) 状态      8) 插件      9) 平台   ║\n"
-        printf "  ║ 10) Skill    11) 保活     12) 日志  ║\n"
-        printf "  ║ 13) 回滚     14) systemd  15) Token ║\n"
-        printf "  ║ 16) Runtime  17) Agent    0) 退出   ║\n"
-        printf "  ╚══════════════════════════════════════╝\n"
-        printf "  选择: "
+        printf "  ${C_PRI}╔════════════════════════════════════════════════════╗${C_RESET}\n"
+        printf "  ${C_PRI}║${C_RESET}   ${C_BOLD}${C_SEC}◆ SillyTavern Gateway${C_RESET} ${C_ACC}管理工具${C_RESET} ${C_DIM}v${SCRIPT_VERSION}${C_RESET}\n"
+        printf "  ${C_PRI}╠════════════════════════════════════════════════════╣${C_RESET}\n"
+        if $running; then
+            printf "  ${C_PRI}║${C_RESET}  状态: ${C_BOLD}${C_OK}● 运行中${C_RESET} ${C_DIM}(PID %s)${C_RESET}\n" "$pid"
+        else
+            printf "  ${C_PRI}║${C_RESET}  状态: ${C_BOLD}${C_ERR}● 已停止${C_RESET}\n"
+        fi
+        printf "  ${C_PRI}╠════════════════════════════════════════════════════╣${C_RESET}\n"
+        printf "  ${C_PRI}║${C_RESET}  ${C_ACC}⚔ 生命周期${C_RESET}   [1]安装  [2]更新  [3]卸载\n"
+        printf "  ${C_PRI}║${C_RESET}  ${C_SEC}⚡ 运行    ${C_RESET}   [4]启动  [5]停止  [6]重启\n"
+        printf "  ${C_PRI}║${C_RESET}  ${C_OK}◈ 扩展    ${C_RESET}   [7]状态  [8]插件  [9]平台\n"
+        printf "  ${C_PRI}║${C_RESET}  ${C_SEC}✦ 内容    ${C_RESET}  [10]Skill [11]保活 [12]日志\n"
+        printf "  ${C_PRI}║${C_RESET}  ${C_ACC}◆ 系统    ${C_RESET}  [13]回滚 [14]systemd [15]Token\n"
+        printf "  ${C_PRI}║${C_RESET}  ${C_WARN}† 高级    ${C_RESET}  [16]Runtime [17]Agent\n"
+        printf "  ${C_PRI}║${C_RESET}  ${C_ERR}✖ 退出    ${C_RESET}   [0]退出\n"
+        printf "  ${C_PRI}╚════════════════════════════════════════════════════╝${C_RESET}\n"
+        printf "  ${C_ACC}➤ 选择: ${C_RESET}"
 
         local choice
         read -r choice
