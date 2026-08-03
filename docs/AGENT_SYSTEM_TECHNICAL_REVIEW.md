@@ -350,9 +350,9 @@ IM 消息 → 入站过滤器(priority 50) → _filterInbound
 
 ### 8.1 性能优化
 
-1. **state-manager 批处理**：对齐 workspace-manager 的 100ms 写缓冲 + _seqCache 内存计数器模式。
-2. **记忆检索升级**：recall 增加倒排索引或嵌入向量检索（可插拔实现）。
-3. **agent 路径流式化**：为 `ctx.agent.run` 增加流式回调，让 token_delta 真正产出，剧场可渐进渲染。
+1. **state-manager 批处理**：对齐 workspace-manager 的 100ms 写缓冲 + _seqCache 内存计数器模式。（已实施，见 commit cbec8d2）
+2. **记忆检索升级**：~~recall 增加倒排索引或嵌入向量检索~~ → **已实现倒排索引**（`engine/memory-retriever.js`，TF-IDF 评分 + 配额制公平，懒构建 + update/append 显式失效，`recall` 契约不变）；**嵌入向量引擎（EmbeddingRetriever）已定义接口，排入产品规划队列**（`createRetriever('embedding')` 预留）。
+3. **agent 路径流式化**：~~为 `ctx.agent.run` 增加流式回调~~ → **已实现**（`runToolsStream` + token_delta 全链路，见 commit 95e900c）。
 
 ### 8.2 健壮性修复
 

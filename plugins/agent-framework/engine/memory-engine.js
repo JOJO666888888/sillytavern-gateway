@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { createRetriever } from './memory-retriever.js';
 
 const MEMORY_TYPES = ['project', 'reference', 'feedback', 'user'];
 
@@ -19,6 +20,11 @@ export class MemoryEngine {
         fs.mkdirSync(this.memoryDir, { recursive: true });
         this.summaryInterval = options.summaryInterval || 10;
         this.llm = null; // 运行时注入
+
+        // 任务 2b：可插拔检索器（默认倒排索引，嵌入引擎接口预留）
+        const retrieverType = options.retriever || 'inverted';
+        this._retriever = createRetriever(retrieverType, options.retrieverOptions || {});
+        this._retriever.setSources((type, ns) => this.read(type, ns));
     }
 
     setLLM(llm) {
@@ -81,6 +87,7 @@ export class MemoryEngine {
         if (!MEMORY_TYPES.includes(type)) return false;
         const filePath = this._getFilePath(type, namespace);
         fs.writeFileSync(filePath, content, 'utf-8');
+        this._retriever.invalidate(); // 倒排缓存失效，下次检索重建
         return true;
     }
 
@@ -98,55 +105,14 @@ export class MemoryEngine {
     }
 
     /**
-     * 检索记忆（关键词匹配 + 评分排序）
-     * - 配额制公平：每种命中类型（project/reference/feedback/user）至少保留其最佳 1 条，
-     *   再按全局分数填充剩余名额 —— 避免单类型段落多时占满结果上限
-     * - 命中关键词数作为分数，相关段落优先返回
+     * 检索记忆（委托检索器：倒排 + TF-IDF + 配额制公平）
      * - 返回对象保持 { type, content, namespace } 契约不变（score 仅内部排序用）
      * @param {string} query - 查询关键词（空格分隔多个词）
      * @param {number} [limit=5] - 结果上限
      * @param {string} [namespace] - 命名空间；未传或空则检索全局记忆
      */
     recall(query, limit = 5, namespace = '') {
-        const terms = query.split(/\s+/).map(t => t.toLowerCase()).filter(Boolean);
-        if (terms.length === 0) return [];
-
-        // 各类型内先按命中词数降序排序
-        const byType = [];
-        for (const type of MEMORY_TYPES) {
-            const content = this.read(type, namespace);
-            if (!content) continue;
-            const scored = [];
-            for (const para of content.split(/\n\n+/)) {
-                const lower = para.toLowerCase();
-                let hits = 0;
-                for (const t of terms) {
-                    if (lower.includes(t)) hits++;
-                }
-                if (hits > 0) {
-                    scored.push({ type, content: para, namespace: namespace || '', score: hits });
-                }
-            }
-            scored.sort((a, b) => b.score - a.score);
-            if (scored.length > 0) byType.push(scored);
-        }
-
-        if (byType.length === 0) return [];
-
-        // 配额：每种命中类型至少保留其最佳 1 条（保证四层记忆公平覆盖）
-        const result = [];
-        for (const list of byType) result.push(list[0]);
-
-        // 剩余名额按全局分数填充（各类型 top1 之外的段落）
-        if (result.length < limit) {
-            const rest = [];
-            for (const list of byType) rest.push(...list.slice(1));
-            rest.sort((a, b) => b.score - a.score);
-            result.push(...rest.slice(0, limit - result.length));
-        }
-
-        result.sort((a, b) => b.score - a.score);
-        return result.map(({ score, ...rest }) => rest);
+        return this._retriever.retrieve(query, limit, namespace).map(({ score, ...rest }) => rest);
     }
 
     /**
