@@ -90,6 +90,6 @@
 
 ## 5. 遗留与建议
 
-- `panel-agent-theatre.js` / `GET /agent-theatre.js`（server/index.js）为历史遗留（已标注废弃，无引用方），建议后续清理。
+- `panel-agent-theatre.js` / `panel-ai-modifier.js` 及其公开路由（`GET /agent-theatre.js`、`GET /ai-modifier.js`）已随遗留清理任务删除（独立页 `public/agent.js` 已完整接管剧场与 AI 修改功能；后端 `ai-modify` API 与 `server/ai-modifier.js` 保留）。
 - `public/agent.js` 前端 URL 校验与 `server/agent-frontend.js` 为双实现（浏览器/Node 双环境，未抽共享），改动时需同步。
 - 独立页连接配置使用独立 localStorage 键（`gateway_agent_url`/`gateway_agent_token`），未与 ST 面板存储键互通。

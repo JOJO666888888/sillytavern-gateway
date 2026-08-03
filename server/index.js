@@ -1062,37 +1062,6 @@ app.post('/api/agent-theatre/ai-modify/undo', aiModifierHandlers.undo);
 /** GET /api/agent-theatre/ai-modify/history - 查询撤销历史计数 */
 app.get('/api/agent-theatre/ai-modify/history', aiModifierHandlers.history);
 
-/**
- * GET /agent-theatre.js - 公开提供 panel-agent-theatre.js 脚本（无需鉴权）。
- *
- * panel.html 在 "Agent 剧场" 区块展开时动态注入此脚本。
- * 放在 /api/* 之外，绕过鉴权中间件（脚本本身无敏感数据）。
- */
-app.get('/agent-theatre.js', (req, res) => {
-    const file = path.join(REPO_ROOT, 'panel-agent-theatre.js');
-    if (!fs.existsSync(file)) {
-        return res.status(404).send('// panel-agent-theatre.js not found');
-    }
-    res.type('application/javascript; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache');
-    fs.createReadStream(file).pipe(res);
-});
-
-/**
- * GET /ai-modifier.js - 公开提供 panel-ai-modifier.js 脚本（无需鉴权）。
- *
- * panel.html 在 "Agent 剧场" 区块展开时随 panel-agent-theatre.js 之后动态注入。
- */
-app.get('/ai-modifier.js', (req, res) => {
-    const file = path.join(REPO_ROOT, 'panel-ai-modifier.js');
-    if (!fs.existsSync(file)) {
-        return res.status(404).send('// panel-ai-modifier.js not found');
-    }
-    res.type('application/javascript; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache');
-    fs.createReadStream(file).pipe(res);
-});
-
 // ==================== Agent 前端 URL 校验 API ====================
 //
 // 供独立 Agent 前端页面（public/agent.html）"验证"按钮调用。

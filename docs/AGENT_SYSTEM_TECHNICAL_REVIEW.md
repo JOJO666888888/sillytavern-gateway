@@ -83,7 +83,7 @@ SillyTavern Gateway（下称"网关"）通过 **插件化 Agent 平台**（Path 
 | 事件回放 | `GET /api/agent-theatre/events/:runId` | `server/index.js` |
 | 状态查询 | `GET /api/agent-theatre/state` | `server/index.js` |
 | AI 修改 | `POST /api/agent-theatre/ai-modify/plan\|apply\|undo` + `GET /history`（ai-modifier） | `server/index.js` |
-| 公开脚本 | `GET /agent-theatre.js` / `/ai-modifier.js`（绕过鉴权） | `server/index.js` |
+| 独立页 | `GET /agent` + `public/agent.{html,css,js}` | Agent 专用前端（独立页面） |
 
 ### 2.5 `ctx.agent` 服务（暴露给其他插件的 API）
 
@@ -286,7 +286,7 @@ IM 消息 → 入站过滤器(priority 50) → _filterInbound
 | `/api/agent-theatre/events/:runId` | GET | 是 | 事件回放 |
 | `/api/agent-theatre/state` | GET | 是 | 状态查询 |
 | `/api/agent-theatre/ai-modify/*` | POST/GET | 是 | AI 改写 |
-| `/agent-theatre.js` `/ai-modifier.js` | GET | **否** | 公开前端脚本 |
+| `/agent` + `public/*` | GET | 否 | 独立 Agent 前端静态页（页面自身 API 请求携带 token） |
 | LLM Provider | HTTPS | 配置中 | openai / claude / gemini |
 
 ---
@@ -335,7 +335,7 @@ IM 消息 → 入站过滤器(priority 50) → _filterInbound
 |---|---|
 | 能力收窄非沙箱 | plugin-permissions 诚实声明：权限系统是能力边界，非安全隔离；恶意插件不可信 |
 | 本地后端无 apiKey 警告 | LLM apiKey 存于本地配置，插件 fs 权限可读取；应提示用户风险 |
-| 公开脚本绕过鉴权 | `/agent-theatre.js` `/ai-modifier.js` 无需鉴权（前端脚本，风险有限但需知悉） |
+| 公开静态页 | `/agent` 与 `public/*` 无需鉴权（前端脚本与页面本身无敏感数据，API 请求由前端携带 token） |
 
 ### 7.4 待推进事项（Phase 3）
 

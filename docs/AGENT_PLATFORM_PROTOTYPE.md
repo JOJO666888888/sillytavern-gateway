@@ -635,7 +635,7 @@ data/plugins/agent-framework/
 
 1. **打开面板**：在 ST 顶部设置栏点击「多平台网关」展开面板（或访问网关地址）。
 2. **连接网关**：在「连接」区块填入地址与 Token，点击连接。
-3. **展开 Agent 剧场**：点击「Agent 剧场」区块标题展开。面板会自动注入 `panel-agent-theatre.js` 脚本。
+3. **打开 Agent 剧场**：Agent 剧场已迁移至独立页面（`/agent`），由网关面板「Agent 前端」按钮或直接访问进入，不再注入 `panel-agent-theatre.js`（该脚本已随模块 B 改造移除）。
 4. **选择 Profile**：顶部工具栏选择 Agent Profile（如 `default-rp`），可选填文风/视角/会话标识。
 5. **开始对话**：在中间输入框输入消息（Ctrl+Enter 发送），或点击选项区的按钮触发选项回调。
 6. **实时反馈**：
