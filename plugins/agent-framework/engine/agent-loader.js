@@ -1,25 +1,34 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { load as yamlLoad } from 'js-yaml';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
- * 简易 YAML 解析器
+ * YAML 解析入口。
+ *
+ * 升级方案（js-yaml 4.x）：优先使用 js-yaml 的 load 解析，支持 YAML 1.2 全特性
+ * （锚点/别名、合并键、flow 语法、多行块标量、复杂嵌套等）。
+ * 失败时回退到简易解析（simpleYAMLParse），保证旧容错行为不回归：
+ * 面板编辑写出非法 YAML 时，定义加载不崩溃。
+ */
+function parseYAML(text) {
+    try {
+        const doc = yamlLoad(text);
+        return doc && typeof doc === 'object' ? doc : null;
+    } catch (e) {
+        // js-yaml 解析失败（非法语法等），回退简易解析
+        try { return simpleYAMLParse(text); }
+        catch (_) { return null; }
+    }
+}
+
+/**
+ * 简易 YAML 解析器（回退用）
  * 支持基本格式：键值对、多行字符串(|)、列表(-)、嵌套缩进
  * 不支持复杂 YAML 特性（锚点、引用、流式语法等）
  */
-function parseYAML(text) {
-    // 使用 node 内置能力，如果没有 js-yaml 就用简单解析
-    try {
-        // 尝试动态导入 js-yaml（如果安装了的话）
-        const yaml = globalThis._jsYaml;
-        if (yaml) return yaml.load(text);
-    } catch (e) { /* fall through */ }
-    
-    // 简易解析
-    return simpleYAMLParse(text);
-}
 
 function simpleYAMLParse(text) {
     const lines = text.split('\n');

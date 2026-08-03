@@ -357,7 +357,7 @@ IM 消息 → 入站过滤器(priority 50) → _filterInbound
 ### 8.2 健壮性修复
 
 4. **统一路径校验**：file-tools 改用 `dataDir + path.sep` 边界检查（或复用 workspace-manager 的 `_safeResolve`）。
-5. **YAML 解析器替换**：引入成熟的 yaml 解析库（js-yaml），或明确声明支持子集。
+5. **YAML 解析器替换**：✅ 已完成——引入 js-yaml 4.x（`engine/agent-loader.js`），支持 YAML 1.2 全特性（锚点/别名/合并键/flow 语法），非法 YAML 回退简易解析，兼容性/性能已测试（`test/yaml-loader.test.js`）。
 
 ### 8.3 架构演进
 
