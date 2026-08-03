@@ -9,12 +9,19 @@ import path from 'path';
 
 export function createFileTools(dataDir) {
     /**
-     * 将用户提供的相对路径解析为工作区内的绝对路径，并防止目录穿越
+     * 将用户提供的相对路径解析为工作区内的绝对路径，并防止目录穿越。
+     * 对齐 workspace-manager._safeResolve 的边界检查：拒绝绝对路径，
+     * 并用 path.relative 判断是否逃逸 dataDir（杜绝前缀相似目录绕过，
+     * 如 dataDir2/xxx 对 startsWith(dataDir) 的误放行）。
      */
     function resolvePath(relativePath) {
+        if (typeof relativePath !== 'string' || path.isAbsolute(relativePath)) {
+            return null;
+        }
         const resolved = path.resolve(dataDir, relativePath);
-        // 防止目录穿越：确保解析后的路径在 dataDir 内
-        if (!resolved.startsWith(dataDir)) {
+        const rel = path.relative(dataDir, resolved);
+        if (rel === '') return resolved;
+        if (rel.startsWith('..') || path.isAbsolute(rel)) {
             return null;
         }
         return resolved;

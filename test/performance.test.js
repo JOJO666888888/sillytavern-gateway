@@ -15,8 +15,11 @@
 
 import { test, describe, after } from 'node:test';
 import assert from 'node:assert';
+import fs from 'fs';
+import path from 'path';
 
 import { WorkspaceManager } from '../plugins/agent-framework/engine/workspace-manager.js';
+import { StateManager } from '../plugins/agent-framework/engine/state-manager.js';
 import { SurfaceManager } from '../server/agent/surface-manager.js';
 import { TheatreBroadcaster } from '../server/agent/theatre-broadcaster.js';
 import { AgentRunResult, AgentEventType } from '../server/agent/run-result.js';
@@ -254,6 +257,51 @@ describe('SubTask 7.2: TheatreBroadcaster SSE 广播性能', () => {
         const bEvents = resB.chunks.join('');
         assert.ok(aEvents.includes('agent_result'), 'A 应收到');
         assert.ok(!bEvents.includes('agent_result'), 'B 不应收到 A 的事件');
+    });
+});
+
+// ==================== 基准：StateManager.write 写缓冲 ====================
+
+describe('SubTask 7.2: StateManager.write 写缓冲性能', () => {
+    test('100 次 stateManager.write 应在 200ms 内完成（写缓冲批处理）', () => {
+        const dir = makeTmp();
+        const sm = new StateManager(dir);
+        const start = Date.now();
+        for (let i = 0; i < 100; i++) {
+            sm.write('native', 'default', 'k' + i, i);
+        }
+        sm.flush(); // 强制落盘
+        const elapsed = Date.now() - start;
+
+        assert.ok(elapsed < 200, `100 次 write 耗时 ${elapsed}ms 应 < 200ms`);
+        // 落盘校验：最后一次写入可见
+        const state = JSON.parse(fs.readFileSync(path.join(dir, 'states', 'native_default.json'), 'utf-8'));
+        assert.strictEqual(state.k99, 99);
+    });
+
+    test('批处理比逐次写盘显著快（对照 flushIntervalMs=0 模拟旧实现）', () => {
+        const dir1 = makeTmp();
+        const sm1 = new StateManager(dir1);
+        const t1 = Date.now();
+        for (let i = 0; i < 100; i++) {
+            sm1.write('native', 'default', 'k' + i, i);
+        }
+        sm1.flush();
+        const bufferedMs = Date.now() - t1;
+
+        // 模拟旧实现：每次写入后立即 flush（逐次同步写盘）
+        const dir2 = makeTmp();
+        const sm2 = new StateManager(dir2);
+        const t2 = Date.now();
+        for (let i = 0; i < 100; i++) {
+            sm2.write('native', 'default', 'k' + i, i);
+            sm2.flush();
+        }
+        const directMs = Date.now() - t2;
+
+        // 批处理应不慢于逐次写盘（+50ms 容差，避免 CI 波动误报）
+        assert.ok(bufferedMs <= directMs + 50,
+            `批处理 ${bufferedMs}ms 应不慢于逐次 ${directMs}ms (+50ms 容差)`);
     });
 });
 

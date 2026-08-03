@@ -430,6 +430,39 @@ describe('SubTask 6.8 - MemoryEngine namespace 隔离', () => {
         assert.strictEqual(engine.read('project', undefined), '全局内容');
         assert.strictEqual(engine.read('project', null), '全局内容');
     });
+
+    test('recall 多类型公平：单类型段落多不占满结果上限', () => {
+        const engine = new MemoryEngine(env.dir);
+        // project 有 6 个匹配段落，reference 只有 1 个 —— 旧实现 project 前 5 段会占满 limit
+        engine.update('project', [
+            '段落一 关于龙', '段落二 关于龙', '段落三 关于龙',
+            '段落四 关于龙', '段落五 关于龙', '段落六 关于龙',
+        ].join('\n\n'));
+        engine.update('reference', '只有一条关于龙的参考');
+
+        const results = engine.recall('龙', 5);
+        assert.ok(results.length <= 5, `结果数应 <= limit(5)，实际 ${results.length}`);
+        assert.ok(results.some(r => r.type === 'reference'), 'reference 类型应有机会被检索到');
+    });
+
+    test('recall 按命中关键词数排序', () => {
+        const engine = new MemoryEngine(env.dir);
+        engine.update('project', '龙 与 宝藏');
+        engine.update('reference', '龙');
+
+        const results = engine.recall('龙 宝藏', 5);
+        assert.ok(results.length >= 2, '应同时返回两段记忆');
+        assert.strictEqual(results[0].type, 'project', '命中 2 词的段落应排最前');
+        assert.strictEqual(results[0].content, '龙 与 宝藏');
+        // 返回契约不含 score 字段
+        assert.ok(!('score' in results[0]), '返回对象不应包含 score 字段');
+    });
+
+    test('recall 空查询返回空数组', () => {
+        const engine = new MemoryEngine(env.dir);
+        engine.update('project', '任意内容');
+        assert.deepStrictEqual(engine.recall('   ', 5), []);
+    });
 });
 
 // ==================== namespace 隔离：StateManager ====================
@@ -465,8 +498,39 @@ describe('SubTask 6.8 - StateManager namespace 隔离', () => {
     test('namespace 状态文件存储在独立子目录', () => {
         const sm = new StateManager(env.dir);
         sm.write('native', 'default', 'hp', 80, 'char:alice');
+        sm.flush(); // 写缓冲批处理：断言文件存在前先落盘
         const expectedPath = path.join(env.dir, 'states', 'char', 'alice', 'native_default.json');
         assert.ok(fs.existsSync(expectedPath), `状态文件应存储在 ${expectedPath}`);
+    });
+
+    test('写缓冲合并：同文件多次写入只落盘最后一次（flush 后）', () => {
+        const sm = new StateManager(env.dir);
+        sm.write('native', 'default', 'hp', 100);
+        sm.write('native', 'default', 'hp', 50);
+        sm.write('native', 'default', 'hp', 30);
+        sm.flush();
+        const filePath = path.join(env.dir, 'states', 'native_default.json');
+        const state = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+        assert.strictEqual(state.hp, 30, '最终值应为最后一次写入');
+    });
+
+    test('未 flush 前 cache 已可见（读一致性）', () => {
+        const sm = new StateManager(env.dir);
+        sm.write('native', 'default', 'hp', 80);
+        // 写缓冲未落盘，但内存 cache 立即一致
+        assert.strictEqual(sm.read('native', 'default', 'hp'), 80);
+        sm.flush();
+        const state = JSON.parse(fs.readFileSync(path.join(env.dir, 'states', 'native_default.json'), 'utf-8'));
+        assert.strictEqual(state.hp, 80);
+    });
+
+    test('dispose 幂等且落盘缓冲', () => {
+        const sm = new StateManager(env.dir);
+        sm.write('native', 'default', 'a', 1);
+        sm.dispose();
+        sm.dispose(); // 多次调用不抛错
+        const state = JSON.parse(fs.readFileSync(path.join(env.dir, 'states', 'native_default.json'), 'utf-8'));
+        assert.strictEqual(state.a, 1);
     });
 
     test('未传 namespace 时向后兼容', () => {

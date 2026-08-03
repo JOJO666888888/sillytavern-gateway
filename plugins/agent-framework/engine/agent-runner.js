@@ -168,6 +168,10 @@ export class AgentRunner {
             if (this.workspaceManager?.flushRun) {
                 try { this.workspaceManager.flushRun(runId); } catch { /* ignore */ }
             }
+            // 状态写缓冲落盘，保证 agent 工具循环中 state.write 的变更即时持久化
+            if (this.stateManager?.flush) {
+                try { this.stateManager.flush(); } catch { /* ignore */ }
+            }
             this.activeRuns.delete(runId);
         }
     }

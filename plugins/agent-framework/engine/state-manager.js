@@ -16,6 +16,10 @@ export class StateManager {
         this.stateDir = path.join(dataDir, 'states');
         fs.mkdirSync(this.stateDir, { recursive: true });
         this.cache = new Map(); // key: "[namespace:]platform:chatId" -> state object
+        /** @type {Map<string, string>} filePath -> 待写 JSON 字符串（写缓冲，100ms 批量落盘） */
+        this._pendingWrites = new Map();
+        this._flushTimer = null;
+        this._flushIntervalMs = 100;
     }
 
     /**
@@ -42,11 +46,7 @@ export class StateManager {
         if (!sub) {
             return path.join(this.stateDir, `${safeName}.json`);
         }
-        const nsDir = path.join(this.stateDir, sub);
-        if (!fs.existsSync(nsDir)) {
-            fs.mkdirSync(nsDir, { recursive: true });
-        }
-        return path.join(nsDir, `${safeName}.json`);
+        return path.join(this.stateDir, sub, `${safeName}.json`);
     }
 
     _load(platform, chatId, namespace = '') {
@@ -64,11 +64,66 @@ export class StateManager {
         return state;
     }
 
+    /**
+     * 将状态写入缓冲，100ms 批量落盘（对齐 workspace-manager 的写缓冲模式）。
+     * 同一文件多次写入会合并为最后一次内容，显著降低高频 state.write 的磁盘 IO。
+     * @param {string} platform
+     * @param {string} chatId
+     * @param {string} [namespace]
+     * @private
+     */
     _save(platform, chatId, namespace = '') {
         const key = this._getKey(platform, chatId, namespace);
         const state = this.cache.get(key) || {};
         const filePath = this._getFilePath(platform, chatId, namespace);
-        fs.writeFileSync(filePath, JSON.stringify(state, null, 2), 'utf-8');
+        this._pendingWrites.set(filePath, JSON.stringify(state, null, 2));
+        this._scheduleFlush();
+    }
+
+    /**
+     * 安排延迟 flush（100ms 内多次写入只落盘一次）。
+     * @private
+     */
+    _scheduleFlush() {
+        if (this._flushTimer) return;
+        this._flushTimer = setTimeout(() => {
+            this._flushTimer = null;
+            this._flushNow();
+        }, this._flushIntervalMs);
+        if (this._flushTimer.unref) this._flushTimer.unref();
+    }
+
+    /**
+     * 把缓冲中的所有状态一次性写入磁盘（建父目录 + 写 JSON）。
+     * @private
+     */
+    _flushNow() {
+        if (this._pendingWrites.size === 0) {
+            if (this._flushTimer) { clearTimeout(this._flushTimer); this._flushTimer = null; }
+            return;
+        }
+        const writes = Array.from(this._pendingWrites.entries());
+        this._pendingWrites.clear();
+        for (const [filePath, content] of writes) {
+            fs.mkdirSync(path.dirname(filePath), { recursive: true });
+            fs.writeFileSync(filePath, content, 'utf-8');
+        }
+    }
+
+    /**
+     * 立即落盘所有待写状态（取消延迟定时器）。
+     * 供测试与外部在需要磁盘一致性的时机（如 run 收尾、进程退出前）调用。
+     */
+    flush() {
+        if (this._flushTimer) { clearTimeout(this._flushTimer); this._flushTimer = null; }
+        this._flushNow();
+    }
+
+    /**
+     * 清理：落盘剩余缓冲。进程退出/插件卸载前应调用。
+     */
+    dispose() {
+        this.flush();
     }
 
     /**

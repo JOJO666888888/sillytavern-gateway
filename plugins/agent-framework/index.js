@@ -176,6 +176,10 @@ export default class AgentFrameworkPlugin extends GatewayPlugin {
             try { this._removeNativeSurface(); } catch (_) {}
             this._removeNativeSurface = null;
         }
+        // 落盘 state 写缓冲，避免卸载时丢失状态
+        if (this.stateManager?.dispose) {
+            try { this.stateManager.dispose(); } catch (_) {}
+        }
     }
 
     /**

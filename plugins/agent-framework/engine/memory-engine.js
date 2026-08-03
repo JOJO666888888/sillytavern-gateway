@@ -98,26 +98,55 @@ export class MemoryEngine {
     }
 
     /**
-     * 检索记忆（简单关键词匹配）
-     * @param {string} query - 查询关键词
+     * 检索记忆（关键词匹配 + 评分排序）
+     * - 配额制公平：每种命中类型（project/reference/feedback/user）至少保留其最佳 1 条，
+     *   再按全局分数填充剩余名额 —— 避免单类型段落多时占满结果上限
+     * - 命中关键词数作为分数，相关段落优先返回
+     * - 返回对象保持 { type, content, namespace } 契约不变（score 仅内部排序用）
+     * @param {string} query - 查询关键词（空格分隔多个词）
      * @param {number} [limit=5] - 结果上限
      * @param {string} [namespace] - 命名空间；未传或空则检索全局记忆
      */
     recall(query, limit = 5, namespace = '') {
-        const results = [];
+        const terms = query.split(/\s+/).map(t => t.toLowerCase()).filter(Boolean);
+        if (terms.length === 0) return [];
+
+        // 各类型内先按命中词数降序排序
+        const byType = [];
         for (const type of MEMORY_TYPES) {
             const content = this.read(type, namespace);
             if (!content) continue;
-            // 简单关键词匹配：按段落分割，匹配关键词
-            const paragraphs = content.split(/\n\n+/);
-            for (const para of paragraphs) {
-                if (query.split(/\s+/).some(q => para.toLowerCase().includes(q.toLowerCase()))) {
-                    results.push({ type, content: para, namespace: namespace || '' });
+            const scored = [];
+            for (const para of content.split(/\n\n+/)) {
+                const lower = para.toLowerCase();
+                let hits = 0;
+                for (const t of terms) {
+                    if (lower.includes(t)) hits++;
                 }
-                if (results.length >= limit) return results;
+                if (hits > 0) {
+                    scored.push({ type, content: para, namespace: namespace || '', score: hits });
+                }
             }
+            scored.sort((a, b) => b.score - a.score);
+            if (scored.length > 0) byType.push(scored);
         }
-        return results;
+
+        if (byType.length === 0) return [];
+
+        // 配额：每种命中类型至少保留其最佳 1 条（保证四层记忆公平覆盖）
+        const result = [];
+        for (const list of byType) result.push(list[0]);
+
+        // 剩余名额按全局分数填充（各类型 top1 之外的段落）
+        if (result.length < limit) {
+            const rest = [];
+            for (const list of byType) rest.push(...list.slice(1));
+            rest.sort((a, b) => b.score - a.score);
+            result.push(...rest.slice(0, limit - result.length));
+        }
+
+        result.sort((a, b) => b.score - a.score);
+        return result.map(({ score, ...rest }) => rest);
     }
 
     /**
