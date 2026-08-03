@@ -24,6 +24,7 @@ import { SubagentDispatcher } from './engine/subagent-dispatcher.js';
 import { StateManager } from './engine/state-manager.js';
 import { MemoryEngine } from './engine/memory-engine.js';
 import { WorkspaceManager } from './engine/workspace-manager.js';
+import { CollabBus } from './engine/collab-bus.js';
 import { ContextBuilder, extractDefinitionVar } from '../../server/agent/context-builder.js';
 
 // 工具
@@ -33,6 +34,7 @@ import { createNarrativeTools } from './tools/narrative-tools.js';
 import { createFileTools } from './tools/file-tools.js';
 import { createSkillTools } from './tools/skill-tools.js';
 import { createSubAgentTools } from './tools/subagent-tools.js';
+import { createCollabTools } from './tools/collab-tools.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.resolve(__dirname, '..', '..', 'data', 'plugins', 'agent-framework');
@@ -78,6 +80,8 @@ export default class AgentFrameworkPlugin extends GatewayPlugin {
         });
         this.contextBuilder = new ContextBuilder({ dataDir: DATA_DIR });
         this.workspaceManager = new WorkspaceManager({ dataRoot: DATA_DIR, logger: this.logger });
+        // Phase 3 多 Agent 协作：进程内协作总线（run 级生命周期，run 结束清理）
+        this.collabBus = new CollabBus();
         this.subagentDispatcher = new SubagentDispatcher({
             agentLoader: this.agentLoader,
             toolRegistry: this.toolRegistry,
@@ -91,6 +95,7 @@ export default class AgentFrameworkPlugin extends GatewayPlugin {
             memoryEngine: this.memoryEngine,
             contextBuilder: this.contextBuilder,
             workspaceManager: this.workspaceManager,
+            collabBus: this.collabBus,
             logger: this.logger,
             // 流式 token 增量 → theatre-broadcaster 实时推送到 Agent 剧场 SSE 客户端
             onTokenDelta: (runId, delta, full, turn, sessionKey) =>
@@ -104,6 +109,7 @@ export default class AgentFrameworkPlugin extends GatewayPlugin {
         this.toolRegistry.registerAll(createFileTools(DATA_DIR), 'framework');
         this.toolRegistry.registerAll(createSkillTools(DATA_DIR), 'framework');
         this.toolRegistry.registerAll(createSubAgentTools(this.subagentDispatcher), 'framework');
+        this.toolRegistry.registerAll(createCollabTools(this.collabBus), 'framework');
 
         // 4. 暴露 agent 服务（供其他插件通过 ctx.agent 访问）
         this._agentService = {
@@ -117,6 +123,16 @@ export default class AgentFrameworkPlugin extends GatewayPlugin {
             },
             getStatus: () => this.agentRunner.getStatus(),
             getWorkspaceManager: () => this.workspaceManager,
+            /**
+             * 协作总线（Phase 3）：供其他插件编程式发布/订阅 run 内协作消息。
+             * publish(msg) / request(topic, payload, opts) / subscribe(topic, handler) / unsubscribe(topic, handler)
+             */
+            collab: {
+                publish: (msg) => this.collabBus.publish(msg),
+                request: (topic, payload, opts) => this.collabBus.request(topic, payload, opts),
+                subscribe: (topic, handler) => this.collabBus.subscribe(topic, handler),
+                unsubscribe: (topic, handler) => this.collabBus.unsubscribe(topic, handler),
+            },
             /**
              * 触发一次 Agent run，产出 AgentRunResult。
              *

@@ -15,6 +15,8 @@ export class AgentRunner {
         this.contextBuilder = options.contextBuilder || new ContextBuilder(options);
         this.workspaceManager = options.workspaceManager || null;
         this.logger = options.logger || console;
+        // Phase 3 多 Agent 协作：run 级协作总线（run 结束时 close 清理）
+        this.collabBus = options.collabBus || null;
         // 流式 token 增量回调：onTokenDelta(runId, delta, fullText, turn, sessionKey)
         this.onTokenDelta = typeof options.onTokenDelta === 'function' ? options.onTokenDelta : null;
         this.activeRuns = new Map();
@@ -71,7 +73,8 @@ export class AgentRunner {
 
             // 3. 获取工具声明 + 执行器（包装一层以捕获事件 / 检测草稿生成 / 写 journal）
             const tools = this.toolRegistry.getDeclarations(definition.tools || []);
-            const baseExecutor = this.toolRegistry.createExecutor({ session, ctx, definition });
+            // runId 注入工具执行上下文，供 collab.* 协作工具绑定消息
+            const baseExecutor = this.toolRegistry.createExecutor({ session, ctx, definition, runId });
             const executor = this._wrapExecutor(baseExecutor, runId, useWorkspace, capturedEvents, () => { draftGenerated = true; });
 
             // 4. 构建 pipeline（如有阶段定义）
@@ -107,7 +110,7 @@ export class AgentRunner {
             // 7. 检查子代理触发
             let subAgentResults = [];
             if (definition.subAgents && definition.subAgents.length > 0) {
-                subAgentResults = await this._triggerSubAgents(definition, result.text, session, ctx);
+                subAgentResults = await this._triggerSubAgents(definition, result.text, session, ctx, runId);
                 for (const r of subAgentResults) {
                     capturedEvents.push({ type: AgentEventType.SUBAGENT, payload: r });
                     if (useWorkspace) this.workspaceManager.appendEvent(runId, 'subagent', r);
@@ -185,6 +188,10 @@ export class AgentRunner {
             if (this.stateManager?.flush) {
                 try { this.stateManager.flush(); } catch { /* ignore */ }
             }
+            // Phase 3：run 结束清理协作总线（邮箱 + 挂起请求）
+            if (this.collabBus?.close) {
+                try { this.collabBus.close(runId); } catch { /* ignore */ }
+            }
             this.activeRuns.delete(runId);
         }
     }
@@ -227,9 +234,20 @@ export class AgentRunner {
     }
 
     /**
-     * 触发子代理
+     * 触发子代理（Phase 3 增强：任务分配算法）
+     * - 常规 / split_by_section / sequential_feedback / consensus
+     *   - split_by_section：按 sections 数把主稿文本切块分别 dispatch（并行）
+     *   - sequential_feedback：链式传稿（前一个子代理产出注入下一个的 parentResult）
+     *   - consensus：本期按顺序反馈基础版执行 + 记录 warn（完整实现排期）
+     * @param {Object} definition - Agent 定义
+     * @param {string} mainResult - 主 Agent 产出文本
+     * @param {Object} session - 会话状态
+     * @param {Object} ctx - 插件上下文
+     * @param {string} runId - 当前 run ID（绑定协作消息）
+     * @returns {Array} 子代理结果数组
+     * @private
      */
-    async _triggerSubAgents(definition, mainResult, session, ctx) {
+    async _triggerSubAgents(definition, mainResult, session, ctx, runId) {
         const results = [];
         const triggers = definition.subAgents || [];
 
@@ -242,22 +260,92 @@ export class AgentRunner {
         const sequential = afterDraft.filter(s => !s.parallel);
 
         if (parallel.length > 0) {
-            const promises = parallel.map(s => 
-                this.subagentDispatcher.dispatch(s.name, `审查以下内容:\n${mainResult}`, session, ctx)
+            const settled = await Promise.allSettled(
+                parallel.map(s => this._runSubAgentSpec(s, mainResult, session, ctx, runId))
             );
-            const parallelResults = await Promise.allSettled(promises);
-            for (const r of parallelResults) {
-                if (r.status === 'fulfilled') results.push(r.value);
-                else results.push({ error: r.reason?.message || '子代理执行失败' });
+            for (const r of settled) {
+                results.push(r.status === 'fulfilled' ? r.value : { error: r.reason?.message || '子代理执行失败' });
             }
         }
 
+        // 顺序子代理：sequential_feedback 链式传稿（下一子代理以上一产出为参考）
+        let chainResult = mainResult;
         for (const s of sequential) {
-            const result = await this.subagentDispatcher.dispatch(s.name, `审查以下内容:\n${mainResult}`, session, ctx);
+            if (s.task?.divide === 'consensus') {
+                this.logger.warn?.('[agent-runner] consensus 任务分配模式设计就绪、完整实现排期，本期按顺序反馈基础版执行');
+            }
+            const result = await this._runSubAgentSpec(s, chainResult, session, ctx, runId);
             results.push(result);
+            if (result && !result.error && result.text) chainResult = result.text;
         }
 
         return results;
+    }
+
+    /**
+     * 按子代理定义的 task.divide 执行单个子代理（Phase 3 任务分配）。
+     * @param {Object} spec - 子代理定义 { name, trigger, parallel, task? }
+     * @param {string} mainResult - 主稿文本
+     * @param {Object} session
+     * @param {Object} ctx
+     * @param {string} runId
+     * @returns {Promise<Object>} 单结果或 { agent, mode, results }（split 模式）
+     * @private
+     */
+    async _runSubAgentSpec(spec, mainResult, session, ctx, runId) {
+        const taskSpec = spec.task || {};
+        if (taskSpec.divide === 'split_by_section') {
+            const n = Math.max(1, Array.isArray(taskSpec.sections) ? taskSpec.sections.length : 1);
+            const chunks = this._splitBySections(mainResult, n);
+            const tasks = chunks.map((chunk, i) => {
+                const sec = Array.isArray(taskSpec.sections) ? taskSpec.sections[i] : null;
+                const desc = typeof sec === 'string' ? sec : (sec?.task || '');
+                return { chunk, desc };
+            });
+            const settled = await Promise.allSettled(
+                tasks.map(({ chunk, desc }) =>
+                    this.subagentDispatcher.dispatch(
+                        spec.name,
+                        `审查以下内容片段${desc ? `（${desc}）` : ''}:\n${chunk}`,
+                        session,
+                        ctx,
+                        { runId, parentResult: mainResult },
+                    )
+                )
+            );
+            const results = settled.map(r => (
+                r.status === 'fulfilled' ? r.value : { error: r.reason?.message || '子代理执行失败', agent: spec.name }
+            ));
+            return { agent: spec.name, mode: 'split_by_section', count: results.length, results };
+        }
+
+        // 常规 / sequential_feedback / consensus（基础版）：单次调度，主稿作为协作参考注入
+        return this.subagentDispatcher.dispatch(
+            spec.name,
+            `审查以下内容:\n${mainResult}`,
+            session,
+            ctx,
+            { runId, parentResult: mainResult },
+        );
+    }
+
+    /**
+     * 把主稿文本按段落（\n\n+）平均切分为 n 块（连续分区）。
+     * @param {string} text
+     * @param {number} n
+     * @returns {string[]}
+     * @private
+     */
+    _splitBySections(text, n) {
+        if (!text) return Array.from({ length: n }, () => '');
+        const paras = text.split(/\n\n+/).filter(p => p.trim());
+        if (n <= 1 || paras.length <= 1) return [text];
+        const perChunk = Math.ceil(paras.length / n);
+        const chunks = [];
+        for (let i = 0; i < n; i++) {
+            chunks.push(paras.slice(i * perChunk, (i + 1) * perChunk).join('\n\n'));
+        }
+        return chunks;
     }
 
     /**

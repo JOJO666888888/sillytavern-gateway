@@ -40,7 +40,9 @@ export class SubagentDispatcher {
      * @param {string} task - 任务描述
      * @param {Object} session - 会话状态
      * @param {Object} ctx - 插件上下文
-     * @param {Object} options - { injectFiles?, tools?, await?, namespace? }
+     * @param {Object} options - { injectFiles?, tools?, await?, namespace?, runId?, parentResult? }
+     *   - runId：当前 run ID，注入工具执行上下文（供 collab.* 协作工具绑定消息）
+     *   - parentResult：主 Agent 产出，追加进子代理上下文供协作参考
      * @returns {Object} { text, steps, agent, namespace }
      */
     async dispatch(agentName, task, session, ctx, options = {}) {
@@ -62,6 +64,13 @@ export class SubagentDispatcher {
 
         // 构建独立上下文（不包含主 Agent 的历史消息）
         const messages = this.contextBuilder.build(definition, scopedSession, [], task);
+        // Phase 3 协作：主 Agent 产出作为参考注入子代理上下文
+        if (options.parentResult) {
+            messages.push({
+                role: 'user',
+                content: `【主Agent产出（供协作参考，无需复述，只在其上执行你的任务）】\n${options.parentResult}`,
+            });
+        }
 
         // 获取工具声明（使用子代理自己的白名单）
         const tools = this.toolRegistry.getDeclarations(definition.tools || []);
@@ -70,6 +79,7 @@ export class SubagentDispatcher {
             ctx,
             definition,
             isSubAgent: true,
+            runId: options.runId || '',
         });
 
         // 执行
