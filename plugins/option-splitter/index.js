@@ -1,8 +1,13 @@
 /**
- * 选项拆分发送插件 v2.0
+ * 选项拆分发送插件 v2.1
  *
  * 将 AI 回复中的结构化内容（选项/卡片/要点）从正文中拆出，
  * 先发送正文（含幕后信息），再逐条补发每个选项。
+ *
+ * v2.1 改进（与 message-to-image 的跨插件时序协作）：
+ *   - 正文被 message-to-image 渲染成图片时，选项补发会阻塞等待
+ *     "全部图片发送完成"（media-sent 事件，key 匹配）后再开始，
+ *     杜绝"选项先于正文图片出现"的乱序；超时兜底直接补发
  *
  * v2.0 改进（依赖网关 R1/R2/R3 改进）：
  *   - 使用 bypassFilters（R1）替代 _optionSplitterPassthrough 标记属性
@@ -13,6 +18,13 @@
 
 import { GatewayPlugin } from '../../server/plugin-sdk.js';
 import { OutboundMessage } from '../../server/adapters/base-adapter.js';
+import {
+    MEDIA_SENT_EVENT,
+    MEDIA_WAIT_KEY,
+    createMediaWaitKey,
+    shouldWaitForMedia,
+    waitForMediaSent,
+} from './media-wait.js';
 
 // 默认选项行匹配：>选项一：... / >选项2：...（支持中文/阿拉伯数字，全角/半角冒号）
 const DEFAULT_OPTION_LINE_REGEX = /^>\s*选项\s*([一二三四五六七八九十\d]+)\s*[：:]\s*(.+)$/gm;
@@ -69,6 +81,7 @@ export default class OptionSplitterPlugin extends GatewayPlugin {
             initialDelay: 500,
             optionDelay: 800,
             optionPrefix: '',
+            mediaWaitTimeout: 20000,
             applyToPlatforms: [],
         };
         for (const [key, val] of Object.entries(defaults)) {
@@ -105,7 +118,15 @@ export default class OptionSplitterPlugin extends GatewayPlugin {
         }
 
         // sequential 模式：正文先发，选项逐条补发
-        this._sendOptionsSequential(message, options);
+        // 时序关键：正文可能被 message-to-image 渲染成图片（耗时数秒），
+        // 必须等图片全部发完再补发选项，否则选项会先于正文图片出现。
+        const waitForMedia = shouldWaitForMedia(this._services.gateway, Boolean(mainText));
+        if (waitForMedia) {
+            message.metadata = message.metadata || {};
+            message.metadata[MEDIA_WAIT_KEY] = createMediaWaitKey();
+            this.logger.info(`正文将渲染为图片，选项补发等待图片发送完成`, { key: message.metadata[MEDIA_WAIT_KEY] });
+        }
+        this._sendOptionsSequential(message, options, waitForMedia);
 
         if (!mainText) {
             this.logger.info(`拆分: 正文为空，仅发送 ${options.length} 条选项`);
@@ -249,20 +270,38 @@ export default class OptionSplitterPlugin extends GatewayPlugin {
 
     /**
      * 逐条补发选项（使用 R1 bypassFilters + R2 skipDedup）
+     * @param {OutboundMessage} originalMessage - 原始消息（含 metadata 等待键）
+     * @param {Array<{content: string, raw: string, index: string}>} options - 拆出的选项
+     * @param {boolean} waitForMedia - 是否先等待图片发送完成（正文被渲染为图片时）
      */
-    _sendOptionsSequential(originalMessage, options) {
+    _sendOptionsSequential(originalMessage, options, waitForMedia = false) {
         const gateway = this._services.gateway;
         if (!gateway || typeof gateway.sendDirect !== 'function') {
             this.logger.warn('网关不支持 sendDirect，选项无法补发');
             return;
         }
 
-        const initialDelay = Number(this.getConfig('initialDelay')) || 500;
-        const optionDelay = Number(this.getConfig('optionDelay')) || 800;
+        const initialDelay = Number(this.getConfig('initialDelay')) ?? 500;
+        const optionDelay = Number(this.getConfig('optionDelay')) ?? 800;
+        const mediaWaitTimeout = Number(this.getConfig('mediaWaitTimeout')) ?? 20000;
         const stripPrefix = this.getConfig('stripPrefix') !== false;
         const prefix = this.getConfig('optionPrefix') || '';
 
         (async () => {
+            // ⭐ 图片等待闸门：正文会被 message-to-image 渲染成图片，
+            // 阻塞到"全部图片发送完成"的信号（media-sent 事件，key 匹配）再开始，
+            // 彻底避免选项先于正文图片出现。超时（图片插件未启用/未渲染等）则兜底直接补发。
+            if (waitForMedia) {
+                const key = originalMessage.metadata?.[MEDIA_WAIT_KEY];
+                const imagesDone = await waitForMediaSent(gateway, key, mediaWaitTimeout, MEDIA_SENT_EVENT);
+                this.logger.info(
+                    imagesDone
+                        ? `图片已全部发送完成，开始补发 ${options.length} 条选项`
+                        : `等待图片超时(${mediaWaitTimeout}ms)，兜底直接补发 ${options.length} 条选项`,
+                    { key }
+                );
+            }
+
             for (let i = 0; i < options.length; i++) {
                 try {
                     await this._delay(i === 0 ? initialDelay : optionDelay);
@@ -336,6 +375,7 @@ export default class OptionSplitterPlugin extends GatewayPlugin {
                 `  发送策略: ${this.getConfig('outputFormat') || 'sequential'}`,
                 `  首选项延迟: ${this.getConfig('initialDelay') ?? 500} ms`,
                 `  选项间间隔: ${this.getConfig('optionDelay') ?? 800} ms`,
+                `  图片等待超时: ${this.getConfig('mediaWaitTimeout') ?? 20000} ms`,
                 `  去前缀: ${this.getConfig('stripPrefix') !== false ? '是' : '否'}`,
                 `  选项前缀: "${this.getConfig('optionPrefix') || ''}"`,
                 `  生效平台: ${p.length ? p.join(', ') : '全部'}`,

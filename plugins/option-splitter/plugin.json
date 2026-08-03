@@ -1,9 +1,9 @@
 {
     "name": "option-splitter",
     "displayName": "选项拆分发送",
-    "version": "2.0.0",
+    "version": "2.1.0",
     "author": "gateway-plugin",
-    "description": "将AI回复中的结构化内容（选项/卡片/要点）从正文中拆出，先发送正文，再逐条补发。支持自定义提取规则与发送策略。",
+    "description": "将AI回复中的结构化内容（选项/卡片/要点）从正文中拆出，先发送正文，再逐条补发。支持自定义提取规则与发送策略；正文被渲染为图片时会等待图片全部发送完成后再补发选项，保证时序正确。",
     "main": "index.js",
     "priority": 100,
     "enabled": true,
@@ -63,11 +63,17 @@
             "description": "补发每条选项时添加的前缀（如加emoji编号 🔵）",
             "ui": { "group": "发送", "order": 8, "placeholder": "留空=无前缀" }
         },
+        "mediaWaitTimeout": {
+            "type": "number",
+            "default": 20000,
+            "description": "等待图片发送完成的最长时间（毫秒）。正文被 message-to-image 渲染成图片时，选项会等图片全部发完再补发；超过此时间仍未收到完成信号（图片插件未启用/未渲染等）则直接补发选项",
+            "ui": { "group": "发送", "order": 9, "min": 1000, "step": 1000, "unit": "ms" }
+        },
         "applyToPlatforms": {
             "type": "array",
             "default": [],
             "description": "仅对这些平台生效（空数组=全部平台），如 qq,telegram",
-            "ui": { "group": "过滤", "order": 9, "inputMode": "csv", "placeholder": "qq,telegram,discord" }
+            "ui": { "group": "过滤", "order": 10, "inputMode": "csv", "placeholder": "qq,telegram,discord" }
         }
     }
 }
