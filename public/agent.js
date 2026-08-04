@@ -456,6 +456,9 @@
 
     var streaming = { runId: null, el: null };
 
+    /** 滚动跟随开关：距底部 <80px 时自动跟随新内容，用户上翻阅读时暂停 */
+    var autoScroll = true;
+
     function gatewayUrl() { return agentSettings.url; }
     function gatewayToken() { return agentSettings.token; }
 
@@ -532,7 +535,10 @@
             badge.className = 'gateway-status-badge ' + (connected ? 'connected' : 'disconnected');
         }
         var stateBadge = $('agent_theatre_state');
-        if (stateBadge) stateBadge.textContent = connected ? '在线' : '离线';
+        if (stateBadge) {
+            stateBadge.textContent = connected ? '在线' : '离线';
+            stateBadge.className = 'agent-header-state ' + (connected ? 'online' : 'offline');
+        }
     }
 
     // ==================== Agent 剧场：正文 / 事件 ====================
@@ -545,7 +551,7 @@
         renderRunState();
     }
 
-    // P2: 按 runState 渲染停止按钮 / 发送按钮 / 状态徽标
+    // P2: 按 runState 渲染停止按钮 / 发送按钮 / 状态徽标（适配 ST 圆形图标按钮）
     function renderRunState() {
         var stopBtn = $('agent_theatre_stop');
         var sendBtn = $('agent_theatre_send');
@@ -554,16 +560,16 @@
             if (!stopBtn) return;
             stopBtn.style.display = 'none';
             stopBtn.disabled = false;
-            stopBtn.innerHTML = '<i class="fa-solid fa-stop"></i> 停止';
+            stopBtn.innerHTML = '<i class="fa-solid fa-stop"></i>';
         };
         switch (theatre.runState) {
             case 'running':
-                if (stopBtn) { stopBtn.style.display = ''; stopBtn.disabled = false; stopBtn.innerHTML = '<i class="fa-solid fa-stop"></i> 停止'; }
+                if (stopBtn) { stopBtn.style.display = ''; stopBtn.disabled = false; stopBtn.innerHTML = '<i class="fa-solid fa-stop"></i>'; }
                 if (sendBtn) sendBtn.disabled = true;
                 if (badge) { badge.textContent = '生成中...'; badge.className = 'gateway-status-badge connected'; }
                 break;
             case 'aborting':
-                if (stopBtn) { stopBtn.style.display = ''; stopBtn.disabled = true; stopBtn.textContent = '停止中...'; }
+                if (stopBtn) { stopBtn.style.display = ''; stopBtn.disabled = true; stopBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>'; }
                 if (sendBtn) sendBtn.disabled = true;
                 if (badge) { badge.textContent = '正在停止...'; badge.className = 'gateway-status-badge connected'; }
                 break;
@@ -596,26 +602,39 @@
             if (streaming.el && streaming.el.parentNode) streaming.el.remove();
             streaming.el = null;
         }
+        // 清除「思考中」占位光标
         var cursor = $('agent_theatre_cursor');
         if (cursor) cursor.remove();
         if (!streaming.el) {
             var empty = el.querySelector('.gateway-empty-hint');
             if (empty) empty.remove();
-            var p = document.createElement('div');
-            p.className = 'gateway-theatre-paragraph gateway-theatre-streaming';
-            p.textContent = data.delta;
-            el.appendChild(p);
-            streaming.el = p;
+            streaming.el = createAssistantMsg(data.delta, true);
+            el.appendChild(streaming.el);
         } else {
-            streaming.el.textContent += data.delta;
+            var bubble = streaming.el.querySelector('.agent-chat-bubble');
+            if (bubble) {
+                var c = bubble.querySelector('.agent-chat-cursor');
+                if (c) c.remove();
+                bubble.textContent += data.delta;
+                appendCursor(bubble);
+            }
         }
-        el.scrollTop = el.scrollHeight;
+        if (autoScroll) el.scrollTop = el.scrollHeight;
     }
 
     function clearStreamingPreview() {
         if (streaming.el && streaming.el.parentNode) streaming.el.remove();
         streaming.el = null;
         streaming.runId = null;
+    }
+
+    /** 移除当前流式/占位 AI 消息与思考光标（发送失败 / run 未启动时恢复干净状态） */
+    function removePendingPlaceholder() {
+        if (streaming.el && streaming.el.parentNode) streaming.el.remove();
+        streaming.el = null;
+        streaming.runId = null;
+        var c = $('agent_theatre_cursor');
+        if (c) c.remove();
     }
 
     function handleAgentResult(payload) {
@@ -657,15 +676,9 @@
         if (!el) return;
         var empty = el.querySelector('.gateway-empty-hint');
         if (empty) empty.remove();
-        var paragraphs = String(text).split(/\n\n+/);
-        for (var i = 0; i < paragraphs.length; i++) {
-            if (!paragraphs[i].trim()) continue;
-            var p = document.createElement('div');
-            p.className = 'gateway-theatre-paragraph';
-            p.textContent = paragraphs[i];
-            el.appendChild(p);
-        }
-        el.scrollTop = el.scrollHeight;
+        var msg = createAssistantMsg(text, false);
+        el.appendChild(msg);
+        if (autoScroll) el.scrollTop = el.scrollHeight;
     }
 
     function clearNarrative() {
@@ -693,7 +706,7 @@
         var html = '';
         for (var i = 0; i < options.length; i++) {
             var o = options[i];
-            html += '<button class="menu_button gateway-theatre-option-btn" ' +
+            html += '<button class="menu_button gateway-theatre-option-btn agent-chat-option-btn" ' +
                 'data-callback="' + esc(o.callbackId || '') + '" ' +
                 'data-text="' + esc(o.text || '') + '" ' +
                 'title="点击提交此选项">' +
@@ -831,12 +844,22 @@
         if (narrative) {
             var empty = narrative.querySelector('.gateway-empty-hint');
             if (empty) empty.remove();
-            var cursor = document.createElement('div');
-            cursor.className = 'gateway-theatre-cursor';
+            // 先清掉旧流式/占位消息，创建「思考中」占位 AI 气泡
+            // （流式首帧到达后由 handleTokenDelta 接管为正式流式消息）
+            if (streaming.el && streaming.el.parentNode) streaming.el.remove();
+            streaming.el = null;
+            streaming.runId = null;
+            var placeholder = createAssistantMsg('', false);
+            placeholder.classList.add('pending');
+            var bubble = placeholder.querySelector('.agent-chat-bubble');
+            var cursor = document.createElement('span');
+            cursor.className = 'agent-chat-cursor';
             cursor.id = 'agent_theatre_cursor';
             cursor.textContent = '▍ Agent 思考中...';
-            narrative.appendChild(cursor);
-            narrative.scrollTop = narrative.scrollHeight;
+            bubble.appendChild(cursor);
+            narrative.appendChild(placeholder);
+            streaming.el = placeholder;
+            if (autoScroll) narrative.scrollTop = narrative.scrollHeight;
         }
 
         // P2: 本地状态机先进入 running（SSE run_state 事件随后到达驱动 UI，此处兜底保证按钮即时反应）
@@ -847,9 +870,8 @@
             method: 'POST',
             body: JSON.stringify(body),
         }).then(function (data) {
-            var c = $('agent_theatre_cursor');
-            if (c) c.remove();
             if (!data.success) {
+                removePendingPlaceholder();
                 showToast('error', 'Agent run 失败: ' + (data.error || '未知错误'));
                 // P2: run 未启动，恢复状态机
                 theatre.runState = 'idle';
@@ -861,10 +883,46 @@
                 handleAgentResult({ runId: data.runId, result: data.result, text: data.text });
             }
         }).catch(function (e) {
-            var c = $('agent_theatre_cursor');
-            if (c) c.remove();
+            removePendingPlaceholder();
             showToast('error', '发送失败: ' + e.message);
         });
+    }
+
+    /**
+     * 创建 AI 消息结构：.agent-chat-msg.assistant > 头像 + 气泡
+     * streamingFlag=true 时气泡带 .streaming class 并在末尾追加流式光标 ▍
+     */
+    function createAssistantMsg(text, streamingFlag) {
+        var msg = document.createElement('div');
+        msg.className = 'agent-chat-msg assistant' + (streamingFlag ? ' streaming' : '');
+        var avatar = document.createElement('div');
+        avatar.className = 'agent-chat-avatar';
+        avatar.innerHTML = '<i class="fa-solid fa-robot"></i>';
+        var bubble = document.createElement('div');
+        bubble.className = 'agent-chat-bubble';
+        if (streamingFlag) bubble.classList.add('streaming');
+        bubble.textContent = text || '';
+        if (streamingFlag) appendCursor(bubble);
+        msg.appendChild(avatar);
+        if (!streamingFlag) {
+            // 重试按钮：hover 显示，点击重跑上一轮（事件委托绑定在 narrative 上）
+            var retry = document.createElement('button');
+            retry.className = 'agent-chat-retry';
+            retry.title = '重跑上一轮';
+            retry.innerHTML = '<i class="fa-solid fa-rotate-left"></i> 重试';
+            bubble.appendChild(retry);
+        }
+        msg.appendChild(bubble);
+        return msg;
+    }
+
+    /** 在气泡末尾追加流式光标 ▍ */
+    function appendCursor(bubble) {
+        if (!bubble) return;
+        var s = document.createElement('span');
+        s.className = 'agent-chat-cursor';
+        s.textContent = '▍';
+        bubble.appendChild(s);
     }
 
     function appendUserMessage(text) {
@@ -872,11 +930,18 @@
         if (!el) return;
         var empty = el.querySelector('.gateway-empty-hint');
         if (empty) empty.remove();
-        var p = document.createElement('div');
-        p.className = 'gateway-theatre-user-msg';
-        p.textContent = '【你】' + text;
-        el.appendChild(p);
-        el.scrollTop = el.scrollHeight;
+        var msg = document.createElement('div');
+        msg.className = 'agent-chat-msg user';
+        var avatar = document.createElement('div');
+        avatar.className = 'agent-chat-avatar';
+        avatar.innerHTML = '<i class="fa-solid fa-user"></i>';
+        var bubble = document.createElement('div');
+        bubble.className = 'agent-chat-bubble';
+        bubble.textContent = text;
+        msg.appendChild(avatar);
+        msg.appendChild(bubble);
+        el.appendChild(msg);
+        if (autoScroll) el.scrollTop = el.scrollHeight;
     }
 
     // ==================== Agent 剧场：Profile 加载 / 保存（热重载） ====================
@@ -1296,10 +1361,29 @@
 
         var inputEl = $('agent_theatre_input');
         if (inputEl) inputEl.addEventListener('keydown', function (e) {
-            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+            // ST 风格：Enter 发送 / Shift+Enter 换行
+            if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
-                if (sendBtn) sendBtn.click();
+                if (sendBtn && !sendBtn.disabled) sendBtn.click();
             }
+        });
+
+        // 滚动跟随：距底部 <80px 时跟随新内容，用户上翻阅读时暂停
+        var narrativeEl = $('agent_theatre_narrative');
+        if (narrativeEl) narrativeEl.addEventListener('scroll', function () {
+            var dist = this.scrollHeight - this.scrollTop - this.clientHeight;
+            autoScroll = dist < 80;
+        });
+
+        // AI 消息气泡「重试」按钮（事件委托，点击重跑上一轮）
+        if (narrativeEl) narrativeEl.addEventListener('click', function (e) {
+            var btn = e.target.closest('.agent-chat-retry');
+            if (!btn) return;
+            if (!theatre.lastResult) {
+                showToast('warning', '还没有上一轮可重跑');
+                return;
+            }
+            sendInput(null, null, { rerun: true });
         });
 
         // 选项点击（事件委托）
@@ -1365,6 +1449,59 @@
         if (aiUndoBtn) aiUndoBtn.addEventListener('click', undoModify);
     }
 
+    // ==================== 顶栏下拉面板 ====================
+
+    /** 关闭所有已打开的下拉面板 */
+    function closeDropdowns() {
+        var all = document.querySelectorAll('.agent-dropdown.open');
+        for (var j = 0; j < all.length; j++) all[j].classList.remove('open');
+    }
+
+    /** 下拉开合：点击 toggle 切换 .open；点击面板外关闭；ESC 关闭 */
+    function bindDropdowns() {
+        var toggles = ['agent_settings_toggle', 'agent_status_toggle'];
+        for (var i = 0; i < toggles.length; i++) {
+            var t = $(toggles[i]);
+            if (!t) continue;
+            t.addEventListener('click', function (e) {
+                e.stopPropagation();
+                var dropdown = this.closest('.agent-dropdown');
+                if (!dropdown) return;
+                var willOpen = !dropdown.classList.contains('open');
+                closeDropdowns();
+                if (willOpen) dropdown.classList.add('open');
+            });
+        }
+        // 关闭按钮：点击 × 关闭对应下拉面板
+        var closeBtns = document.querySelectorAll('[data-close-dropdown]');
+        for (var j = 0; j < closeBtns.length; j++) {
+            closeBtns[j].addEventListener('click', function (e) {
+                e.stopPropagation();
+                var dropdown = this.closest('.agent-dropdown');
+                if (dropdown) dropdown.classList.remove('open');
+            });
+        }
+        // 点击面板外区域关闭所有下拉（面板内点击不影响原有表单/折叠事件）
+        document.addEventListener('click', function (e) {
+            if (e.target.closest('.agent-dropdown')) return;
+            closeDropdowns();
+        });
+        // ESC 关闭
+        document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape') closeDropdowns();
+        });
+    }
+
+    /** 抽屉开合：点击 toggle 切换 .open */
+    function bindDrawer() {
+        var toggle = $('agent_toolbar_toggle');
+        if (!toggle) return;
+        toggle.addEventListener('click', function () {
+            var drawer = $('agent_toolbar_drawer');
+            if (drawer) drawer.classList.toggle('open');
+        });
+    }
+
     // ==================== 初始化 ====================
 
     function theatreReconnect() {
@@ -1397,6 +1534,8 @@
 
         bindCollapsibles();
         bindModalEvents();
+        bindDropdowns();
+        bindDrawer();
         bindEvents();
 
         // 拉取设置并填充
