@@ -7,6 +7,8 @@
   "scripts": {
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
+    "agent": "node server/agent-server.js",
+    "agent:dev": "node --watch server/agent-server.js",
     "test": "node --test --test-force-exit test/*.test.js",
     "test:watch": "node --test --watch test/*.test.js",
     "token": "node scripts/show-token.js"
