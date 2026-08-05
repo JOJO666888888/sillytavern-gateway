@@ -863,6 +863,13 @@ select.text_pole { cursor: pointer; }
 
 .agent-chat-toolbar .text_pole { flex: 0 1 auto; min-width: 110px; }
 
+/* 角色卡 / 世界书选择器：稍宽以保证可读性 */
+.agent-chat-toolbar #agent_theatre_character,
+.agent-chat-toolbar #agent_theatre_worldbook { min-width: 130px; }
+
+/* 角色卡指示徽标：紧跟选择器，不被推到最右 */
+.agent-chat-toolbar #agent_theatre_character_badge { margin-left: 0; flex-shrink: 0; }
+
 .agent-chat-toolbar .gateway-status-badge { margin-left: auto; }
 
 /* 聊天主区 */
@@ -873,6 +880,7 @@ select.text_pole { cursor: pointer; }
     flex: 1;
     overflow-y: auto;
     padding: 16px 0;
+    transition: opacity 0.2s ease;
 }
 
 /* 单条消息：头像 + 气泡 */

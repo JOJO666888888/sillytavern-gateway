@@ -26,6 +26,7 @@
     var LS_TOKEN = 'gateway_agent_token';
     var LS_FRONTEND_URL = 'gateway_agent_frontend_url';
     var LS_GUIDE_DONE = 'gateway_agent_guide_done';
+    var LS_CHAT_PREFIX = 'agent_chat_history_';
 
     // ==================== 工具函数 ====================
 
@@ -449,6 +450,8 @@
         timelineEvents: [],
         profile: 'default-rp',
         session: 'native:default',
+        character: '',
+        worldbook: '',
         // P2: run 生命周期状态机：idle | running | aborting | aborted | completed | error
         // 由 SSE run_state 事件驱动（server/index.js 广播）
         runState: 'idle',
@@ -681,7 +684,7 @@
         if (autoScroll) el.scrollTop = el.scrollHeight;
     }
 
-    function clearNarrative() {
+    function clearNarrativeDom() {
         var el = $('agent_theatre_narrative');
         if (el) el.innerHTML = '<div class="gateway-empty-hint">已清空，输入消息或点击选项重新开始</div>';
         var optEl = $('agent_theatre_options');
@@ -692,6 +695,12 @@
         if (inlineEl) { inlineEl.innerHTML = ''; inlineEl.style.display = 'none'; }
         theatre.timelineEvents = [];
         clearStreamingPreview();
+    }
+
+    function clearNarrative() {
+        clearNarrativeDom();
+        // 同时清除当前角色卡的本地聊天记录
+        try { localStorage.removeItem(chatHistoryKey()); } catch (_) { /* 静默 */ }
     }
 
     // ==================== Agent 剧场：选项 ====================
@@ -832,6 +841,8 @@
             session: theatre.session || 'native:default',
             profile: theatre.profile,
         };
+        if (theatre.character) body.character = theatre.character;
+        if (theatre.worldbook) body.worldbook = theatre.worldbook;
         if (callbackId) body.callbackId = callbackId;
         if (options.rerun) body.rerun = true;
         var styleEl = $('agent_theatre_style');
@@ -942,6 +953,147 @@
         msg.appendChild(bubble);
         el.appendChild(msg);
         if (autoScroll) el.scrollTop = el.scrollHeight;
+    }
+
+    // ==================== 角色卡 / 世界书 / 聊天记录 ====================
+
+    /** 生成当前角色卡的 localStorage key（无角色卡用 default） */
+    function chatHistoryKey(name) {
+        var n = name != null ? name : theatre.character;
+        return LS_CHAT_PREFIX + (n || 'default');
+    }
+
+    /** 更新工具栏角色卡指示徽标 */
+    function updateCharacterBadge() {
+        var badge = $('agent_theatre_character_badge');
+        if (!badge) return;
+        var name = theatre.character;
+        if (name) {
+            var abbr = name.length > 2 ? name.substring(0, 2) : name;
+            badge.textContent = '🧩 ' + abbr;
+            badge.title = '当前角色卡：' + name;
+            badge.className = 'gateway-status-badge connected';
+        } else {
+            badge.textContent = '🧩 -';
+            badge.title = '未指定角色卡';
+            badge.className = 'gateway-status-badge';
+        }
+    }
+
+    /** 调用 /api/agent-theatre/assets 获取角色卡和世界书列表，填充两个 select */
+    function loadAssets() {
+        agentFetch('/api/agent-theatre/assets').then(function (data) {
+            if (!data || !data.assets) return;
+            var characters = data.assets.characters || [];
+            var worldbooks = data.assets.worldbooks || [];
+
+            var charSel = $('agent_theatre_character');
+            if (charSel) {
+                var curChar = theatre.character || charSel.value || '';
+                charSel.innerHTML = '<option value="">🧩 不指定</option>';
+                for (var i = 0; i < characters.length; i++) {
+                    var opt = document.createElement('option');
+                    opt.value = characters[i];
+                    opt.textContent = characters[i];
+                    if (characters[i] === curChar) opt.selected = true;
+                    charSel.appendChild(opt);
+                }
+                theatre.character = charSel.value;
+            }
+
+            var wbSel = $('agent_theatre_worldbook');
+            if (wbSel) {
+                var curWb = theatre.worldbook || wbSel.value || '';
+                wbSel.innerHTML = '<option value="">📖 不指定</option>';
+                for (var j = 0; j < worldbooks.length; j++) {
+                    var wopt = document.createElement('option');
+                    wopt.value = worldbooks[j];
+                    wopt.textContent = worldbooks[j];
+                    if (worldbooks[j] === curWb) wopt.selected = true;
+                    wbSel.appendChild(wopt);
+                }
+                theatre.worldbook = wbSel.value;
+            }
+
+            updateCharacterBadge();
+        }).catch(function (e) {
+            console.warn('[agent-frontend] 加载角色卡/世界书列表失败', e);
+        });
+    }
+
+    /** 将当前消息流序列化存入 localStorage（按角色卡隔离） */
+    function saveChatHistory() {
+        var el = $('agent_theatre_narrative');
+        if (!el) return;
+        var msgs = el.querySelectorAll('.agent-chat-msg');
+        var history = [];
+        for (var i = 0; i < msgs.length; i++) {
+            var node = msgs[i];
+            if (node.classList.contains('user')) {
+                var ububble = node.querySelector('.agent-chat-bubble');
+                var utext = ububble ? ububble.textContent : '';
+                if (utext) history.push({ role: 'user', content: utext, timestamp: Date.now() });
+            } else if (node.classList.contains('assistant')) {
+                var abubble = node.querySelector('.agent-chat-bubble');
+                if (!abubble) continue;
+                // 克隆后移除重试按钮 / 流式光标文本，提取纯正文
+                var clone = abubble.cloneNode(true);
+                var retry = clone.querySelector('.agent-chat-retry');
+                if (retry) retry.remove();
+                var cursor = clone.querySelector('.agent-chat-cursor');
+                if (cursor) cursor.remove();
+                var atext = clone.textContent;
+                if (atext) history.push({ role: 'assistant', content: atext, timestamp: Date.now() });
+            }
+        }
+        try {
+            localStorage.setItem(chatHistoryKey(), JSON.stringify(history));
+        } catch (e) {
+            console.warn('[agent-frontend] 保存聊天记录失败', e);
+        }
+    }
+
+    /** 从 localStorage 读取并恢复消息流 */
+    function loadChatHistory() {
+        var el = $('agent_theatre_narrative');
+        if (!el) return;
+        var raw = null;
+        try { raw = localStorage.getItem(chatHistoryKey()); } catch (_) { /* 静默 */ }
+        if (!raw) return;
+        var history = [];
+        try { history = JSON.parse(raw) || []; } catch (_) { return; }
+        if (!history.length) return;
+        // 清掉空提示
+        var empty = el.querySelector('.gateway-empty-hint');
+        if (empty) empty.remove();
+        for (var i = 0; i < history.length; i++) {
+            var item = history[i];
+            if (!item || !item.role || !item.content) continue;
+            if (item.role === 'user') {
+                appendUserMessage(item.content);
+            } else if (item.role === 'assistant') {
+                appendNarrative(item.content);
+            }
+        }
+        if (autoScroll) el.scrollTop = el.scrollHeight;
+    }
+
+    /** 切换角色卡：保存当前记录 -> 淡出 -> 清空 DOM -> 加载新记录 -> 淡入 */
+    function switchCharacter(name) {
+        // 1. 保存当前角色卡的聊天记录（此时 theatre.character 仍为旧值）
+        saveChatHistory();
+        // 2. 淡出动画
+        var narrative = $('agent_theatre_narrative');
+        if (narrative) narrative.style.opacity = '0';
+        // 3. 延迟后切换：更新角色卡 -> 清空 DOM（不删 localStorage）-> 加载新记录
+        setTimeout(function () {
+            theatre.character = name;
+            clearNarrativeDom();
+            loadChatHistory();
+            updateCharacterBadge();
+            if (narrative) narrative.style.opacity = '1';
+            showToast('success', name ? '已切换到角色卡「' + name + '」' : '已清除角色卡');
+        }, 200);
     }
 
     // ==================== Agent 剧场：Profile 加载 / 保存（热重载） ====================
@@ -1398,6 +1550,26 @@
         var clearBtn = $('agent_theatre_clear');
         if (clearBtn) clearBtn.addEventListener('click', clearNarrative);
 
+        // 保存聊天记录
+        var saveHistoryBtn = $('agent_theatre_save_history');
+        if (saveHistoryBtn) saveHistoryBtn.addEventListener('click', function () {
+            saveChatHistory();
+            showToast('success', '聊天记录已保存到本地');
+        });
+
+        // 角色卡切换（自动保存/加载聊天记录）
+        var charSel = $('agent_theatre_character');
+        if (charSel) charSel.addEventListener('change', function () {
+            switchCharacter(this.value);
+        });
+
+        // 世界书切换
+        var wbSel = $('agent_theatre_worldbook');
+        if (wbSel) wbSel.addEventListener('change', function () {
+            theatre.worldbook = this.value;
+            showToast('info', this.value ? '已选择世界书「' + this.value + '」' : '已清除世界书');
+        });
+
         // 重跑
         var rerunBtn = $('agent_theatre_rerun');
         if (rerunBtn) rerunBtn.addEventListener('click', function () {
@@ -1543,6 +1715,12 @@
 
         // 剧场初始化
         theatreReconnect();
+
+        // 加载角色卡 / 世界书列表
+        loadAssets();
+
+        // 加载当前角色卡的本地聊天记录（若有）
+        loadChatHistory();
 
         // 首次使用引导
         runFirstGuide();

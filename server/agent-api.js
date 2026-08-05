@@ -458,6 +458,43 @@ export function registerAgentApi(app, deps) {
         }
     });
 
+    /**
+     * GET /api/agent-theatre/assets - 轻量资产列表（角色卡 / 世界书 / 预设）
+     *
+     * 独立于 NativeRuntime：不要求 runtime.enabled，直接扫描 assets 目录返回名称列表，
+     * 供 Agent 前端（角色卡/世界书选择器）在主网关与独立 Agent 服务两种模式下都能用。
+     * 目录路径与 NativeRuntime 一致（config.runtime.*Dir，默认 assets/...）。
+     */
+    app.get('/api/agent-theatre/assets', (req, res) => {
+        const runtimeCfg = configManager.get('runtime') || {};
+        const dirs = {
+            characters: path.resolve(repoRoot, runtimeCfg.charactersDir || 'assets/characters'),
+            worldbooks: path.resolve(repoRoot, runtimeCfg.worldbooksDir || 'assets/worldbooks'),
+            presets: path.resolve(repoRoot, runtimeCfg.presetsDir || 'assets/presets'),
+        };
+        const listJson = (dir) => {
+            if (!fs.existsSync(dir)) return [];
+            return fs.readdirSync(dir)
+                .filter((f) => f.endsWith('.json'))
+                .map((f) => path.basename(f, '.json'));
+        };
+        const listCards = (dir) => {
+            if (!fs.existsSync(dir)) return [];
+            return fs.readdirSync(dir)
+                .filter((f) => f.endsWith('.json') || f.endsWith('.png'))
+                .map((f) => path.basename(f, path.extname(f)));
+        };
+        res.json({
+            success: true,
+            assets: {
+                characters: listCards(dirs.characters),
+                worldbooks: listJson(dirs.worldbooks),
+                presets: listJson(dirs.presets),
+            },
+            dirs,
+        });
+    });
+
     /** GET /api/agent-theatre/state - 当前会话状态 */
     app.get('/api/agent-theatre/state', (req, res) => {
         const sessionKey = _theatreSessionKey(req);

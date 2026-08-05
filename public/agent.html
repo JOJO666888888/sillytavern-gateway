@@ -239,6 +239,13 @@
         </button>
         <div class="agent-drawer-body">
             <div class="agent-chat-toolbar">
+                <select id="agent_theatre_character" class="text_pole" title="选择角色卡（切换时自动保存/加载聊天记录）">
+                    <option value="">🧩 不指定</option>
+                </select>
+                <select id="agent_theatre_worldbook" class="text_pole" title="选择世界书">
+                    <option value="">📖 不指定</option>
+                </select>
+                <span id="agent_theatre_character_badge" class="gateway-status-badge" title="当前角色卡">🧩 -</span>
                 <select id="agent_theatre_profile" class="text_pole" title="选择 Agent Profile">
                     <option value="default-rp">default-rp</option>
                 </select>
@@ -254,6 +261,9 @@
                 </button>
                 <button id="agent_theatre_clear" class="menu_button" title="清空当前聊天流与历史">
                     <i class="fa-solid fa-eraser"></i> 清空
+                </button>
+                <button id="agent_theatre_save_history" class="menu_button" title="保存当前聊天记录到本地">
+                    <i class="fa-solid fa-floppy-disk"></i> 保存
                 </button>
                 <span id="agent_theatre_status" class="gateway-status-badge disconnected">未连接</span>
             </div>
