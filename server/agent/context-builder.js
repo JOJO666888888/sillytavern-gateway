@@ -1,6 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { loadCharacterCard } from '../runtime/card-loader.js';
+import { loadLorebook, activateEntries } from '../runtime/worldbook-engine.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -29,6 +31,8 @@ export class ContextBuilder {
     constructor(options = {}) {
         this.assetsDir = options.assetsDir || path.resolve(__dirname, '..', '..', 'assets');
         this.dataDir = options.dataDir || path.resolve(__dirname, '..', '..', 'data', 'plugins', 'agent-framework');
+        this.scanDepth = options.scanDepth || 5;
+        this.worldMaxRecursion = options.worldMaxRecursion || 2;
     }
 
     /**
@@ -48,7 +52,7 @@ export class ContextBuilder {
 
         // 2. 注入资产
         if (definition.context?.injectAssets) {
-            const assetText = this._injectAssets(definition.context.injectAssets, session);
+            const assetText = this._injectAssets(definition.context.injectAssets, session, history, userMessage);
             if (assetText) parts.push(assetText);
         }
 
@@ -86,42 +90,86 @@ export class ContextBuilder {
             .replace(/\$\{chatId\}/g, session.chatId || '');
     }
 
-    _injectAssets(injectAssets, session) {
+    /**
+     * 注入资产（角色卡 + 世界书）
+     *
+     * P0 改造：复用 NativeRuntime 的归一化加载器与世界书激活引擎，
+     * 替代原先的直接文件读取 + 全量注入。
+     *
+     * @param {Object} injectAssets - definition.context.injectAssets
+     * @param {Object} session - 会话状态
+     * @param {Array} history - 历史消息 [{role, content}]（供世界书关键词扫描）
+     * @param {string} userMessage - 当前用户消息（供世界书关键词扫描）
+     * @returns {string} 拼接后的资产文本
+     */
+    _injectAssets(injectAssets, session, history = [], userMessage = '') {
         const parts = [];
-        // 角色卡
+        // 角色卡：使用 loadCharacterCard 归一化加载（支持 PNG 内嵌 + V1/V2/V3）
         if (injectAssets.character) {
             const name = this._replaceVars(injectAssets.character, session);
-            const charPath = path.join(this.assetsDir, 'characters', name.endsWith('.json') ? name : name + '.json');
-            if (fs.existsSync(charPath)) {
-                try {
-                    const card = JSON.parse(fs.readFileSync(charPath, 'utf-8'));
-                    const charParts = [];
-                    if (card.description) charParts.push(`【角色描述】\n${card.description}`);
-                    if (card.personality) charParts.push(`【性格】\n${card.personality}`);
-                    if (card.scenario) charParts.push(`【场景】\n${card.scenario}`);
-                    if (card.mes_example) charParts.push(`【对话示例】\n${card.mes_example}`);
-                    if (charParts.length > 0) parts.push(charParts.join('\n\n'));
-                } catch (e) { /* 忽略解析错误 */ }
+            const card = this._loadCharacterCard(name);
+            if (card) {
+                const charParts = [];
+                if (card.description) charParts.push(`【角色描述】\n${card.description}`);
+                if (card.personality) charParts.push(`【性格】\n${card.personality}`);
+                if (card.scenario) charParts.push(`【场景】\n${card.scenario}`);
+                if (card.mesExample) charParts.push(`【对话示例】\n${card.mesExample}`);
+                if (charParts.length > 0) parts.push(charParts.join('\n\n'));
             }
         }
-        // 世界书
+        // 世界书：使用 loadLorebook 归一化 + activateEntries 关键词激活
         if (injectAssets.worldbook) {
             const name = this._replaceVars(injectAssets.worldbook, session);
-            const wbPath = path.join(this.assetsDir, 'worldbooks', name.endsWith('.json') ? name : name + '.json');
-            if (fs.existsSync(wbPath)) {
-                try {
-                    const wb = JSON.parse(fs.readFileSync(wbPath, 'utf-8'));
-                    const entries = wb.entries || {};
-                    const entryTexts = Object.values(entries)
-                        .filter(e => e.content && e.key)
-                        .map(e => e.content);
-                    if (entryTexts.length > 0) {
-                        parts.push(`【世界书】\n${entryTexts.join('\n---\n')}`);
-                    }
-                } catch (e) { /* 忽略 */ }
+            const entries = this._loadWorldbook(name);
+            if (entries && entries.length > 0) {
+                // 构建扫描文本：最近 N 条历史消息 + 当前输入
+                const scanText = [...history.slice(-this.scanDepth).map(h => h.content || ''), userMessage].join('\n');
+                const activated = activateEntries(entries, scanText, {
+                    maxRecursion: this.worldMaxRecursion,
+                });
+                const allEntries = [...(activated.beforeChar || []), ...(activated.afterChar || [])];
+                if (allEntries.length > 0) {
+                    parts.push(`【世界书】\n${allEntries.join('\n---\n')}`);
+                }
             }
         }
         return parts.length > 0 ? parts.join('\n\n') : '';
+    }
+
+    /**
+     * 加载角色卡（支持 .json 和 .png，自动归一化 V1/V2/V3 格式）
+     * @param {string} name - 角色卡名（可带或不带扩展名）
+     * @returns {Object|null} 归一化后的角色卡，或 null
+     */
+    _loadCharacterCard(name) {
+        const charsDir = path.join(this.assetsDir, 'characters');
+        const hasExt = name.endsWith('.json') || name.endsWith('.png');
+        const candidates = hasExt
+            ? [path.join(charsDir, name)]
+            : [path.join(charsDir, name + '.json'), path.join(charsDir, name + '.png')];
+        for (const filePath of candidates) {
+            if (fs.existsSync(filePath)) {
+                try {
+                    return loadCharacterCard(filePath);
+                } catch (e) { /* 忽略解析错误 */ }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 加载世界书（归一化为统一条目数组）
+     * @param {string} name - 世界书名（可带或不带 .json 扩展名）
+     * @returns {Array|null} 归一化后的条目数组，或 null
+     */
+    _loadWorldbook(name) {
+        const wbPath = path.join(this.assetsDir, 'worldbooks', name.endsWith('.json') ? name : name + '.json');
+        if (fs.existsSync(wbPath)) {
+            try {
+                return loadLorebook(wbPath);
+            } catch (e) { /* 忽略 */ }
+        }
+        return null;
     }
 
     _injectFiles(injectFiles, session) {
