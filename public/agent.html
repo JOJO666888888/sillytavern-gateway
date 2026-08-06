@@ -358,7 +358,9 @@
                     <option value="director">director（导演视角）</option>
                     <option value="first">first（第一人称）</option>
                 </select>
-                <input type="text" id="agent_theatre_session" class="text_pole" value="native:default" placeholder="native:default" title="platform:chatId 格式的会话标识">
+                <select id="agent_theatre_session" class="text_pole" title="剧场会话标识（固定为默认会话；角色卡切换由下方角色卡选择器管理，上下文按角色卡自动隔离）">
+                    <option value="native:default">native:default（默认剧场会话）</option>
+                </select>
                 <button id="agent_theatre_rerun" class="menu_button" title="用上一轮的输入重新跑一次">
                     <i class="fa-solid fa-rotate-right"></i> 重跑
                 </button>
@@ -373,7 +375,7 @@
         </div>
     </div>
 
-    <!-- 聊天主区：消息流 + 事件内联 + 选项区 + 轮次信息 + 底部输入栏 -->
+    <!-- 聊天主区：消息流 + 工具调用面板 + 选项面板 + 轮次信息 + 底部输入栏 -->
     <main class="agent-chat-main">
         <!-- P5: 保存状态悬浮条（右上角悬浮，不占独立横栏，最大化主对话区） -->
         <span class="agent-save-indicator" id="agent_save_indicator" data-state="unsaved" title="保存状态">
@@ -394,9 +396,28 @@
                 </div>
             </div>
         </div>
-        <div id="agent_theatre_events_inline" class="agent-chat-events-inline" style="display:none;"></div>
-        <div id="agent_theatre_options" class="agent-chat-options">
-            <div class="gateway-empty-hint">（选项将在 Agent 输出后出现）</div>
+        <!-- P8: 工具调用面板（可折叠，默认折叠；勾选框 #agent_theatre_show_events 仍控制是否记录内联事件，面板显隐由折叠状态独立控制） -->
+        <div class="agent-collapsible-panel" id="agent_events_panel">
+            <div class="agent-collapsible-header" id="agent_events_panel_header" title="点击展开/收起工具调用">
+                <span class="agent-collapsible-arrow">▸</span>
+                <span class="agent-collapsible-title">🔧 工具调用</span>
+                <span class="agent-collapsible-count" id="agent_events_panel_count">0</span>
+            </div>
+            <div class="agent-collapsible-body">
+                <div id="agent_theatre_events_inline" class="agent-chat-events-inline"></div>
+            </div>
+        </div>
+        <!-- P8: 选项面板（可折叠，默认折叠；无选项时整体隐藏，有选项时头部出现「新选项」高亮） -->
+        <div class="agent-collapsible-panel" id="agent_options_panel" style="display:none;">
+            <div class="agent-collapsible-header" id="agent_options_panel_header" title="点击展开/收起选项">
+                <span class="agent-collapsible-arrow">▸</span>
+                <span class="agent-collapsible-title">🎯 选项</span>
+                <span class="agent-collapsible-count" id="agent_options_panel_count">0</span>
+                <span class="agent-collapsible-newbadge" id="agent_options_panel_new" style="display:none;">新选项</span>
+            </div>
+            <div class="agent-collapsible-body">
+                <div id="agent_theatre_options" class="agent-chat-options"></div>
+            </div>
         </div>
         <div class="agent-chat-meta"><span id="agent_theatre_turn_info" class="gateway-hint"></span></div>
         <!-- P3: 开场白切换条（角色卡有多条开场白且会话刚开始时显示） -->

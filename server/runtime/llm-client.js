@@ -513,6 +513,20 @@ export function extractDelta(provider, evt) {
 }
 
 /**
+ * 从一条 SSE data 事件中提取思维链（reasoning）增量文本。
+ * 本期只支持 openai 兼容格式（DeepSeek 等推理模型：choices[0].delta.reasoning_content）；
+ * claude / gemini 暂无 reasoning 透传协议，返回 ''。
+ * @param {string} provider
+ * @param {object} evt - 已 JSON.parse 的事件对象
+ * @returns {string} 思维链增量文本（无则空串）
+ */
+export function extractReasoningDelta(provider, evt) {
+    const p = (provider || 'openai').toLowerCase();
+    if (p === 'claude' || p === 'gemini') return '';
+    return evt?.choices?.[0]?.delta?.reasoning_content || '';
+}
+
+/**
  * 解析 SSE 流，逐事件回调。
  * 兼容三家 provider 的 `data: {...}` 行格式（Gemini 用 alt=sse 后同构）。
  * @param {ReadableStream} body - fetch 响应体
@@ -759,10 +773,16 @@ export class LLMClient {
                     throw new Error(`LLM 请求失败 HTTP ${resp.status}: ${errText.slice(0, 300)}`);
                 }
                 const data = await resp.json();
+                const provider = (cfg.provider || 'openai').toLowerCase();
                 return {
                     text: extractText(cfg.provider, data),
                     toolCalls: extractToolCalls(cfg.provider, data),
                     raw: data,
+                    // 思维链（reasoning）：openai 兼容后端（DeepSeek 等）在 message.reasoning_content；
+                    // claude / gemini 无对应字段，返回空串
+                    reasoning: (provider === 'claude' || provider === 'gemini')
+                        ? ''
+                        : (data?.choices?.[0]?.message?.reasoning_content || ''),
                 };
             } catch (e) {
                 if (attempt < RETRY_ATTEMPTS && this._isTransientError(e)) {
@@ -793,14 +813,19 @@ export class LLMClient {
         const maxSteps = options.maxSteps ?? 5;
         const sampling = options.sampling || {};
         const signal = options.signal || null;   // P2: 中止信号
+        const onReasoning = typeof options.onReasoning === 'function' ? options.onReasoning : null;
         const convo = [...messages];
+        // 思维链累积：非流式逐回合从 generateWithTools 返回的 reasoning 拼接，
+        // 全部回合结束后一次性上报（delta=full 语义，turn 用实际 steps）
+        let fullReasoning = '';
 
         for (let step = 0; step < maxSteps; step++) {
             if (signal?.aborted) throw new Error('aborted');  // P2: 检查中止
-            const { text, toolCalls } = await this.generateWithTools(convo, tools, sampling);
-
+            const { text, toolCalls, reasoning } = await this.generateWithTools(convo, tools, sampling);
+            if (reasoning) fullReasoning += reasoning;
             if (!toolCalls.length) {
                 // 模型给出最终答复，结束
+                if (onReasoning && fullReasoning) onReasoning(fullReasoning, fullReasoning, step);
                 return { text, steps: step, messages: convo };
             }
 
@@ -823,6 +848,7 @@ export class LLMClient {
 
         // 达到步数上限仍未收敛：再问一次「不给工具」逼出最终文本
         const final = await this.generate(convo, sampling);
+        if (onReasoning && fullReasoning) onReasoning(fullReasoning, fullReasoning, maxSteps);
         return { text: final, steps: maxSteps, messages: convo };
     }
 
@@ -835,9 +861,10 @@ export class LLMClient {
      * @param {Array} tools
      * @param {object} sampling
      * @param {(delta: string, full: string) => void} [onDelta]
+     * @param {(delta: string, full: string) => void} [onReasoning] - 思维链增量回调
      * @returns {Promise<{text: string, toolCalls: Array}>}
      */
-    async generateWithToolsStream(messages, tools = [], sampling = {}, onDelta) {
+    async generateWithToolsStream(messages, tools = [], sampling = {}, onDelta, onReasoning) {
         const cfg = this.config;
         if (!cfg.model) throw new Error('LLM model 未配置');
 
@@ -847,6 +874,7 @@ export class LLMClient {
         const timer = setTimeout(() => controller.abort(), cfg.timeout ?? 120000);
         const acc = {};
         let fullText = '';
+        let fullReasoning = '';
         try {
             const resp = await fetch(url, {
                 method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal,
@@ -861,6 +889,13 @@ export class LLMClient {
                     fullText += delta;
                     if (onDelta) {
                         try { onDelta(delta, fullText); } catch (_) { /* 回调异常不影响收流 */ }
+                    }
+                }
+                const reasoningDelta = extractReasoningDelta(provider, evt);
+                if (reasoningDelta) {
+                    fullReasoning += reasoningDelta;
+                    if (onReasoning) {
+                        try { onReasoning(reasoningDelta, fullReasoning); } catch (_) { /* 回调异常不影响收流 */ }
                     }
                 }
                 extractToolCallsDelta(provider, evt, acc);
@@ -896,14 +931,17 @@ export class LLMClient {
         const sampling = options.sampling || {};
         const signal = options.signal || null;   // P2: 中止信号
         const onDelta = typeof options.onDelta === 'function' ? options.onDelta : null;
+        const onReasoning = typeof options.onReasoning === 'function' ? options.onReasoning : null;
         const convo = [...messages];
 
         for (let step = 0; step < maxSteps; step++) {
             if (signal?.aborted) throw new Error('aborted');  // P2: 检查中止
             let turn;
             const stepOnDelta = onDelta ? (delta, full) => onDelta(delta, full, step) : null;
+            // 思维链增量与正文同一转发路径：generateWithToolsStream 内部 (delta, full) → (delta, full, step)
+            const stepOnReasoning = onReasoning ? (delta, full) => onReasoning(delta, full, step) : null;
             try {
-                turn = await this.generateWithToolsStream(convo, tools, sampling, stepOnDelta);
+                turn = await this.generateWithToolsStream(convo, tools, sampling, stepOnDelta, stepOnReasoning);
             } catch (e) {
                 // 流式失败（网络/协议解析），该回合降级非流式，保证功能可用
                 logger.warn(`[llm] 流式工具回合失败，降级非流式: ${e.message}`);
@@ -944,9 +982,10 @@ export class LLMClient {
      * @param {Array} messages
      * @param {object} sampling
      * @param {(delta: string, full: string) => void} [onDelta]
+     * @param {(delta: string, full: string) => void} [onReasoning] - 思维链增量回调（第 4 参，保持 onDelta 兼容）
      * @returns {Promise<string>} 完整文本
      */
-    async generateStream(messages, sampling = {}, onDelta) {
+    async generateStream(messages, sampling = {}, onDelta, onReasoning) {
         const cfg = this.config;
         if (!cfg.model) throw new Error('LLM model 未配置');
 
@@ -965,6 +1004,7 @@ export class LLMClient {
                 throw new Error(`LLM 流式请求失败 HTTP ${resp.status}: ${errText.slice(0, 300)}`);
             }
             let full = '';
+            let fullReasoning = '';
             // 流式下同样要能解释空回复：把最后一次出现的 finish_reason / usage 留下来，
             // 供 describeEmptyCompletion 判断是不是"思维链吃光了 max_tokens"
             let lastFinish = null;
@@ -978,6 +1018,14 @@ export class LLMClient {
                     full += delta;
                     if (onDelta) {
                         try { onDelta(delta, full); } catch (_) { /* 回调异常不影响收流 */ }
+                    }
+                }
+                // 思维链增量单独透传，绝不允许漏进正文（正文 onDelta 只收 content）
+                const reasoningDelta = extractReasoningDelta(cfg.provider, evt);
+                if (reasoningDelta) {
+                    fullReasoning += reasoningDelta;
+                    if (onReasoning) {
+                        try { onReasoning(reasoningDelta, fullReasoning); } catch (_) { /* 回调异常不影响收流 */ }
                     }
                 }
             });
@@ -1011,4 +1059,4 @@ export class LLMClient {
     }
 }
 
-export default { LLMClient, buildRequest, extractText, extractToolCalls, extractDelta, parseSSEStream, buildMultimodalContent, buildToolsSpec, sanitizeToolName, describeEmptyCompletion, describeTruncation };
+export default { LLMClient, buildRequest, extractText, extractToolCalls, extractDelta, extractReasoningDelta, parseSSEStream, buildMultimodalContent, buildToolsSpec, sanitizeToolName, describeEmptyCompletion, describeTruncation };

@@ -29,6 +29,44 @@ export function extractDefinitionVar(definition, varName) {
     return val || '';
 }
 
+/**
+ * 共享上下文组装：开场白注入 + contextBuilder.build。
+ *
+ * P5（提示词一致性）核心：run 与提示词查看器"无 run 预览"都必须经由本函数产出 messages，
+ * 保证"查看器显示的上下文 == 实际注入 AI 的上下文"（同一输入状态下逐字节一致）。
+ *
+ * 开场白规则（与原 agent-runner 内联逻辑逐字一致）：
+ *   - 仅当 history 为空（新会话首轮）且会话绑定了角色卡时，
+ *     把角色卡 first_message / alternate_greetings[greetingIndex] 作为首条 assistant 消息；
+ *   - 有历史则不注入，避免开场白重复；
+ *   - 注入后在 system 段追加"开场白已展示"说明。
+ *
+ * @param {object} builder - ContextBuilder 实例（测试可用仅含 build/selectGreeting 的假实现）
+ * @param {object} definition - Agent 定义
+ * @param {object} session - 会话状态（character/greetingIndex/platform/chatId 等）
+ * @param {Array} history - 历史消息 [{role, content}]
+ * @param {string} userMessage - 当前用户消息
+ * @returns {{messages: Array, greetingInjected: boolean}}
+ */
+export function buildContextWithGreeting(builder, definition, session, history, userMessage) {
+    let historyForBuild = Array.isArray(history) ? history : [];
+    let greetingInjected = false;
+    if (historyForBuild.length === 0 && session?.character) {
+        const greeting = (typeof builder.selectGreeting === 'function')
+            ? (builder.selectGreeting(session.character, session.greetingIndex ?? 0) || '')
+            : '';
+        if (greeting) {
+            historyForBuild = [{ role: 'assistant', content: greeting }, ...historyForBuild];
+            greetingInjected = true;
+        }
+    }
+    const messages = builder.build(definition, session, historyForBuild, userMessage);
+    if (greetingInjected && messages[0]?.role === 'system') {
+        messages[0].content += '\n\n（角色开场白已展示：首条 assistant 消息为角色开场白，请从角色视角自然延续，不要复述开场白内容）';
+    }
+    return { messages, greetingInjected };
+}
+
 export class ContextBuilder {
     constructor(options = {}) {
         this.assetsDir = options.assetsDir || path.resolve(__dirname, '..', '..', 'assets');
@@ -127,6 +165,18 @@ export class ContextBuilder {
         }
 
         return messages;
+    }
+
+    /**
+     * 完整上下文组装（含开场白注入）——与提示词查看器"无 run 预览"共用同一路径（P5 一致性）。
+     * @param {Object} definition - Agent 定义
+     * @param {Object} session - 会话状态（character/greetingIndex/platform/chatId 等）
+     * @param {Array} history - 历史消息
+     * @param {string} userMessage - 当前用户消息
+     * @returns {{messages: Array, greetingInjected: boolean}}
+     */
+    buildFull(definition, session, history, userMessage) {
+        return buildContextWithGreeting(this, definition, session, history, userMessage);
     }
 
     _replaceVars(text, session) {

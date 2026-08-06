@@ -112,6 +112,9 @@ export default class AgentFrameworkPlugin extends GatewayPlugin {
             // P1-2: 单个 Agent 事件 → theatre-broadcaster 推送 agent_event（前端时间线实时展示）
             onAgentEvent: (sessionKey, event) =>
                 this._broadcastAgentEvent(sessionKey, event),
+            // 模型思维链增量 → theatre-broadcaster 推送 reasoning（AI 思考过程实时展示）
+            onReasoning: (sessionKey, runId, delta, full) =>
+                this._broadcastReasoning(sessionKey, runId, delta, full),
         });
 
         // 3. 注册内置工具
@@ -139,8 +142,8 @@ export default class AgentFrameworkPlugin extends GatewayPlugin {
             // P2: 中止指定 run（透传 runner.abort），供 server/index.js 的 /api/agent-theatre/abort 调用
             abortRun: (runId) => this.agentRunner.abort(runId),
             // P2: 查询某会话最近一次注入的完整提示词，供 /api/agent-theatre/prompt 调用
-            //（前端提示词查看器）。无记录返回 null。
-            getLastPrompt: (sessionKey) => this.agentRunner.getLastPrompt(sessionKey),
+            //（前端提示词查看器）。P4：支持按角色卡精确查询（缓存按 会话+角色卡 隔离）。
+            getLastPrompt: (sessionKey, character) => this.agentRunner.getLastPrompt(sessionKey, character),
             // P3: 查询角色卡开场白列表（first_message + alternate_greetings），
             // 供 /api/agent-theatre/greetings 调用（前端展示开场白切换箭头）。
             getGreetings: (characterName) => this.contextBuilder.getGreetingList(characterName),
@@ -175,7 +178,7 @@ export default class AgentFrameworkPlugin extends GatewayPlugin {
              * @returns {Promise<{runId:string, result:import('../../server/agent/run-result.js').AgentRunResult, text:string, steps:number, subAgentResults:Array, logs:object}>}
              */
             run: async (profile, input, session = {}, ctx = null) => {
-                const definition = this.agentLoader.get(profile);
+                const { definition, agentSession } = this._assembleAgentSession(profile, session, ctx);
                 if (!definition) {
                     throw new Error(`Agent profile "${profile}" 不存在，可用: ${this.agentLoader.list().map(a => a.name).join(', ') || '(空)'}`);
                 }
@@ -191,19 +194,29 @@ export default class AgentFrameworkPlugin extends GatewayPlugin {
                     ? (ctx.getHistory(historyLimit) || [])
                     : (session?.history || []);
 
-                // 组装 agentSession：把传入的 session 补全为 runner 期望的形态
-                const agentSession = {
-                    id: session?.id || `${ctx?.platform || 'unknown'}:${ctx?.chatId || 'unknown'}`,
-                    platform: ctx?.platform || session?.platform || 'unknown',
-                    chatId: ctx?.chatId || session?.chatId || 'unknown',
-                    character: session?.character || this._extractVar(definition, 'character') || '',
-                    worldbook: session?.worldbook || this._extractVar(definition, 'worldbook') || '',
-                    style: session?.style || this._extractVar(definition, 'style') || '',
-                    turn: session?.turn ?? session?.turnCount ?? 0,
-                    ...session,
-                };
-
                 return this.agentRunner.run(definition, agentSession, history, input, ctx);
+            },
+            /**
+             * 无 LLM 构建上下文（P5：提示词查看器"无 run 预览"入口）。
+             *
+             * 与 run 共用 _assembleAgentSession + ContextBuilder.buildFull，
+             * 保证预览输出与实际注入的 messages 在相同状态下逐字节一致。
+             *
+             * @param {string} profile - Agent 定义名
+             * @param {object} [session] - 会话状态（character/worldbook/style/turn/greetingIndex/platform/chatId/history）
+             * @param {Array} [history] - 历史消息（缺省取 session.history）
+             * @param {string} [userMessage] - 当前用户输入（预览可选，缺省空串）
+             * @returns {Promise<{messages:Array<{role,content}>, greetingInjected:boolean}>}
+             */
+            buildContext: async (profile, session = {}, history = null, userMessage = '') => {
+                const { definition, agentSession } = this._assembleAgentSession(profile, session, null);
+                if (!definition) {
+                    throw new Error(`Agent profile "${profile}" 不存在，可用: ${this.agentLoader.list().map(a => a.name).join(', ') || '(空)'}`);
+                }
+                const historyForBuild = Array.isArray(history)
+                    ? history
+                    : (Array.isArray(session?.history) ? session.history : []);
+                return this.contextBuilder.buildFull(definition, agentSession, historyForBuild, userMessage || '');
             },
         };
 
@@ -416,6 +429,31 @@ export default class AgentFrameworkPlugin extends GatewayPlugin {
     }
 
     /**
+     * 组装 agentSession：把调用方传入的 session 补全为 runner/构建器期望的形态。
+     * run 与 buildContext（无 run 预览）共用，保证两条路径的会话输入一致（P5）。
+     * @param {string} profile - Agent 定义名
+     * @param {object} [session] - 调用方会话状态
+     * @param {object|null} [ctx] - 插件上下文（run 路径提供；预览路径传 null）
+     * @returns {{definition: object|null, agentSession: object}}
+     * @private
+     */
+    _assembleAgentSession(profile, session = {}, ctx = null) {
+        const definition = this.agentLoader.get(profile);
+        if (!definition) return { definition: null, agentSession: {} };
+        const agentSession = {
+            id: session?.id || `${ctx?.platform || 'unknown'}:${ctx?.chatId || 'unknown'}`,
+            platform: ctx?.platform || session?.platform || 'unknown',
+            chatId: ctx?.chatId || session?.chatId || 'unknown',
+            character: session?.character || this._extractVar(definition, 'character') || '',
+            worldbook: session?.worldbook || this._extractVar(definition, 'worldbook') || '',
+            style: session?.style || this._extractVar(definition, 'style') || '',
+            turn: session?.turn ?? session?.turnCount ?? 0,
+            ...session,
+        };
+        return { definition, agentSession };
+    }
+
+    /**
      * 构建记忆检索器选项（任务 2b 延伸：嵌入向量引擎启用）。
      * 仅当 memoryRetriever === 'embedding' 时注入 embedder：
      * - embedderMode 'local'（默认，零依赖）：字符 n-gram hashing，离线可用
@@ -478,6 +516,22 @@ export default class AgentFrameworkPlugin extends GatewayPlugin {
             broadcaster.broadcastEvent(sessionKey, event);
         } catch (e) {
             this.logger.warn?.(`[agent-framework] agent_event 广播失败: ${e.message}`);
+        }
+    }
+
+    /**
+     * 把模型思维链（reasoning）增量广播给订阅该会话的 Agent 剧场 SSE 客户端。
+     * 事件名 reasoning，data = { runId, delta, full }，前端可实时展示 AI 思考过程。
+     * 广播器未就绪时静默跳过（对齐 _broadcastAgentEvent）。
+     * @private
+     */
+    _broadcastReasoning(sessionKey, runId, delta, full) {
+        const broadcaster = this._services?.theatreBroadcaster;
+        if (!broadcaster || typeof broadcaster.broadcastReasoning !== 'function') return;
+        try {
+            broadcaster.broadcastReasoning(sessionKey, { runId, delta, full });
+        } catch (e) {
+            this.logger.warn?.(`[agent-framework] reasoning 广播失败: ${e.message}`);
         }
     }
 

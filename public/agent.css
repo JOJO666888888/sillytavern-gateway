@@ -1062,25 +1062,17 @@ select.text_pole { cursor: pointer; }
 .agent-chat-msg.assistant:hover .agent-chat-retry { display: inline-flex; }
 .agent-chat-retry:hover { color: var(--gw-text); border-color: rgba(var(--gw-accent-rgb), 0.6); }
 
-/* 事件内联 */
+/* 事件内联（P8: 移入「工具调用」折叠面板主体，限宽/间距交给面板包裹器） */
 .agent-chat-events-inline {
-    max-width: 68rem;
-    margin: 0 auto 6px;
-    padding: 0 16px;
     font-size: 12px;
     color: var(--gw-text-dim);
 }
 
-/* 选项区（胶囊按钮） */
+/* 选项区（P8: 移入「选项」折叠面板主体，胶囊按钮） */
 .agent-chat-options {
-    max-width: 68rem;
-    margin: 0 auto 8px;
-    padding: 0 16px;
     display: flex;
     flex-direction: column;
     gap: 6px;
-    min-height: 44px;
-    justify-content: center;
 }
 
 .agent-chat-option-btn {
@@ -1937,19 +1929,20 @@ select.text_pole { cursor: pointer; }
 }
 
 /* ============================================================
- * P7: 执行流程栏（Agent 执行流程实时信息栏）
+ * P8: 思考面板（思维链 reasoning + 决策链 steps，替代 P7 执行流程栏）
  * 内嵌楼层（用户消息之后、assistant 气泡之前），折叠态只显头部一行，
- * 视觉上区别于正文气泡（更暗的底色 + 无正文大字号）。
+ * 视觉上区别于正文气泡（更暗的底色 + 无正文大字号）；
+ * 展开/收起用 max-height + opacity 平滑过渡（约 240ms）。
  * ============================================================ */
 
-.agent-run-flow {
+.agent-thought-panel {
     max-width: 68rem;
     margin: 0 auto;
     padding: 0 16px 8px;
 }
 
 /* 头部：整条可点击，展开/收起切换 */
-.agent-run-flow-header {
+.agent-thought-panel-header {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -1965,24 +1958,24 @@ select.text_pole { cursor: pointer; }
     transition: background 0.15s ease, border-color 0.15s ease;
 }
 
-.agent-run-flow-header:hover {
+.agent-thought-panel-header:hover {
     background: rgba(255, 255, 255, 0.08);
     border-color: rgba(var(--gw-accent-rgb), 0.45);
 }
 
-.agent-run-flow-arrow {
+.agent-thought-panel-arrow {
     font-size: 11px;
     color: var(--gw-text-dim);
     flex-shrink: 0;
 }
 
-.agent-run-flow-title {
+.agent-thought-panel-title {
     font-weight: 600;
     color: var(--gw-text);
     flex-shrink: 0;
 }
 
-.agent-run-flow-badge {
+.agent-thought-panel-badge {
     font-size: 11px;
     padding: 1px 7px;
     border-radius: 8px;
@@ -1992,32 +1985,32 @@ select.text_pole { cursor: pointer; }
     flex-shrink: 0;
 }
 
-/* 状态徽标配色：执行中 accent / 完成 green / 中止 warn / 出错 red */
-.agent-run-flow[data-flow-status="running"] .agent-run-flow-badge {
+/* 状态徽标配色：思考中 accent / 完成 green / 已中止 warn / 出错 red */
+.agent-thought-panel[data-flow-status="running"] .agent-thought-panel-badge {
     color: var(--gw-accent);
     border-color: rgba(var(--gw-accent-rgb), 0.5);
     background: rgba(var(--gw-accent-rgb), 0.12);
 }
 
-.agent-run-flow[data-flow-status="completed"] .agent-run-flow-badge {
+.agent-thought-panel[data-flow-status="completed"] .agent-thought-panel-badge {
     color: var(--gw-green);
     border-color: rgba(76, 175, 80, 0.5);
     background: rgba(76, 175, 80, 0.12);
 }
 
-.agent-run-flow[data-flow-status="aborted"] .agent-run-flow-badge {
+.agent-thought-panel[data-flow-status="aborted"] .agent-thought-panel-badge {
     color: var(--gw-warn);
     border-color: rgba(255, 193, 7, 0.5);
     background: rgba(255, 193, 7, 0.12);
 }
 
-.agent-run-flow[data-flow-status="error"] .agent-run-flow-badge {
+.agent-thought-panel[data-flow-status="error"] .agent-thought-panel-badge {
     color: var(--gw-red);
     border-color: rgba(244, 67, 54, 0.5);
     background: rgba(244, 67, 54, 0.12);
 }
 
-.agent-run-flow-progress {
+.agent-thought-panel-progress {
     margin-left: auto;
     font-size: 11.5px;
     font-family: var(--gw-mono);
@@ -2025,24 +2018,55 @@ select.text_pole { cursor: pointer; }
     flex-shrink: 0;
 }
 
-/* 事件主体：折叠时隐藏，滚动上限 180px */
-.agent-run-flow-body {
-    max-height: 180px;
+/* 主体：思维链区 + 决策链区；折叠动画 max-height + opacity */
+.agent-thought-panel-body {
+    max-height: 200px;
     overflow-y: auto;
+    opacity: 1;
     margin-top: 6px;
     padding: 4px 10px;
     background: rgba(0, 0, 0, 0.18);
     border: 1px solid var(--gw-border);
     border-radius: 10px;
+    transition: max-height 0.24s ease, opacity 0.2s ease, margin-top 0.24s ease, padding 0.24s ease;
 }
 
-.agent-run-flow.collapsed .agent-run-flow-body { display: none; }
+.agent-thought-panel.collapsed .agent-thought-panel-body {
+    max-height: 0;
+    opacity: 0;
+    overflow: hidden;
+    margin-top: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    border-color: transparent;
+}
 
-.agent-run-flow-body::-webkit-scrollbar { width: 6px; }
-.agent-run-flow-body::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 3px; }
+.agent-thought-panel-body::-webkit-scrollbar { width: 6px; }
+.agent-thought-panel-body::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 3px; }
 
-/* 单条流程事件：图标 + 标签 + 详情 + 时间戳（对齐时间线样式） */
-.agent-run-flow-item {
+/* 思维链区：斜体弱化色，区别于正文；独立滚动 */
+.agent-thought-reasoning {
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: var(--gw-text-dim);
+    font-style: italic;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 200px;
+    overflow-y: auto;
+    padding: 2px 0;
+}
+
+.agent-thought-reasoning.has-content { color: #b9b9c6; }
+
+/* 决策链区：事件列表（图标 + 标签 + 详情 + 时间戳，对齐时间线样式） */
+.agent-thought-steps {
+    margin-top: 6px;
+    padding-top: 4px;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.agent-thought-step-item {
     display: flex;
     align-items: center;
     gap: 6px;
@@ -2051,13 +2075,13 @@ select.text_pole { cursor: pointer; }
     border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 
-.agent-run-flow-item:last-child { border-bottom: none; }
+.agent-thought-step-item:last-child { border-bottom: none; }
 
-.agent-run-flow-item-icon { font-size: 12px; flex-shrink: 0; }
+.agent-thought-step-item-icon { font-size: 12px; flex-shrink: 0; }
 
-.agent-run-flow-item-label { color: var(--gw-text-dim); flex-shrink: 0; }
+.agent-thought-step-item-label { color: var(--gw-text-dim); flex-shrink: 0; }
 
-.agent-run-flow-item-detail {
+.agent-thought-step-item-detail {
     font-family: var(--gw-mono);
     color: var(--gw-text);
     overflow: hidden;
@@ -2066,11 +2090,176 @@ select.text_pole { cursor: pointer; }
     min-width: 0;
 }
 
-.agent-run-flow-item-ts {
+.agent-thought-step-item-ts {
     margin-left: auto;
     color: #6f6f7c;
     font-size: 11px;
     flex-shrink: 0;
 }
 
-.agent-run-flow-item-error .agent-run-flow-item-label { color: var(--gw-red); }
+.agent-thought-step-item-error .agent-thought-step-item-label { color: var(--gw-red); }
+
+/* ============================================================
+ * P8: 折叠面板（工具调用 / 选项），主对话区下方连续排列
+ * 折叠时仅占头部一行；展开时主体滚动（max-height 上限）；
+ * 展开/收起用 max-height + opacity 平滑过渡（约 240ms）。
+ * ============================================================ */
+
+.agent-collapsible-panel {
+    max-width: 68rem;
+    margin: 0 auto 6px;
+    padding: 0 16px;
+}
+
+.agent-collapsible-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--gw-border);
+    border-radius: 10px;
+    font-size: 12.5px;
+    line-height: 1.4;
+    color: var(--gw-text-dim);
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.agent-collapsible-header:hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(var(--gw-accent-rgb), 0.45);
+}
+
+.agent-collapsible-arrow {
+    font-size: 11px;
+    color: var(--gw-text-dim);
+    flex-shrink: 0;
+}
+
+.agent-collapsible-title {
+    font-weight: 600;
+    color: var(--gw-text);
+    flex-shrink: 0;
+}
+
+.agent-collapsible-count {
+    font-size: 11px;
+    padding: 1px 7px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--gw-border);
+    color: var(--gw-text-dim);
+    flex-shrink: 0;
+    font-family: var(--gw-mono);
+}
+
+/* 「新选项」高亮徽标：accent 色 + 轻微脉冲动画（可发现性） */
+.agent-collapsible-newbadge {
+    font-size: 11px;
+    padding: 1px 7px;
+    border-radius: 8px;
+    background: rgba(var(--gw-accent-rgb), 0.15);
+    border: 1px solid rgba(var(--gw-accent-rgb), 0.5);
+    color: var(--gw-accent);
+    font-weight: 600;
+    flex-shrink: 0;
+    animation: agent-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes agent-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+
+/* 主体：展开滚动，折叠动画 max-height + opacity */
+.agent-collapsible-body {
+    max-height: 220px;
+    overflow-y: auto;
+    opacity: 1;
+    margin-top: 6px;
+    padding: 2px 4px;
+    transition: max-height 0.24s ease, opacity 0.2s ease, margin-top 0.24s ease;
+}
+
+.agent-collapsible-panel.collapsed .agent-collapsible-body {
+    max-height: 0;
+    opacity: 0;
+    overflow: hidden;
+    margin-top: 0;
+}
+
+.agent-collapsible-body::-webkit-scrollbar { width: 6px; }
+.agent-collapsible-body::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 3px; }
+
+/* ===== 消息编辑/删除功能 ===== */
+.agent-chat-actions {
+    display: none;
+    align-items: center;
+    gap: 4px;
+    margin-left: 8px;
+    vertical-align: middle;
+}
+.agent-chat-msg:hover .agent-chat-actions { display: inline-flex; }
+.agent-chat-action-btn {
+    background: rgba(255,255,255,0.07);
+    border: 1px solid var(--gw-border);
+    color: var(--gw-text-dim);
+    border-radius: 6px;
+    padding: 2px 6px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.agent-chat-action-btn:hover {
+    color: var(--gw-text);
+    border-color: rgba(var(--gw-accent-rgb),0.5);
+}
+.agent-chat-delete:hover {
+    color: #ff6b6b;
+    border-color: rgba(255,107,107,0.5);
+}
+
+/* 编辑模式 */
+.agent-chat-bubble.editing .agent-chat-edit-area { display: block; }
+.agent-chat-edit-area { margin-top: 6px; }
+.agent-chat-edit-textarea {
+    width: 100%;
+    min-height: 60px;
+    background: var(--gw-bg);
+    border: 1px solid rgba(var(--gw-accent-rgb),0.5);
+    border-radius: 8px;
+    color: var(--gw-text);
+    padding: 8px;
+    font-size: 14px;
+    font-family: inherit;
+    resize: vertical;
+    box-sizing: border-box;
+}
+.agent-chat-edit-textarea:focus { outline: none; border-color: var(--gw-accent); }
+.agent-chat-edit-actions { margin-top: 6px; display: flex; gap: 6px; }
+.agent-chat-edit-save, .agent-chat-edit-cancel {
+    padding: 4px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    border: 1px solid var(--gw-border);
+}
+.agent-chat-edit-save {
+    background: var(--gw-accent);
+    color: #fff;
+    border-color: var(--gw-accent);
+}
+.agent-chat-edit-save:hover { opacity: 0.85; }
+.agent-chat-edit-cancel {
+    background: transparent;
+    color: var(--gw-text-dim);
+}
+.agent-chat-edit-cancel:hover { color: var(--gw-text); }
+
+/* 删除动画 */
+.agent-chat-deleting {
+    animation: agentMsgFadeOut 0.3s ease forwards;
+}
+@keyframes agentMsgFadeOut {
+    0% { opacity: 1; transform: translateX(0); }
+    100% { opacity: 0; transform: translateX(20px); }
+}

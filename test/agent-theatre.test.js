@@ -237,6 +237,49 @@ describe('TheatreBroadcaster - 消息类型封装', () => {
         assert.strictEqual(ev.data.delta, '片段');
         assert.strictEqual(ev.data.runId, 'run-1');
     });
+
+    test('broadcastReasoning 推送 reasoning 事件且携带 runId/delta/full/turn', () => {
+        const res = mockSseRes();
+        b.addClient(res, 'native:default');
+        b.broadcastReasoning('native:default', { runId: 'run-1', delta: '先想想', full: '先想想再回答', turn: 1 });
+
+        const events = parseSseEvents(res.chunks);
+        const ev = events.find(e => e.event === 'reasoning');
+        assert.ok(ev, '应推送 reasoning 事件');
+        assert.strictEqual(ev.data.runId, 'run-1');
+        assert.strictEqual(ev.data.delta, '先想想');
+        assert.strictEqual(ev.data.full, '先想想再回答');
+        assert.strictEqual(ev.data.turn, 1);
+    });
+
+    test('broadcastReasoning 未传 turn 时事件仍携带 delta/full', () => {
+        const res = mockSseRes();
+        b.addClient(res, 'native:default');
+        // 非流式整包上报场景：turn 可选
+        b.broadcastReasoning('native:default', { runId: 'r2', delta: '完整思维链', full: '完整思维链' });
+
+        const events = parseSseEvents(res.chunks);
+        const ev = events.find(e => e.event === 'reasoning');
+        assert.ok(ev);
+        assert.strictEqual(ev.data.runId, 'r2');
+        assert.strictEqual(ev.data.delta, '完整思维链');
+        assert.strictEqual(ev.data.full, '完整思维链');
+        assert.strictEqual(ev.data.turn, undefined);
+    });
+
+    test('reasoning 事件按 session 隔离推送', () => {
+        const resA = mockSseRes();
+        const resB = mockSseRes();
+        b.addClient(resA, 'native:chatA');
+        b.addClient(resB, 'native:chatB');
+
+        b.broadcastReasoning('native:chatA', { runId: 'r1', delta: '想', full: '想' });
+
+        const evA = parseSseEvents(resA.chunks).find(e => e.event === 'reasoning');
+        const evB = parseSseEvents(resB.chunks).find(e => e.event === 'reasoning');
+        assert.ok(evA, '会话 A 应收到 reasoning');
+        assert.ok(!evB, '会话 B 不应收到 reasoning');
+    });
 });
 
 describe('TheatreBroadcaster - run_state 广播（P2 停止生成）', () => {

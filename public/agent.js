@@ -27,6 +27,8 @@
     var LS_FRONTEND_URL = 'gateway_agent_frontend_url';
     var LS_GUIDE_DONE = 'gateway_agent_guide_done';
     var LS_CHAT_PREFIX = 'agent_chat_history_';
+    // P8: UI 折叠偏好（工具调用/选项/思考面板），会话期间状态一致
+    var LS_UI_PREFS = 'gateway_agent_ui_prefs';
 
     // ==================== 工具函数 ====================
 
@@ -1212,6 +1214,46 @@
     /** 滚动跟随开关：距底部 <80px 时自动跟随新内容，用户上翻阅读时暂停 */
     var autoScroll = true;
 
+    // ==================== P8: UI 折叠偏好（localStorage 持久化） ====================
+    // 三个面板默认均为折叠（true），init 时读取应用、切换时写回，实现「会话期间状态一致」。
+    // 思考面板折叠状态（floor.flowCollapsed）与 uiPrefs.thoughtCollapsed 全局一致读写。
+    var uiPrefs = { eventsCollapsed: true, optionsCollapsed: true, thoughtCollapsed: true };
+
+    /** 读取折叠偏好（容错：隐私模式 / 损坏 JSON 静默回退默认） */
+    function loadUiPrefs() {
+        try {
+            var raw = localStorage.getItem(LS_UI_PREFS);
+            if (!raw) return;
+            var p = JSON.parse(raw);
+            if (!p || typeof p !== 'object') return;
+            if (typeof p.eventsCollapsed === 'boolean') uiPrefs.eventsCollapsed = p.eventsCollapsed;
+            if (typeof p.optionsCollapsed === 'boolean') uiPrefs.optionsCollapsed = p.optionsCollapsed;
+            if (typeof p.thoughtCollapsed === 'boolean') uiPrefs.thoughtCollapsed = p.thoughtCollapsed;
+        } catch (_) { /* 静默 */ }
+    }
+
+    /** 写回折叠偏好 */
+    function saveUiPrefs() {
+        try { localStorage.setItem(LS_UI_PREFS, JSON.stringify(uiPrefs)); } catch (_) { /* 静默 */ }
+    }
+
+    /** 把偏好应用到「工具调用 / 选项」两个折叠面板（init 时调用一次） */
+    function applyCollapsiblePrefs() {
+        var evPanel = $('agent_events_panel');
+        if (evPanel) {
+            evPanel.classList.toggle('collapsed', uiPrefs.eventsCollapsed);
+            var a = evPanel.querySelector('.agent-collapsible-arrow');
+            if (a) a.textContent = uiPrefs.eventsCollapsed ? '▸' : '▾';
+        }
+        var optPanel = $('agent_options_panel');
+        if (optPanel) {
+            optPanel.classList.toggle('collapsed', uiPrefs.optionsCollapsed);
+            var b = optPanel.querySelector('.agent-collapsible-arrow');
+            if (b) b.textContent = uiPrefs.optionsCollapsed ? '▸' : '▾';
+        }
+    }
+
+
     function gatewayUrl() { return agentSettings.url; }
     function gatewayToken() { return agentSettings.token; }
 
@@ -1263,6 +1305,16 @@
                 var data = JSON.parse(ev.data);
                 handleTokenDelta(data);
             } catch (e) { console.warn('[agent-frontend] token_delta 解析失败', e); }
+        });
+
+        // P8: 思维链实时流（data = { runId, delta, full, turn }）
+        //   流式：delta=增量，full=该 run 累计完整思维链，实时到达；
+        //   非流式：run 完成后一次性到达（delta=full）。追加到当前楼层思考面板的 reasoning 区。
+        es.addEventListener('reasoning', function (ev) {
+            try {
+                var data = JSON.parse(ev.data);
+                handleReasoning(data);
+            } catch (e) { console.warn('[agent-frontend] reasoning 解析失败', e); }
         });
 
         // P2: run 生命周期状态（running / aborting / aborted / completed / error）
@@ -1340,8 +1392,8 @@
             var v2 = $('agent_prompt_viewer');
             if (v2 && v2.style.display !== 'none') fetchPrompt();
         }
-        // P7: 执行流程栏状态跟随 run 状态机（running/aborting 归一为 running，其余原样）
-        updateFlowStatus(flowFloorIdx, data.state);
+        // P8: 思考面板状态跟随 run 状态机（running/aborting 归一为 running，其余原样）
+        updateThoughtStatus(flowFloorIdx, data.state);
     }
 
     // P2: 按 runState 渲染停止按钮 / 发送按钮 / 状态徽标（适配 ST 圆形图标按钮）
@@ -1394,6 +1446,10 @@
             streaming.runId = data.runId;
             if (streaming.el && streaming.el.parentNode) streaming.el.remove();
             streaming.el = null;
+        }
+        // P8: 在楼层上缓存 runId，供 reasoning 事件（pendingFloorIdx 已清空时）按 runId 回找
+        if (data.runId && streaming.pendingFloorIdx != null && theatre.floors[streaming.pendingFloorIdx]) {
+            theatre.floors[streaming.pendingFloorIdx].runId = data.runId;
         }
         // 清除「思考中」占位光标
         var cursor = $('agent_theatre_cursor');
@@ -1473,11 +1529,11 @@
         var wrap = document.createElement('div');
         wrap.className = 'agent-chat-floor';
         wrap.setAttribute('data-floor-idx', String(floorIdx));
-        if (floor.userMsg) wrap.appendChild(createUserMsg(floor.userMsg));
+        if (floor.userMsg) wrap.appendChild(createUserMsg(floor.userMsg, floorIdx));
 
-        // P7: 执行流程栏（用户消息之后、assistant 之前；有流程事件或运行中时插入）
-        if ((floor.flow && floor.flow.length > 0) || floor.flowStatus === 'running') {
-            wrap.appendChild(createRunFlowDom(floorIdx));
+        // P8: 思考面板（用户消息之后、assistant 之前；有思维链/流程事件或运行中时插入）
+        if ((floor.flow && floor.flow.length > 0) || floor.reasoning || floor.flowStatus === 'running') {
+            wrap.appendChild(createThoughtPanelDom(floorIdx));
         }
 
         // 失败且无任何回复时，仅保留用户消息（不渲染空气泡）
@@ -1489,15 +1545,10 @@
             var a = createAssistantMsg(content, streamingFlag, floorIdx);
             var needThinking = !floor.failed && ((isDraft && !floor.draftPage) ||
                 (!isDraft && !floor.draftPage && floor.pages.length === 0 && floor.userMsg));
+            // P8: 不再创建「▍ Agent 思考中...」光标（思考状态已上移至思考面板头部徽标），
+            // 保留 .pending 骨架占位（斜体弱化），流式文本仍正常显示
             if (needThinking) {
                 a.classList.add('pending');
-                var bubble = a.querySelector('.agent-chat-bubble');
-                var textEl = bubble.querySelector('.agent-chat-bubble-text');
-                var thinking = document.createElement('span');
-                thinking.className = 'agent-chat-cursor';
-                thinking.id = 'agent_theatre_cursor';
-                thinking.textContent = '▍ Agent 思考中...';
-                (textEl || bubble).appendChild(thinking);
             }
             wrap.appendChild(a);
         }
@@ -1652,7 +1703,7 @@
             }
             floor.failed = false;
             floor.currentPage = floor.pages.length;
-            updateFlowStatus(floorIdx, 'completed'); // P7: agent_result 兜底置 completed
+            updateThoughtStatus(floorIdx, 'completed'); // P8: agent_result 兜底置 completed
             streaming.pendingFloorIdx = null;
             updateFloorDom(floorIdx, false);
         } else if (text) {
@@ -1674,7 +1725,7 @@
                 }
                 lf.draftPage = null;
             }
-            updateFlowStatus(theatre.floors.length - 1, 'completed'); // P7: agent_result 兜底置 completed
+            updateThoughtStatus(theatre.floors.length - 1, 'completed'); // P8: agent_result 兜底置 completed
             renderFloors();
         }
         clearStreamingPreview();
@@ -1700,8 +1751,8 @@
         if ($('agent_theatre_show_events') && $('agent_theatre_show_events').checked) {
             appendInlineEvent(event);
         }
-        // P7: 同步到当前轮次楼层的执行流程栏（实时展示调用状态 / 步骤顺序 / 关键节点）
-        appendFlowEvent(streaming.pendingFloorIdx, event);
+        // P8: 同步到当前轮次楼层的思考面板决策链区（实时展示调用状态 / 步骤顺序 / 关键节点）
+        appendThoughtStep(streaming.pendingFloorIdx, event);
     }
 
     function appendNarrative(text) {
@@ -1718,12 +1769,22 @@
     function clearNarrativeDom() {
         var el = $('agent_theatre_narrative');
         if (el) el.innerHTML = '<div class="gateway-empty-hint">已清空，输入消息或点击选项重新开始</div>';
-        var optEl = $('agent_theatre_options');
-        if (optEl) optEl.innerHTML = '<div class="gateway-empty-hint">（选项将在 Agent 输出后出现）</div>';
+        // P8: 选项面板整体隐藏 + 清空按钮与计数（无选项时不占空间）
+        var optPanel = $('agent_options_panel');
+        if (optPanel) optPanel.style.display = 'none';
+        var optBody = $('agent_theatre_options');
+        if (optBody) optBody.innerHTML = '';
+        var optCount = $('agent_options_panel_count');
+        if (optCount) optCount.textContent = '0';
+        var optNew = $('agent_options_panel_new');
+        if (optNew) optNew.style.display = 'none';
         var tlEl = $('agent_theatre_timeline');
         if (tlEl) tlEl.innerHTML = '<div class="gateway-empty-hint">（事件流将在此显示）</div>';
+        // P8: 工具调用面板清空内联事件 + 计数归零（面板折叠状态由 uiPrefs 独立控制，保持不变）
         var inlineEl = $('agent_theatre_events_inline');
-        if (inlineEl) { inlineEl.innerHTML = ''; inlineEl.style.display = 'none'; }
+        if (inlineEl) inlineEl.innerHTML = '';
+        var evCount = $('agent_events_panel_count');
+        if (evCount) evCount.textContent = '0';
         theatre.timelineEvents = [];
         clearStreamingPreview();
     }
@@ -1746,12 +1807,19 @@
     // ==================== Agent 剧场：选项 ====================
 
     function renderOptions(options) {
+        var panel = $('agent_options_panel');
         var el = $('agent_theatre_options');
-        if (!el) return;
+        if (!panel || !el) return;
         if (!options || options.length === 0) {
-            el.innerHTML = '<div class="gateway-empty-hint">（本轮无选项，可直接输入）</div>';
+            // P8: 无选项时面板整体隐藏
+            panel.style.display = 'none';
+            el.innerHTML = '';
+            var c0 = $('agent_options_panel_count');
+            if (c0) c0.textContent = '0';
             return;
         }
+        // P8: 有选项 → 显示面板、更新数量徽标、点亮「新选项」高亮（可发现性，展开后清除）
+        panel.style.display = '';
         var html = '';
         for (var i = 0; i < options.length; i++) {
             var o = options[i];
@@ -1763,6 +1831,10 @@
                 '</button>';
         }
         el.innerHTML = html;
+        var count = $('agent_options_panel_count');
+        if (count) count.textContent = String(options.length);
+        var nb = $('agent_options_panel_new');
+        if (nb) nb.style.display = '';
     }
 
     // ==================== Agent 剧场：状态面板 ====================
@@ -1843,7 +1915,6 @@
     function appendInlineEvent(event) {
         var el = $('agent_theatre_events_inline');
         if (!el) return;
-        el.style.display = 'block';
         var meta = EVENT_META[event.type] || { icon: '•', label: event.type };
         var detail = '';
         if (event.payload) {
@@ -1855,23 +1926,27 @@
         item.className = 'gateway-theatre-inline-event';
         item.textContent = '── ' + meta.icon + ' ' + meta.label + (detail ? ': ' + detail : '') + ' ──';
         el.appendChild(item);
+        // P8: 更新「工具调用」面板数量徽标（面板显隐由折叠状态独立控制）
+        var countEl = $('agent_events_panel_count');
+        if (countEl) countEl.textContent = String(el.children.length);
     }
 
-    // ==================== P7: 执行流程栏（实时 agent 执行流程信息栏） ====================
-    // 楼层数据：floor.flow[]（事件数组）、floor.flowStatus（idle/running/completed/aborted/error）、
-    // floor.flowCollapsed。旧楼层（历史加载）可能无 flow，读取统一用 floor.flow || [] 容错。
+    // ==================== P8: 思考面板（思维链 reasoning + 决策链 steps，替代 P7 执行流程栏） ====================
+    // 楼层数据保留 P7 模型：floor.flow[]（事件数组）、floor.flowStatus（idle/running/completed/aborted/error）、
+    // floor.flowCollapsed；新增 floor.reasoning（SSE reasoning 累积的完整思维链，重建时恢复）。
+    // 旧楼层（历史加载）可能无 flow/reasoning，读取统一用 floor.flow || [] / floor.reasoning 容错。
 
-    /** 取楼层当前 DOM 中的执行流程栏元素（无则 null） */
-    function getFloorFlowEl(floorIdx) {
+    /** 取楼层当前 DOM 中的思考面板元素（无则 null） */
+    function getFloorThoughtEl(floorIdx) {
         var floorEl = getFloorEl(floorIdx);
         if (!floorEl) return null;
-        return floorEl.querySelector('.agent-run-flow');
+        return floorEl.querySelector('.agent-thought-panel');
     }
 
-    /** 状态徽标文案：running→执行中；completed→完成；aborted→已中止；error→出错；其余不显示 */
-    function flowBadgeText(status) {
+    /** 状态徽标文案：running→思考中；completed→完成；aborted→已中止；error→出错；其余不显示 */
+    function thoughtBadgeText(status) {
         switch (status) {
-            case 'running': return '⏳ 执行中';
+            case 'running': return '⏳ 思考中';
             case 'completed': return '✅ 完成';
             case 'aborted': return '⏹ 已中止';
             case 'error': return '❌ 出错';
@@ -1880,23 +1955,23 @@
     }
 
     /** 进度文案：执行中显示「已执行 N 个操作」，run 结束显示「共 N 个操作」 */
-    function flowProgressText(floor) {
+    function thoughtProgressText(floor) {
         var n = (floor.flow || []).length;
         var done = floor.flowStatus === 'completed' || floor.flowStatus === 'aborted' || floor.flowStatus === 'error';
         return (done ? '共 ' : '已执行 ') + n + ' 个操作';
     }
 
-    /** 单条流程事件 DOM：EVENT_META 图标 + 标签 + 详情（tool/agent/label）+ 时间戳 */
-    function createFlowItem(event) {
+    /** 单条决策链事件 DOM：EVENT_META 图标 + 标签 + 详情（tool/agent/label）+ 时间戳 */
+    function createThoughtStepItem(event) {
         var meta = EVENT_META[event.type] || { icon: '•', label: event.type, cls: 'other' };
         var item = document.createElement('div');
-        item.className = 'agent-run-flow-item agent-run-flow-item-' + meta.cls;
+        item.className = 'agent-thought-step-item agent-thought-step-item-' + meta.cls;
         var icon = document.createElement('span');
-        icon.className = 'agent-run-flow-item-icon';
+        icon.className = 'agent-thought-step-item-icon';
         icon.textContent = meta.icon;
         item.appendChild(icon);
         var label = document.createElement('span');
-        label.className = 'agent-run-flow-item-label';
+        label.className = 'agent-thought-step-item-label';
         label.textContent = meta.label;
         item.appendChild(label);
         var detail = '';
@@ -1907,136 +1982,219 @@
         }
         if (detail) {
             var dEl = document.createElement('span');
-            dEl.className = 'agent-run-flow-item-detail';
+            dEl.className = 'agent-thought-step-item-detail';
             dEl.textContent = detail;
             dEl.title = detail;
             item.appendChild(dEl);
         }
         if (event.timestamp) {
             var tsEl = document.createElement('span');
-            tsEl.className = 'agent-run-flow-item-ts';
+            tsEl.className = 'agent-thought-step-item-ts';
             tsEl.textContent = new Date(event.timestamp).toLocaleTimeString();
             item.appendChild(tsEl);
         }
         return item;
     }
 
-    /** 构建执行流程栏 DOM：头部（箭头 + 标题 + 状态徽标 + 进度）+ 事件主体 */
-    function createRunFlowDom(floorIdx) {
+    /** 构建思考面板 DOM：头部（箭头 + 💭 思考过程 + 状态徽标 + 进度）+ 主体（思维链区 + 决策链区） */
+    function createThoughtPanelDom(floorIdx) {
         var floor = theatre.floors[floorIdx] || {};
-        var flowEl = document.createElement('div');
-        flowEl.className = 'agent-run-flow';
-        flowEl.setAttribute('data-floor-idx', String(floorIdx));
-        flowEl.setAttribute('data-flow-status', floor.flowStatus || '');
-        if (floor.flowCollapsed) flowEl.classList.add('collapsed');
+        var panel = document.createElement('div');
+        panel.className = 'agent-thought-panel';
+        panel.setAttribute('data-floor-idx', String(floorIdx));
+        panel.setAttribute('data-flow-status', floor.flowStatus || '');
+        if (floor.flowCollapsed) panel.classList.add('collapsed');
 
         var header = document.createElement('div');
-        header.className = 'agent-run-flow-header';
-        header.title = '点击展开/收起执行流程';
+        header.className = 'agent-thought-panel-header';
+        header.title = '点击展开/收起思考过程';
         var arrow = document.createElement('span');
-        arrow.className = 'agent-run-flow-arrow';
+        arrow.className = 'agent-thought-panel-arrow';
         arrow.textContent = floor.flowCollapsed ? '▸' : '▾';
         var title = document.createElement('span');
-        title.className = 'agent-run-flow-title';
-        title.textContent = '🤖 执行流程';
+        title.className = 'agent-thought-panel-title';
+        title.textContent = '💭 思考过程';
         var badge = document.createElement('span');
-        badge.className = 'agent-run-flow-badge';
-        var bt = flowBadgeText(floor.flowStatus);
+        badge.className = 'agent-thought-panel-badge';
+        var bt = thoughtBadgeText(floor.flowStatus);
         if (bt) badge.textContent = bt;
         else badge.style.display = 'none';
         var progress = document.createElement('span');
-        progress.className = 'agent-run-flow-progress';
-        progress.textContent = flowProgressText(floor);
+        progress.className = 'agent-thought-panel-progress';
+        progress.textContent = thoughtProgressText(floor);
         header.appendChild(arrow);
         header.appendChild(title);
         header.appendChild(badge);
         header.appendChild(progress);
 
         var body = document.createElement('div');
-        body.className = 'agent-run-flow-body';
+        body.className = 'agent-thought-panel-body';
+
+        // 思维链区：流式追加 reasoning（SSE 实时），空时显示占位
+        var reasoning = document.createElement('div');
+        reasoning.className = 'agent-thought-reasoning';
+        reasoning.textContent = floor.reasoning || '（模型未输出思考内容）';
+        if (floor.reasoning) reasoning.classList.add('has-content');
+        body.appendChild(reasoning);
+
+        // 决策链区：沿用 agent_event 事件列表（有事件时才渲染）
         var flow = floor.flow || [];
-        for (var i = 0; i < flow.length; i++) {
-            body.appendChild(createFlowItem(flow[i]));
+        if (flow.length > 0) {
+            var steps = document.createElement('div');
+            steps.className = 'agent-thought-steps';
+            for (var i = 0; i < flow.length; i++) {
+                steps.appendChild(createThoughtStepItem(flow[i]));
+            }
+            body.appendChild(steps);
         }
 
-        flowEl.appendChild(header);
-        flowEl.appendChild(body);
-        return flowEl;
+        panel.appendChild(header);
+        panel.appendChild(body);
+        return panel;
     }
 
-    /** 局部重建某楼层的执行流程栏（仅替换 .agent-run-flow，不触碰用户/assistant 气泡，避免打断流式） */
-    function rebuildFloorFlow(floorIdx) {
+    /** 局部重建某楼层的思考面板（仅替换 .agent-thought-panel，不触碰用户/assistant 气泡，避免打断流式） */
+    function rebuildFloorThought(floorIdx) {
         var floorEl = getFloorEl(floorIdx);
         if (!floorEl) return;
-        var oldFlow = floorEl.querySelector('.agent-run-flow');
-        if (oldFlow) oldFlow.remove();
+        var oldPanel = floorEl.querySelector('.agent-thought-panel');
+        if (oldPanel) oldPanel.remove();
         var floor = theatre.floors[floorIdx];
         if (!floor) return;
-        if ((floor.flow && floor.flow.length > 0) || floor.flowStatus === 'running') {
-            var flowEl = createRunFlowDom(floorIdx);
+        if ((floor.flow && floor.flow.length > 0) || floor.reasoning || floor.flowStatus === 'running') {
+            var panel = createThoughtPanelDom(floorIdx);
             var asst = floorEl.querySelector('.agent-chat-msg.assistant');
-            if (asst && asst.parentNode) asst.parentNode.insertBefore(flowEl, asst);
-            else floorEl.appendChild(flowEl);
+            if (asst && asst.parentNode) asst.parentNode.insertBefore(panel, asst);
+            else floorEl.appendChild(panel);
         }
     }
 
-    /** 把 agent_event 追加进当前轮次楼层的执行流程栏（按到达顺序 + 自动滚到底部） */
-    function appendFlowEvent(floorIdx, event) {
+    /** 把 agent_event 追加进当前轮次楼层的思考面板决策链区（按到达顺序 + 自动滚到底部） */
+    function appendThoughtStep(floorIdx, event) {
         if (floorIdx == null || !event) return;
         var floor = theatre.floors[floorIdx];
         if (!floor) return;
         floor.flow = floor.flow || [];
         floor.flow.push(event);
-        var flowEl = getFloorFlowEl(floorIdx);
-        if (!flowEl) {
-            // 兜底：楼层 DOM 尚无流程栏（事件先于 DOM 到达），局部重建楼层补上
+        var panel = getFloorThoughtEl(floorIdx);
+        if (!panel) {
+            // 兜底：楼层 DOM 尚无思考面板（事件先于 DOM 到达），局部重建楼层补上
             updateFloorDom(floorIdx, streaming.pendingFloorIdx === floorIdx);
-            flowEl = getFloorFlowEl(floorIdx);
-            if (!flowEl) return;
+            panel = getFloorThoughtEl(floorIdx);
+            if (!panel) return;
         }
-        var body = flowEl.querySelector('.agent-run-flow-body');
-        if (body) {
-            body.appendChild(createFlowItem(event));
-            body.scrollTop = body.scrollHeight; // 自动滚到底部
+        var steps = panel.querySelector('.agent-thought-steps');
+        if (!steps) {
+            // 首次事件：在主体内追加决策链区（保留已累积的思维链内容）
+            steps = document.createElement('div');
+            steps.className = 'agent-thought-steps';
+            var body = panel.querySelector('.agent-thought-panel-body');
+            if (body) body.appendChild(steps);
         }
-        updateFlowProgress(flowEl, floor);
+        steps.appendChild(createThoughtStepItem(event));
+        if (autoScroll) steps.scrollTop = steps.scrollHeight; // 自动滚到底部
+        updateThoughtProgress(panel, floor);
     }
 
-    /** 更新流程栏进度文案（复用当前 DOM，不重建） */
-    function updateFlowProgress(flowEl, floor) {
-        if (!flowEl) return;
-        var prog = flowEl.querySelector('.agent-run-flow-progress');
-        if (prog) prog.textContent = flowProgressText(floor);
+    /** 更新思考面板进度文案（复用当前 DOM，不重建） */
+    function updateThoughtProgress(panel, floor) {
+        if (!panel) return;
+        var prog = panel.querySelector('.agent-thought-panel-progress');
+        if (prog) prog.textContent = thoughtProgressText(floor);
     }
 
-    /** 执行流程栏状态跟随 run 状态机（running/aborting 归一为 running，其余原样）；completed 时进度显示总数 */
-    function updateFlowStatus(floorIdx, state) {
+    /** 思考面板状态跟随 run 状态机（running/aborting 归一为 running，其余原样）；completed 时进度显示总数 */
+    function updateThoughtStatus(floorIdx, state) {
         if (floorIdx == null) return;
         var floor = theatre.floors[floorIdx];
         if (!floor) return;
         floor.flowStatus = (state === 'running' || state === 'aborting') ? 'running' : state;
-        var flowEl = getFloorFlowEl(floorIdx);
-        if (!flowEl) return; // 楼层 DOM 中无流程栏（未到插入时机）时仅更新数据
-        flowEl.setAttribute('data-flow-status', floor.flowStatus || '');
-        var badge = flowEl.querySelector('.agent-run-flow-badge');
-        var bt = flowBadgeText(floor.flowStatus);
+        var panel = getFloorThoughtEl(floorIdx);
+        if (!panel) return; // 楼层 DOM 中无思考面板（未到插入时机）时仅更新数据
+        panel.setAttribute('data-flow-status', floor.flowStatus || '');
+        var badge = panel.querySelector('.agent-thought-panel-badge');
+        var bt = thoughtBadgeText(floor.flowStatus);
         if (badge) {
             if (bt) { badge.textContent = bt; badge.style.display = ''; }
             else badge.style.display = 'none';
         }
-        updateFlowProgress(flowEl, floor);
+        updateThoughtProgress(panel, floor);
     }
 
-    /** 点击流程栏头部：切换展开/收起 */
-    function toggleFlowCollapsed(floorIdx) {
+    /** 点击思考面板头部：切换展开/收起（同步持久化到 uiPrefs.thoughtCollapsed，全局一致） */
+    function toggleThoughtCollapsed(floorIdx) {
         var floor = theatre.floors[floorIdx];
         if (!floor) return;
         floor.flowCollapsed = !floor.flowCollapsed;
-        var flowEl = getFloorFlowEl(floorIdx);
-        if (!flowEl) return;
-        flowEl.classList.toggle('collapsed', !!floor.flowCollapsed);
-        var arrow = flowEl.querySelector('.agent-run-flow-arrow');
+        uiPrefs.thoughtCollapsed = !!floor.flowCollapsed;
+        saveUiPrefs();
+        var panel = getFloorThoughtEl(floorIdx);
+        if (!panel) return;
+        panel.classList.toggle('collapsed', !!floor.flowCollapsed);
+        var arrow = panel.querySelector('.agent-thought-panel-arrow');
         if (arrow) arrow.textContent = floor.flowCollapsed ? '▸' : '▾';
+    }
+
+    /** P8: SSE reasoning 事件处理：把思维链增量/累计值写入当前楼层思考面板 */
+    function handleReasoning(data) {
+        if (!data) return;
+        var delta = data.delta || '';
+        var full = data.full || '';
+        var floorIdx = streaming.pendingFloorIdx;
+        var floor = floorIdx != null ? theatre.floors[floorIdx] : null;
+        // 兜底：pendingFloorIdx 已清空（非流式 run 完成一次性到达）时按 runId 回找楼层
+        if (!floor && data.runId) {
+            for (var i = theatre.floors.length - 1; i >= 0; i--) {
+                var f = theatre.floors[i];
+                if (f && f.runId && f.runId === data.runId) { floor = f; floorIdx = i; break; }
+            }
+        }
+        // 最后兜底：退化为「运行中」的最后一个楼层（极端时序下容错）
+        if (!floor) {
+            for (var j = theatre.floors.length - 1; j >= 0; j--) {
+                if (theatre.floors[j] && theatre.floors[j].flowStatus === 'running') { floor = theatre.floors[j]; floorIdx = j; break; }
+            }
+        }
+        if (!floor) return;
+        // full 优先（非流式一次性 / 断线恢复用累计值），否则流式增量累积
+        floor.reasoning = full ? full : ((floor.reasoning || '') + delta);
+        var panel = getFloorThoughtEl(floorIdx);
+        if (!panel) {
+            // 面板未插入（理论上运行中必有），局部重建补上
+            updateFloorDom(floorIdx, streaming.pendingFloorIdx === floorIdx);
+            panel = getFloorThoughtEl(floorIdx);
+            if (!panel) return;
+        }
+        var reasoning = panel.querySelector('.agent-thought-reasoning');
+        if (reasoning) {
+            reasoning.classList.add('has-content');
+            reasoning.textContent = floor.reasoning || '';
+            if (autoScroll) reasoning.scrollTop = reasoning.scrollHeight;
+        }
+    }
+
+    /** P8: 「工具调用」面板头部点击：切换折叠（持久化） */
+    function toggleEventsPanel() {
+        uiPrefs.eventsCollapsed = !uiPrefs.eventsCollapsed;
+        saveUiPrefs();
+        var panel = $('agent_events_panel');
+        if (panel) panel.classList.toggle('collapsed', uiPrefs.eventsCollapsed);
+        var arrow = panel && panel.querySelector('.agent-collapsible-arrow');
+        if (arrow) arrow.textContent = uiPrefs.eventsCollapsed ? '▸' : '▾';
+    }
+
+    /** P8: 「选项」面板头部点击：切换折叠（持久化）；展开即视为已查看，隐藏「新选项」高亮 */
+    function toggleOptionsPanel() {
+        uiPrefs.optionsCollapsed = !uiPrefs.optionsCollapsed;
+        saveUiPrefs();
+        var panel = $('agent_options_panel');
+        if (panel) panel.classList.toggle('collapsed', uiPrefs.optionsCollapsed);
+        var arrow = panel && panel.querySelector('.agent-collapsible-arrow');
+        if (arrow) arrow.textContent = uiPrefs.optionsCollapsed ? '▸' : '▾';
+        if (!uiPrefs.optionsCollapsed) {
+            var nb = $('agent_options_panel_new');
+            if (nb) nb.style.display = 'none';
+        }
     }
 
     function fetchTimeline(runId) {
@@ -2082,7 +2240,8 @@
             if (text && !options.rerun) {
                 theatre.floors.push({
                     userMsg: text, pages: [], currentPage: 0,
-                    flow: [], flowStatus: 'running', flowCollapsed: false, // P7: 执行流程栏
+                    flow: [], flowStatus: 'running', flowCollapsed: uiPrefs.thoughtCollapsed, // P8: 思考面板折叠跟随全局偏好
+                    reasoning: '', // P8: 思维链缓存（SSE reasoning 累积，重建时恢复）
                 });
                 streaming.pendingFloorIdx = theatre.floors.length - 1;
                 renderFloors();
@@ -2091,27 +2250,21 @@
                 var f = theatre.floors[theatre.floors.length - 1];
                 f.draftPage = '';
                 f.failed = false;
-                f.flow = [];              // P7: 重跑清空上一轮执行流程
-                f.flowStatus = 'running'; // P7: 重跑置 running
-                f.flowCollapsed = false;  // P7: 重跑恢复展开
+                f.flow = [];              // P8: 重跑清空上一轮决策链
+                f.flowStatus = 'running'; // P8: 重跑置 running
+                f.reasoning = '';         // P8: 重跑清空上一轮思维链
+                f.flowCollapsed = uiPrefs.thoughtCollapsed; // P8: 重跑跟随全局折叠偏好
                 streaming.pendingFloorIdx = theatre.floors.length - 1;
                 f.currentPage = f.pages.length + 1; // 流式中间态：切到最新页（用户看到重试结果）
-                // P7: 仅局部重建该楼层执行流程栏（不整楼重建，避免打断流式）
-                rebuildFloorFlow(streaming.pendingFloorIdx);
+                // P8: 仅局部重建该楼层思考面板（不整楼重建，避免打断流式）
+                rebuildFloorThought(streaming.pendingFloorIdx);
             } else {
-                // 兼容旧路径：无楼层数据时创建「思考中」占位 AI 气泡
+                // 兼容旧路径：无楼层数据时创建 pending 占位 AI 气泡（P8: 不再创建「思考中」光标）
                 if (streaming.el && streaming.el.parentNode) streaming.el.remove();
                 streaming.el = null;
                 streaming.runId = null;
                 var placeholder = createAssistantMsg('', false);
                 placeholder.classList.add('pending');
-                var bubble = placeholder.querySelector('.agent-chat-bubble');
-                var textEl = bubble.querySelector('.agent-chat-bubble-text');
-                var cursor = document.createElement('span');
-                cursor.className = 'agent-chat-cursor';
-                cursor.id = 'agent_theatre_cursor';
-                cursor.textContent = '▍ Agent 思考中...';
-                (textEl || bubble).appendChild(cursor);
                 narrative.appendChild(placeholder);
                 streaming.el = placeholder;
             }
@@ -2136,6 +2289,10 @@
                 theatre.runState = 'idle';
                 renderRunState();
                 return;
+            }
+            // P8: 把 runId 记录到进行中的楼层（reasoning 事件在 pendingFloorIdx 已清空时按 runId 兜底回找）
+            if (data.runId && streaming.pendingFloorIdx != null && theatre.floors[streaming.pendingFloorIdx]) {
+                theatre.floors[streaming.pendingFloorIdx].runId = data.runId;
             }
             // handleAgentResult 会被 SSE 推送触发；无 SSE 时兜底渲染
             if (!theatre.connected) {
@@ -2244,6 +2401,24 @@
             retry.title = '重跑上一轮';
             retry.innerHTML = '<i class="fa-solid fa-rotate-left"></i> 重试';
             bubble.appendChild(retry);
+            // 编辑/删除按钮
+            var actions = document.createElement('div');
+            actions.className = 'agent-chat-actions';
+            var editBtn = document.createElement('button');
+            editBtn.className = 'agent-chat-action-btn agent-chat-edit';
+            editBtn.title = '编辑';
+            editBtn.innerHTML = '<i class="fa-solid fa-pen"></i>';
+            editBtn.setAttribute('data-edit', 'assistant');
+            if (floorIdx != null) editBtn.setAttribute('data-floor-idx', String(floorIdx));
+            var delBtn = document.createElement('button');
+            delBtn.className = 'agent-chat-action-btn agent-chat-delete';
+            delBtn.title = '删除';
+            delBtn.innerHTML = '<i class="fa-solid fa-trash"></i>';
+            delBtn.setAttribute('data-delete', 'assistant');
+            if (floorIdx != null) delBtn.setAttribute('data-floor-idx', String(floorIdx));
+            actions.appendChild(editBtn);
+            actions.appendChild(delBtn);
+            bubble.appendChild(actions);
             // P3: 楼层翻页控件（pages.length > 1 时显示）
             if (floorIdx != null && theatre.floors && theatre.floors[floorIdx] &&
                 theatre.floors[floorIdx].pages && theatre.floors[floorIdx].pages.length > 1) {
@@ -2283,16 +2458,236 @@
         bubble.appendChild(s);
     }
 
+    /** 从楼层模型构建扁平 history 数组，用于计算消息索引 */
+    function floorsToHistory() {
+        var h = [];
+        for (var i = 0; i < theatre.floors.length; i++) {
+            var f = theatre.floors[i];
+            if (f.userMsg) h.push({ role: 'user', content: f.userMsg });
+            var text = currentFloorText(f);
+            if (text) h.push({ role: 'assistant', content: text });
+        }
+        return h;
+    }
+
+    /** 查找指定楼层+角色的消息在 history 中的索引 */
+    function findMessageIndex(floorIdx, role) {
+        var idx = 0;
+        for (var i = 0; i <= floorIdx; i++) {
+            var f = theatre.floors[i];
+            if (!f) continue;
+            if (f.userMsg) {
+                if (i === floorIdx && role === 'user') return idx;
+                idx++;
+            }
+            var text = currentFloorText(f);
+            if (text) {
+                if (i === floorIdx && role === 'assistant') return idx;
+                idx++;
+            }
+        }
+        return -1;
+    }
+
+    /** 进入消息编辑模式 */
+    function enterEditMode(floorIdx, role) {
+        var wrap = document.querySelector('.agent-chat-floor[data-floor-idx="' + floorIdx + '"]');
+        if (!wrap) return;
+        var selector = role === 'user' ? '.agent-chat-msg.user' : '.agent-chat-msg.assistant';
+        var msgEl = wrap.querySelector(selector);
+        if (!msgEl) return;
+        var bubble = msgEl.querySelector('.agent-chat-bubble');
+        if (!bubble || bubble.classList.contains('editing')) return;
+
+        var textEl = bubble.querySelector('.agent-chat-bubble-text');
+        var originalText = textEl ? textEl.textContent : '';
+
+        bubble.classList.add('editing');
+        // 隐藏原有内容
+        if (textEl) textEl.style.display = 'none';
+        var actions = bubble.querySelector('.agent-chat-actions');
+        if (actions) actions.style.display = 'none';
+        var retry = bubble.querySelector('.agent-chat-retry');
+        if (retry) retry.style.display = 'none';
+
+        // 创建编辑区
+        var editArea = document.createElement('div');
+        editArea.className = 'agent-chat-edit-area';
+        var textarea = document.createElement('textarea');
+        textarea.className = 'agent-chat-edit-textarea';
+        textarea.value = originalText;
+        textarea.rows = Math.max(2, originalText.split('\n').length);
+        var btnRow = document.createElement('div');
+        btnRow.className = 'agent-chat-edit-actions';
+        var saveBtn = document.createElement('button');
+        saveBtn.className = 'agent-chat-edit-save';
+        saveBtn.textContent = '保存';
+        saveBtn.setAttribute('data-edit-save', role);
+        if (floorIdx != null) saveBtn.setAttribute('data-floor-idx', String(floorIdx));
+        var cancelBtn = document.createElement('button');
+        cancelBtn.className = 'agent-chat-edit-cancel';
+        cancelBtn.textContent = '取消';
+        cancelBtn.setAttribute('data-edit-cancel', role);
+        if (floorIdx != null) cancelBtn.setAttribute('data-floor-idx', String(floorIdx));
+        btnRow.appendChild(saveBtn);
+        btnRow.appendChild(cancelBtn);
+        editArea.appendChild(textarea);
+        editArea.appendChild(btnRow);
+        bubble.appendChild(editArea);
+        textarea.focus();
+    }
+
+    /** 退出编辑模式 */
+    function exitEditMode(floorIdx, role) {
+        var wrap = document.querySelector('.agent-chat-floor[data-floor-idx="' + floorIdx + '"]');
+        if (!wrap) return;
+        var selector = role === 'user' ? '.agent-chat-msg.user' : '.agent-chat-msg.assistant';
+        var msgEl = wrap.querySelector(selector);
+        if (!msgEl) return;
+        var bubble = msgEl.querySelector('.agent-chat-bubble');
+        if (!bubble) return;
+        bubble.classList.remove('editing');
+        var editArea = bubble.querySelector('.agent-chat-edit-area');
+        if (editArea) editArea.remove();
+        var textEl = bubble.querySelector('.agent-chat-bubble-text');
+        if (textEl) textEl.style.display = '';
+        var actions = bubble.querySelector('.agent-chat-actions');
+        if (actions) actions.style.display = '';
+        var retry = bubble.querySelector('.agent-chat-retry');
+        if (retry) retry.style.display = '';
+    }
+
+    /** 保存编辑 */
+    function saveEdit(floorIdx, role) {
+        var wrap = document.querySelector('.agent-chat-floor[data-floor-idx="' + floorIdx + '"]');
+        if (!wrap) return;
+        var selector = role === 'user' ? '.agent-chat-msg.user' : '.agent-chat-msg.assistant';
+        var msgEl = wrap.querySelector(selector);
+        if (!msgEl) return;
+        var textarea = msgEl.querySelector('.agent-chat-edit-textarea');
+        if (!textarea) return;
+        var newContent = textarea.value.trim();
+        if (!newContent) { showToast('warning', '内容不能为空'); return; }
+
+        var msgIndex = findMessageIndex(floorIdx, role);
+        if (msgIndex < 0) { showToast('error', '无法定位消息'); return; }
+
+        var session = theatre.session || 'native:default';
+        var character = theatre.character || '';
+        agentFetch('/api/agent-theatre/messages/edit', {
+            method: 'POST',
+            body: JSON.stringify({ session: session, character: character, messageIndex: msgIndex, newContent: newContent }),
+        }).then(function (data) {
+            if (!data.success) { showToast('error', '编辑失败: ' + (data.error || '')); return; }
+            // 更新本地楼层模型
+            var floor = theatre.floors[floorIdx];
+            if (!floor) return;
+            if (role === 'user') {
+                floor.userMsg = newContent;
+            } else {
+                if (floor.pages.length > 0) {
+                    // currentPage 为 1-based（currentFloorText 用 (currentPage||1)-1 取数组索引）
+                    var pageIdx = Math.max(0, (floor.currentPage || 1) - 1);
+                    if (pageIdx >= floor.pages.length) pageIdx = floor.pages.length - 1;
+                    floor.pages[pageIdx] = newContent;
+                } else {
+                    floor.pages = [newContent];
+                    floor.currentPage = 1;
+                }
+            }
+            exitEditMode(floorIdx, role);
+            // 更新显示文本
+            var textEl = msgEl.querySelector('.agent-chat-bubble-text');
+            if (textEl) textEl.textContent = newContent;
+            showToast('success', '已保存编辑');
+            scheduleAutoSave();
+        }).catch(function (e) {
+            showToast('error', '编辑请求失败: ' + e.message);
+        });
+    }
+
+    /** 删除消息 */
+    function deleteMessage(floorIdx, role) {
+        var msgIndex = findMessageIndex(floorIdx, role);
+        if (msgIndex < 0) { showToast('error', '无法定位消息'); return; }
+
+        agentConfirm('确定删除这条' + (role === 'user' ? '用户' : 'AI') + '消息吗？删除后将从上下文中移除。', { danger: true }).then(function (ok) {
+            if (!ok) return;
+            var session = theatre.session || 'native:default';
+            var character = theatre.character || '';
+            agentFetch('/api/agent-theatre/messages/delete', {
+                method: 'POST',
+                body: JSON.stringify({ session: session, character: character, messageIndex: msgIndex }),
+            }).then(function (data) {
+                if (!data.success) { showToast('error', '删除失败: ' + (data.error || '')); return; }
+                // 更新本地楼层模型
+                var floor = theatre.floors[floorIdx];
+                if (!floor) return;
+                if (role === 'user') {
+                    floor.userMsg = '';
+                } else {
+                    if (floor.pages.length > 0) {
+                        // currentPage 为 1-based，splice 需要 0-based 索引
+                        var delIdx = Math.max(0, (floor.currentPage || 1) - 1);
+                        floor.pages.splice(delIdx, 1);
+                        if (floor.currentPage > floor.pages.length) floor.currentPage = Math.max(1, floor.pages.length);
+                    }
+                    floor.failed = false;
+                }
+                // 删除动画后重新渲染
+                var wrap = document.querySelector('.agent-chat-floor[data-floor-idx="' + floorIdx + '"]');
+                if (wrap) {
+                    var selector = role === 'user' ? '.agent-chat-msg.user' : '.agent-chat-msg.assistant';
+                    var msgEl = wrap.querySelector(selector);
+                    if (msgEl) {
+                        msgEl.classList.add('agent-chat-deleting');
+                        setTimeout(function () { renderFloors(); }, 300);
+                    } else {
+                        renderFloors();
+                    }
+                } else {
+                    renderFloors();
+                }
+                showToast('success', '已删除');
+                scheduleAutoSave();
+            }).catch(function (e) {
+                showToast('error', '删除请求失败: ' + e.message);
+            });
+        });
+    }
+
     /** 创建用户消息 DOM（楼层渲染复用） */
-    function createUserMsg(text) {
+    function createUserMsg(text, floorIdx) {
         var msg = document.createElement('div');
         msg.className = 'agent-chat-msg user';
+        if (floorIdx != null) msg.setAttribute('data-floor-idx', String(floorIdx));
         var avatar = document.createElement('div');
         avatar.className = 'agent-chat-avatar';
         avatar.innerHTML = '<i class="fa-solid fa-user"></i>';
         var bubble = document.createElement('div');
         bubble.className = 'agent-chat-bubble';
-        bubble.textContent = text;
+        var textEl = document.createElement('div');
+        textEl.className = 'agent-chat-bubble-text';
+        textEl.textContent = text;
+        bubble.appendChild(textEl);
+        // 编辑/删除按钮（hover 显示）
+        var actions = document.createElement('div');
+        actions.className = 'agent-chat-actions';
+        var editBtn = document.createElement('button');
+        editBtn.className = 'agent-chat-action-btn agent-chat-edit';
+        editBtn.title = '编辑';
+        editBtn.innerHTML = '<i class="fa-solid fa-pen"></i>';
+        editBtn.setAttribute('data-edit', 'user');
+        if (floorIdx != null) editBtn.setAttribute('data-floor-idx', String(floorIdx));
+        var delBtn = document.createElement('button');
+        delBtn.className = 'agent-chat-action-btn agent-chat-delete';
+        delBtn.title = '删除';
+        delBtn.innerHTML = '<i class="fa-solid fa-trash"></i>';
+        delBtn.setAttribute('data-delete', 'user');
+        if (floorIdx != null) delBtn.setAttribute('data-floor-idx', String(floorIdx));
+        actions.appendChild(editBtn);
+        actions.appendChild(delBtn);
+        bubble.appendChild(actions);
         msg.appendChild(avatar);
         msg.appendChild(bubble);
         return msg;
@@ -2507,6 +2902,12 @@
             // 正则隔离：切换角色后立即刷新正则列表为当前角色生效集合（global + 角色专属），
             // 前一角色的正则脚本从列表与应用中同步移除
             loadRegexList(name);
+            // P4 修复：切卡后若提示词查看器打开，立即刷新为"当前角色卡"的上下文（预览），
+            // 不再残留上一角色卡的内容
+            var pv = $('agent_prompt_viewer');
+            if (pv && pv.style.display !== 'none') {
+                fetchPromptViewer();
+            }
             if (narrative) narrative.style.opacity = '1';
             showToast('success', name ? '已切换到角色卡「' + name + '」' : '已清除角色卡');
         }, 200);
@@ -2893,7 +3294,8 @@
     function openPromptViewer() {
         var v = $('agent_prompt_viewer');
         if (v) v.style.display = 'flex';
-        fetchPrompt();
+        // P2 修复：优先"无 run 预览"（实时构建当前角色卡上下文），失败再降级到已构建记录
+        fetchPromptViewer();
     }
 
     function closePromptViewer() {
@@ -2901,10 +3303,41 @@
         if (v) v.style.display = 'none';
     }
 
-    /** 主动拉取当前 session 的 prompt 并渲染（面板打开时） */
+    /**
+     * 预览优先的查看器数据源（P2/P4/P5）：
+     * 1) 调 POST /api/agent-theatre/prompt-preview，用当前角色卡槽状态无 LLM 构建上下文
+     *    （切卡/改历史/未 run 时也能显示"下一轮将注入什么"）；
+     * 2) 预览不可用（Profile 不存在/插件未加载）时降级到 GET /prompt 的已构建记录。
+     */
+    function fetchPromptViewer() {
+        var payload = {
+            session: theatre.session || 'native:default',
+            profile: currentProfileName(),
+        };
+        if (theatre.character) payload.character = theatre.character;
+        if (theatre.worldbook) payload.worldbook = theatre.worldbook;
+        if (theatre.style) payload.style = theatre.style;
+        if (theatre.greetingIndex != null) payload.greetingIndex = theatre.greetingIndex;
+        agentFetch('/api/agent-theatre/prompt-preview', {
+            method: 'POST',
+            body: JSON.stringify(payload),
+        }).then(function (data) {
+            if (data && data.success && data.prompt && data.prompt.messages) {
+                renderPromptViewer(data.prompt);
+            } else {
+                fetchPrompt(); // 降级：取最近一次 run 的记录
+            }
+        }).catch(function () {
+            fetchPrompt();
+        });
+    }
+
+    /** 主动拉取最近一次 run 的 prompt 并渲染（面板打开时；P4 按当前角色卡查询） */
     function fetchPrompt() {
         var session = theatre.session || 'native:default';
-        agentFetch('/api/agent-theatre/prompt?session=' + encodeURIComponent(session))
+        var url = '/api/agent-theatre/prompt?session=' + encodeURIComponent(session);
+        if (theatre.character) url += '&character=' + encodeURIComponent(theatre.character);
+        agentFetch(url)
             .then(function (data) {
                 if (data && data.success && data.prompt) {
                     renderPromptViewer(data.prompt);
@@ -2917,11 +3350,13 @@
             });
     }
 
-    /** SSE prompt_built 事件：面板打开时自动刷新 + 更新构建时间 */
+    /** SSE prompt_built 事件：面板打开时自动刷新 + 更新构建时间；关闭时缓存，打开后回填 */
     function handlePromptBuilt(data) {
         var promptObj = (data && data.prompt) || data || null;
         if (!promptObj || !promptObj.messages) return;
         if (promptObj.builtAt) theatre.promptBuiltAt = promptObj.builtAt;
+        // 无论查看器是否打开都缓存最新一次构建（打开时可回填，避免事件丢失）
+        theatre.lastPromptBuilt = promptObj;
         var v = $('agent_prompt_viewer');
         if (v && v.style.display !== 'none') {
             renderPromptViewer(promptObj);
@@ -2967,7 +3402,13 @@
         if (!body) return;
         var builtAtEl = $('agent_prompt_built_at');
         if (builtAtEl) {
-            builtAtEl.textContent = promptObj && promptObj.builtAt ? ('构建于 ' + formatPromptTime(promptObj.builtAt)) : '';
+            var label = '';
+            if (promptObj && promptObj.builtAt) {
+                label = '构建于 ' + formatPromptTime(promptObj.builtAt);
+            }
+            // P2: 区分"预览（未发送，无 runId）"与"已发送 run 的上下文"
+            if (promptObj && !promptObj.runId) label = (label ? label + ' · ' : '') + '预览（未发送）';
+            builtAtEl.textContent = label;
         }
         var messages = (promptObj && promptObj.messages) || [];
         if (!messages.length) { renderPromptEmpty(); return; }
@@ -2994,7 +3435,7 @@
 
     function renderPromptEmpty() {
         var body = $('agent_prompt_viewer_body');
-        if (body) body.innerHTML = '<div class="gateway-empty-hint">暂无提示词记录，触发一次 Agent run 后自动出现</div>';
+        if (body) body.innerHTML = '<div class="gateway-empty-hint">暂无上下文数据：请选择角色卡/Profile 后打开查看器，或触发一次 Agent run</div>';
     }
 
     // ==================== P3: 角色卡开场白 ====================
@@ -3982,13 +4423,13 @@
             autoScroll = dist < 80;
         });
 
-        // AI 消息气泡「重试」按钮 + P3 楼层翻页箭头 + P7 执行流程栏展开/收起（事件委托）
+        // AI 消息气泡「重试」按钮 + P3 楼层翻页箭头 + P8 思考面板展开/收起（事件委托）
         if (narrativeEl) narrativeEl.addEventListener('click', function (e) {
-            // P7: 执行流程栏展开/收起（点击整条头部切换）
-            var flowHeader = e.target.closest('.agent-run-flow-header');
-            if (flowHeader) {
-                var flowWrap = flowHeader.closest('.agent-run-flow');
-                if (flowWrap) toggleFlowCollapsed(Number(flowWrap.getAttribute('data-floor-idx')));
+            // P8: 思考面板展开/收起（点击整条头部切换）
+            var thoughtHeader = e.target.closest('.agent-thought-panel-header');
+            if (thoughtHeader) {
+                var thoughtWrap = thoughtHeader.closest('.agent-thought-panel');
+                if (thoughtWrap) toggleThoughtCollapsed(Number(thoughtWrap.getAttribute('data-floor-idx')));
                 return;
             }
             // P3: 楼层翻页（‹ / ›）
@@ -4000,6 +4441,30 @@
             var nextBtn = e.target.closest('[data-floor-next]');
             if (nextBtn) {
                 flipFloor(Number(nextBtn.getAttribute('data-floor-next')), 1);
+                return;
+            }
+            // 编辑按钮
+            var editBtn = e.target.closest('[data-edit]');
+            if (editBtn) {
+                enterEditMode(Number(editBtn.getAttribute('data-floor-idx')), editBtn.getAttribute('data-edit'));
+                return;
+            }
+            // 删除按钮
+            var delBtn = e.target.closest('[data-delete]');
+            if (delBtn) {
+                deleteMessage(Number(delBtn.getAttribute('data-floor-idx')), delBtn.getAttribute('data-delete'));
+                return;
+            }
+            // 保存编辑
+            var saveBtn = e.target.closest('[data-edit-save]');
+            if (saveBtn) {
+                saveEdit(Number(saveBtn.getAttribute('data-floor-idx')), saveBtn.getAttribute('data-edit-save'));
+                return;
+            }
+            // 取消编辑
+            var cancelBtn = e.target.closest('[data-edit-cancel]');
+            if (cancelBtn) {
+                exitEditMode(Number(cancelBtn.getAttribute('data-floor-idx')), cancelBtn.getAttribute('data-edit-cancel'));
                 return;
             }
             // 重试按钮：点击重跑上一轮（重试产物作为该楼层的新页，不新增楼层）
@@ -4026,6 +4491,12 @@
                 sendInput(btn.getAttribute('data-text'), null);
             }
         });
+
+        // P8: 「工具调用 / 选项」折叠面板头部点击（面板不在 narrative 内，直接绑定）
+        var evHeader = $('agent_events_panel_header');
+        if (evHeader) evHeader.addEventListener('click', toggleEventsPanel);
+        var optHeader = $('agent_options_panel_header');
+        if (optHeader) optHeader.addEventListener('click', toggleOptionsPanel);
 
         // 清空
         var clearBtn = $('agent_theatre_clear');
@@ -4209,6 +4680,10 @@
 
     function init() {
         loadConnection();
+
+        // P8: 读取 UI 折叠偏好并应用到「工具调用 / 选项」面板（思考面板折叠随楼层构建读取）
+        loadUiPrefs();
+        applyCollapsiblePrefs();
 
         // 全局错误兜底（未捕获异常 / 未处理 Promise 拒绝 → toast 提示，避免外溢到宿主环境）
         bindGlobalErrorHandlers();

@@ -1,4 +1,4 @@
-import { ContextBuilder, extractDefinitionVar } from '../../../server/agent/context-builder.js';
+import { ContextBuilder, extractDefinitionVar, buildContextWithGreeting } from '../../../server/agent/context-builder.js';
 import { Pipeline } from '../../../server/agent/pipeline.js';
 import { AgentRunResult, AgentEventType } from '../../../server/agent/run-result.js';
 import { extractOptions } from '../../../server/agent/option-utils.js';
@@ -26,6 +26,9 @@ export class AgentRunner {
         // P2: 提示词构建回调：onPromptBuilt(sessionKey, { messages, builtAt, runId })
         // 由插件层接线到 theatre-broadcaster，把最近一次注入的完整提示词推给 SSE 客户端。
         this.onPromptBuilt = typeof options.onPromptBuilt === 'function' ? options.onPromptBuilt : null;
+        // 模型思维链回调：onReasoning(sessionKey, runId, delta, full)
+        // 由插件层接线到 theatre-broadcaster，把 reasoning 增量实时推给 SSE 客户端（AI 思考过程）。
+        this.onReasoning = typeof options.onReasoning === 'function' ? options.onReasoning : null;
         this.activeRuns = new Map();
         this.runLog = [];
         // P2: 最近一次构建的完整提示词：Map<sessionKey, { messages, builtAt, runId }>
@@ -63,30 +66,20 @@ export class AgentRunner {
         };
 
         try {
-            // P3: 角色卡开场白注入 —— 仅当无历史（新会话首轮）且会话绑定了角色卡时，
-            // 把角色卡 first_message / alternate_greetings[greetingIndex] 作为首条
-            // assistant 消息喂给模型（从角色视角开场）。有历史则不注入，避免开场白重复。
-            let historyForBuild = Array.isArray(history) ? history : [];
-            let greetingInjected = false;
-            if (historyForBuild.length === 0 && session?.character) {
-                const greeting = this._selectGreeting(session);
-                if (greeting) {
-                    historyForBuild = [{ role: 'assistant', content: greeting }, ...historyForBuild];
-                    greetingInjected = true;
-                }
-            }
-
-            // 1. 构建上下文
-            const messages = this.contextBuilder.build(definition, session, historyForBuild, userMessage);
-            if (greetingInjected && messages[0]?.role === 'system') {
-                messages[0].content += '\n\n（角色开场白已展示：首条 assistant 消息为角色开场白，请从角色视角自然延续，不要复述开场白内容）';
-            }
+            // 构建上下文（P5 修复：开场白注入 + 组装抽到共享函数 buildContextWithGreeting，
+            // 与提示词查看器"无 run 预览"共用同一路径，保证显示=实际注入逐字节一致）
+            const { messages, greetingInjected } = buildContextWithGreeting(
+                this.contextBuilder, definition, session, Array.isArray(history) ? history : [], userMessage,
+            );
             this.logger.info(`[agent-runner] Agent "${definition.name}" 启动，messages: ${messages.length}${greetingInjected ? '（含角色开场白）' : ''}`);
 
             // P2: 捕获最近一次注入的完整提示词（供前端提示词查看器 + SSE prompt_built 实时刷新）
+            // P4 修复：缓存 key 增加角色卡维度（sessionKey|char:<角色>）——切换角色卡后，
+            // 查看器不会命中上一角色卡的记录，杜绝"切卡后显示旧卡上下文"。
             const sessionKey = `${session?.platform || 'unknown'}:${session?.chatId || 'unknown'}`;
+            const promptKey = `${sessionKey}|char:${session?.character || ''}`;
             const promptRecord = { messages, builtAt: Date.now(), runId };
-            this.lastPromptMap.set(sessionKey, promptRecord);
+            this.lastPromptMap.set(promptKey, promptRecord);
             if (this.onPromptBuilt) {
                 try { this.onPromptBuilt(sessionKey, promptRecord); } catch (e) { /* 广播失败不阻塞主流程 */ }
             }
@@ -148,9 +141,17 @@ export class AgentRunner {
                     // P2: 中止信号，abort 后 LLM 工具循环在 step 边界抛 Error('aborted') 中断
                     signal: controller.signal,
                     onDelta: (delta, full, turn) => this.onTokenDelta?.(runId, delta, full, turn, sessionKey),
+                    // 思维链增量实时转发：reasoning SSE 事件（AI 思考过程展示）
+                    onReasoning: (delta, full, turn) => this.onReasoning?.(sessionKey, runId, delta, full),
                 });
             } else {
-                result = await ctx.llm.runTools(messages, llmTools, executor, { maxSteps, sampling, signal: controller.signal });
+                result = await ctx.llm.runTools(messages, llmTools, executor, {
+                    maxSteps,
+                    sampling,
+                    signal: controller.signal,
+                    // 非流式：runTools 全部回合结束后一次性上报完整思维链（delta=full）
+                    onReasoning: (delta, full, turn) => this.onReasoning?.(sessionKey, runId, delta, full),
+                });
             }
 
             // 6. 草稿生成后 checkpoint
@@ -468,13 +469,30 @@ export class AgentRunner {
     }
 
     /**
-     * 获取某会话最近一次注入的完整提示词（P2，供 /api/agent-theatre/prompt 查询）。
+     * 获取某会话（可指定角色卡）最近一次注入的完整提示词（P2/P4）。
      * @param {string} sessionKey - 会话 key（"platform:chatId"）
+     * @param {string} [character] - 角色卡名（P4 修复：缓存按 会话+角色卡 双维度隔离）。
+     *   指定时精确匹配该角色卡；未指定时回退为该会话最近一次记录（兼容旧调用）。
      * @returns {{messages:Array<{role:string, content:string}>, builtAt:number, runId:string}|null}
-     *          该会话无 run 记录时返回 null
+     *          无记录时返回 null
      */
-    getLastPrompt(sessionKey) {
-        return this.lastPromptMap.get(sessionKey) || null;
+    getLastPrompt(sessionKey, character) {
+        const prefix = `${sessionKey}|char:`;
+        if (character) {
+            // 指定角色卡：精确匹配，未命中返回 null（切到新卡未 run 时不得回退到旧卡记录）
+            return this.lastPromptMap.get(`${prefix}${character}`) || null;
+        }
+        // 未指定角色卡：返回该会话最近一次（跨角色）记录（兼容旧调用）
+        let latest = null;
+        let latestTime = -1;
+        for (const [key, rec] of this.lastPromptMap) {
+            // >= 保证同毫秒多条记录时"后插入者"胜出（插入序 = 时间序）
+            if (key.startsWith(prefix) && rec.builtAt >= latestTime) {
+                latest = rec;
+                latestTime = rec.builtAt;
+            }
+        }
+        return latest;
     }
 
     /**

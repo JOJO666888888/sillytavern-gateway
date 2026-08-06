@@ -7,7 +7,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 import http from 'http';
-import { LLMClient, buildRequest, extractText, extractDelta, buildMultimodalContent, describeEmptyCompletion, describeTruncation, buildToolsSpec, extractToolCalls, buildListModelsRequest, extractModelIds, extractToolCallsDelta, finalizeToolCalls } from '../server/runtime/llm-client.js';
+import { LLMClient, buildRequest, extractText, extractDelta, extractReasoningDelta, buildMultimodalContent, describeEmptyCompletion, describeTruncation, buildToolsSpec, extractToolCalls, buildListModelsRequest, extractModelIds, extractToolCallsDelta, finalizeToolCalls } from '../server/runtime/llm-client.js';
 
 /** 起一个返回固定 SSE 流的本地服务器 */
 function sseServer(chunks, { splitAt } = {}) {
@@ -267,6 +267,37 @@ describe('流式生成（真实 SSE 服务器）', () => {
             await assert.rejects(() => client.generateStream([{ role: 'user', content: 'x' }], {}), /401/);
         } finally { srv.close(); }
     });
+
+    test('思维链增量经 onReasoning 透传，不污染正文 onDelta', async () => {
+        // DeepSeek 等推理模型流式形态：推理阶段 delta.content=null + reasoning_content，
+        // 正文阶段 reasoning_content=null + content
+        const { srv, port } = await sseServer([
+            { choices: [{ delta: { content: null, reasoning_content: '首先' } }] },
+            { choices: [{ delta: { content: null, reasoning_content: '考虑' } }] },
+            { choices: [{ delta: { content: '答案', reasoning_content: null } }] },
+            { choices: [{ delta: { content: '是42', reasoning_content: null } }] },
+        ]);
+        try {
+            const client = new LLMClient({ provider: 'openai', baseUrl: `http://127.0.0.1:${port}`, model: 'm' });
+            const textDeltas = [];
+            const reasoningDeltas = [];
+            const reasoningFulls = [];
+            const full = await client.generateStream(
+                [{ role: 'user', content: 'hi' }],
+                {},
+                d => textDeltas.push(d),
+                (delta, fullReasoning) => {
+                    reasoningDeltas.push(delta);
+                    reasoningFulls.push(fullReasoning);
+                },
+            );
+
+            assert.strictEqual(full, '答案是42');
+            assert.deepStrictEqual(textDeltas, ['答案', '是42'], '正文增量只含 content，思维链不得漏进正文');
+            assert.deepStrictEqual(reasoningDeltas, ['首先', '考虑'], 'onReasoning 应收全部增量');
+            assert.deepStrictEqual(reasoningFulls, ['首先', '首先考虑'], 'full 应累积完整思维链');
+        } finally { srv.close(); }
+    });
 });
 
 describe('空回复的诊断（推理模型 max_tokens 被思维链吃光）', () => {
@@ -388,6 +419,21 @@ describe('思维链不会漏进正文', () => {
             choices: [{ message: { content: '', reasoning_content: '思考过程不该被当成回复' } }],
         }), '');
     });
+
+    test('extractReasoningDelta：openai 兼容取 reasoning_content，claude/gemini 返回空串', () => {
+        assert.strictEqual(extractReasoningDelta('openai', {
+            choices: [{ delta: { content: null, reasoning_content: '我们' } }],
+        }), '我们');
+        // 正文增量不含思维链
+        assert.strictEqual(extractReasoningDelta('openai', {
+            choices: [{ delta: { content: '正文', reasoning_content: null } }],
+        }), '');
+        // 无增量时返回空串
+        assert.strictEqual(extractReasoningDelta('openai', { choices: [{ delta: {} }] }), '');
+        // claude / gemini 本期无 reasoning 透传协议
+        assert.strictEqual(extractReasoningDelta('claude', { type: 'content_block_delta', delta: { text: 'x' } }), '');
+        assert.strictEqual(extractReasoningDelta('gemini', { candidates: [{ content: { parts: [{ text: 'x' }] } }] }), '');
+    });
 });
 
 describe('工具调用 - tools 规格构造（三 provider）', () => {
@@ -501,6 +547,56 @@ function scriptedServer(responses) {
 }
 
 describe('工具调用 - runTools agent 循环（真实服务器）', () => {
+    test('非流式 generateWithTools 返回 reasoning 字段（openai 兼容）', async () => {
+        const { srv, port } = await scriptedServer([
+            { choices: [{ message: { content: '最终答案', reasoning_content: '我推理了一下' } }] },
+        ]);
+        try {
+            const client = new LLMClient({ provider: 'openai', baseUrl: `http://127.0.0.1:${port}`, model: 'm' });
+            const result = await client.generateWithTools([{ role: 'user', content: 'x' }], [], {});
+            assert.strictEqual(result.text, '最终答案');
+            assert.strictEqual(result.reasoning, '我推理了一下');
+        } finally { srv.close(); }
+    });
+
+    test('非流式 generateWithTools：claude 无 reasoning 字段返回空串', async () => {
+        const { srv, port } = await scriptedServer([
+            { content: [{ type: 'text', text: '回复' }] },
+        ]);
+        try {
+            const client = new LLMClient({ provider: 'claude', baseUrl: `http://127.0.0.1:${port}`, model: 'm' });
+            const result = await client.generateWithTools([{ role: 'user', content: 'x' }], [], {});
+            assert.strictEqual(result.text, '回复');
+            assert.strictEqual(result.reasoning, '');
+        } finally { srv.close(); }
+    });
+
+    test('runTools 累积全部回合思维链，结束后一次性上报（delta=full）', async () => {
+        const { srv, port } = await scriptedServer([
+            // 第 1 次：模型要求调用 search，且带思维链
+            { choices: [{ message: { content: '', reasoning_content: '需要搜索', tool_calls: [{ id: 'c1', function: { name: 'search', arguments: '{"q":"天气"}' } }] } }] },
+            // 第 2 次：最终答复，带第二段思维链
+            { choices: [{ message: { content: '今天晴', reasoning_content: '结果已确认' } }] },
+        ]);
+        try {
+            const client = new LLMClient({ provider: 'openai', baseUrl: `http://127.0.0.1:${port}`, model: 'm' });
+            const reasoningReports = [];
+            const result = await client.runTools(
+                [{ role: 'user', content: '天气如何' }],
+                [{ name: 'search', description: '搜索', parameters: { type: 'object', properties: { q: { type: 'string' } } } }],
+                () => '晴 30度',
+                { onReasoning: (delta, full, turn) => reasoningReports.push({ delta, full, turn }) },
+            );
+            assert.strictEqual(result.text, '今天晴');
+            assert.strictEqual(result.steps, 1);
+            // 两段思维链拼接后一次性上报，delta=full，turn=实际步数
+            assert.strictEqual(reasoningReports.length, 1);
+            assert.strictEqual(reasoningReports[0].delta, '需要搜索结果已确认');
+            assert.strictEqual(reasoningReports[0].full, '需要搜索结果已确认');
+            assert.strictEqual(reasoningReports[0].turn, 1);
+        } finally { srv.close(); }
+    });
+
     test('模型请求工具 → 执行 → 回灌 → 最终答复', async () => {
         const { srv, port } = await scriptedServer([
             // 第 1 次：模型要求调用 search
@@ -711,6 +807,43 @@ describe('工具调用 - runToolsStream 流式 agent 循环（真实 SSE 服务�
             assert.strictEqual(result.text, '工具失败了，我直接答复');
             const toolMsg = result.messages.find(m => m.role === 'tool');
             assert.match(toolMsg.content, /工具炸了/);
+        } finally { srv.close(); }
+    });
+
+    test('流式思维链增量经 onReasoning 转发，带 turn 且不污染正文', async () => {
+        const { srv, port } = await sseScriptedServer([
+            // 第 1 次请求：工具调用回合，先推理后发工具
+            [
+                { choices: [{ delta: { content: null, reasoning_content: '先想想' } }] },
+                { choices: [{ delta: { tool_calls: [{ index: 0, id: 'c1', function: { name: 'search', arguments: '{"q":"天气"}' } }] } }] },
+            ],
+            // 第 2 次请求：最终正文回合，带第二段推理
+            [
+                { choices: [{ delta: { content: null, reasoning_content: '然后回答' } }] },
+                { choices: [{ delta: { content: '今天晴' } }] },
+            ],
+        ]);
+        try {
+            const client = new LLMClient({ provider: 'openai', baseUrl: `http://127.0.0.1:${port}`, model: 'm' });
+            const reasoning = [];
+            const textDeltas = [];
+            const result = await client.runToolsStream(
+                [{ role: 'user', content: '天气如何' }],
+                [searchTool],
+                () => '晴 30度',
+                {
+                    maxSteps: 5,
+                    onDelta: (d, full, turn) => textDeltas.push({ d, turn }),
+                    onReasoning: (delta, full, turn) => reasoning.push({ delta, full, turn }),
+                },
+            );
+            assert.strictEqual(result.text, '今天晴');
+            // 两段推理各自带正确 turn：工具回合 turn=0、最终回合 turn=1
+            assert.deepStrictEqual(reasoning.map(r => r.delta), ['先想想', '然后回答']);
+            assert.deepStrictEqual(reasoning.map(r => r.full), ['先想想', '然后回答'], 'full 为回合内累积（跨回合由上层展示端拼接）');
+            assert.deepStrictEqual(reasoning.map(r => r.turn), [0, 1], 'turn 为实际工具回合序号');
+            // 正文增量不含思维链
+            assert.deepStrictEqual(textDeltas.map(x => x.d), ['今天晴']);
         } finally { srv.close(); }
     });
 

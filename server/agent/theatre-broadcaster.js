@@ -9,6 +9,7 @@
  *   - agent_event:  { event: AgentEvent }                  单个事件（工具调用/状态变更/子代理…）
  *   - agent_result: { result: AgentRunResult }              一次 run 完成的完整结果
  *   - token_delta:  { delta: string, runId: string }        流式增量（预留，runner 当前不产出）
+ *   - reasoning:    { runId, delta, full, turn? }           模型思维链增量（AI 思考过程实时展示）
  *   - state:        { state: object }                       当前会话状态快照
  *   - heartbeat:    (无 data)                               周期心跳，防止代理超时断开
  *
@@ -217,6 +218,17 @@ export class TheatreBroadcaster {
      */
     broadcastPromptBuilt(sessionKey, prompt) {
         this.broadcast(sessionKey, 'prompt_built', { prompt });
+    }
+
+    /**
+     * 推送模型思维链（reasoning）流式增量，前端可实时展示 AI 思考过程。
+     * data = { runId, delta, full, turn? }：delta=本次增量；full=该 run 累计完整思维链；
+     * turn=当前工具回合序号（非流式整包上报时可选，此时 delta=full）。
+     * @param {string} sessionKey
+     * @param {{runId:string, delta:string, full:string, turn?:number}} payload
+     */
+    broadcastReasoning(sessionKey, payload) {
+        this.broadcast(sessionKey, 'reasoning', payload);
     }
 
     /**

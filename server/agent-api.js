@@ -669,7 +669,10 @@ export function registerAgentApi(app, deps) {
         if (!agentService || typeof agentService.getLastPrompt !== 'function') {
             return res.status(503).json({ success: false, error: 'agent-framework 插件未加载或不支持提示词查询' });
         }
-        const prompt = agentService.getLastPrompt(sessionKey);
+        // P4 修复：按角色卡精确查询（缓存按 会话+角色卡 隔离），切卡后不命中旧卡记录
+        const sess = theatreSessions.get(sessionKey);
+        const character = (req.query && req.query.character) || sess?.character || '';
+        const prompt = agentService.getLastPrompt(sessionKey, character);
         if (!prompt) {
             return res.json({ success: true, prompt: null });
         }
@@ -684,6 +687,68 @@ export function registerAgentApi(app, deps) {
                 runId: prompt.runId || null,
             },
         });
+    });
+
+    /**
+     * POST /api/agent-theatre/prompt-preview - 无 run 构建当前角色卡上下文（P2/P4/P5）。
+     *
+     * 用途：提示词查看器在"未执行 run"时也能显示"下一轮将注入的上下文"——
+     * 用当前会话的角色卡槽状态（character/worldbook/style/history/greetingIndex）+ 可选输入，
+     * 调用与 run 完全相同的组装路径（agentService.buildContext → ContextBuilder.buildFull），
+     * 保证预览显示与实际注入逐字节一致。
+     *
+     * body: { session?, profile?, character?, worldbook?, style?, greetingIndex?, input? }
+     * 响应：{ success:true, preview:true, prompt:{ messages, builtAt, runId:null }, greetingInjected }
+     * 失败（Profile 不存在 / 插件未加载等）：{ success:false, error }，前端降级到 lastPromptMap。
+     */
+    app.post('/api/agent-theatre/prompt-preview', async (req, res) => {
+        const sessionKey = _theatreSessionKey(req);
+        const body = req.body || {};
+        const agentService = getAgentService();
+        if (!agentService || typeof agentService.buildContext !== 'function') {
+            return res.status(503).json({ success: false, error: 'agent-framework 插件未加载或不支持上下文预览' });
+        }
+        const sess = theatreSessions.get(sessionKey);
+        const character = body.character || sess?.character || '';
+        const cs = sess ? charState(sess, character || sess.character || '') : null;
+        const colonIdx = sessionKey.indexOf(':');
+        const platform = colonIdx >= 0 ? sessionKey.slice(0, colonIdx) : sessionKey;
+        const chatId = colonIdx >= 0 ? sessionKey.slice(colonIdx + 1) : 'theatre';
+        try {
+            const previewSession = {
+                platform,
+                chatId,
+                character,
+                worldbook: body.worldbook || sess?.worldbook || '',
+                style: body.style || sess?.style || '',
+                turn: (cs?.turn || 0) + 1,
+                greetingIndex: body.greetingIndex != null ? body.greetingIndex : (cs?.greetingIndex || 0),
+            };
+            const history = cs?.history || [];
+            const input = body.input || '';
+            const { messages, greetingInjected } = await agentService.buildContext(
+                body.profile || sess?.profile || 'default-rp',
+                previewSession,
+                history,
+                input,
+            );
+            res.json({
+                success: true,
+                preview: true,
+                character,
+                greetingInjected,
+                prompt: {
+                    messages: Array.isArray(messages)
+                        ? messages.map(m => ({ role: m.role || 'user', content: m.content || '' }))
+                        : [],
+                    builtAt: Date.now(),
+                    runId: null,
+                },
+            });
+        } catch (e) {
+            // 预览失败（如 Profile 不存在）不阻断：前端可降级到已 run 的记录
+            res.json({ success: false, error: e.message });
+        }
     });
 
     /**
@@ -750,7 +815,10 @@ export function registerAgentApi(app, deps) {
             // 步骤 2：用探测输入跑一次
             const input = probeInput || '你好';
             const sessionKey = _theatreSessionKey(req);
-            const [platform, chatId] = sessionKey.split(':');
+            // P4 修复：与 /input 一致的首冒号切分（原 split(':') 只取前两段，多冒号 chatId 被截断）
+            const colonIdx = sessionKey.indexOf(':');
+            const platform = colonIdx >= 0 ? sessionKey.slice(0, colonIdx) : sessionKey;
+            const chatId = colonIdx >= 0 ? sessionKey.slice(colonIdx + 1) : 'validate';
             const runResult = await agentService.run(
                 name,
                 input,
@@ -1384,6 +1452,107 @@ export function registerAgentApi(app, deps) {
             cs.lastInput = '';
             cs.lastResult = null;
             res.json({ success: true, cleared: true, deleted });
+        } catch (e) {
+            res.status(500).json({ success: false, error: e.message });
+        }
+    });
+
+    /**
+     * POST /api/agent-theatre/messages/edit - 编辑单条消息内容。
+     * body: { session?, character?, messageIndex, newContent }
+     * - messageIndex: cs.history 数组中的索引
+     * - newContent: 新的消息文本
+     * 编辑后自动标记 dirty 触发自动保存；记录编辑历史（原始内容 + 时间戳）。
+     */
+    app.post('/api/agent-theatre/messages/edit', (req, res) => {
+        try {
+            const sessionKey = _theatreSessionKey(req);
+            const sess = theatreSessions.get(sessionKey);
+            if (!sess) return res.status(404).json({ success: false, error: '会话不存在' });
+            const character = req.body.character || sess.character || '';
+            const cs = charState(sess, character);
+            const idx = Number(req.body.messageIndex);
+            const newContent = req.body.newContent;
+            if (!Number.isInteger(idx) || idx < 0 || idx >= cs.history.length)
+                return res.status(400).json({ success: false, error: '消息索引越界' });
+            if (typeof newContent !== 'string' || newContent.length === 0)
+                return res.status(400).json({ success: false, error: '新内容不能为空' });
+
+            const msg = cs.history[idx];
+            const originalContent = msg.content;
+            // 记录编辑历史
+            if (!msg.editHistory) msg.editHistory = [];
+            msg.editHistory.push({
+                originalContent,
+                editedAt: Date.now(),
+            });
+            msg.content = newContent;
+            msg.editedAt = Date.now();
+            cs.dirty = true;
+            theatreSessions.set(sessionKey, sess);
+
+            res.json({
+                success: true,
+                message: { role: msg.role, content: msg.content, editedAt: msg.editedAt },
+                editCount: msg.editHistory.length,
+            });
+        } catch (e) {
+            res.status(500).json({ success: false, error: e.message });
+        }
+    });
+
+    /**
+     * POST /api/agent-theatre/messages/delete - 删除单条消息。
+     * body: { session?, character?, messageIndex }
+     * 从 cs.history 中移除指定消息，标记 dirty 触发自动保存。
+     */
+    app.post('/api/agent-theatre/messages/delete', (req, res) => {
+        try {
+            const sessionKey = _theatreSessionKey(req);
+            const sess = theatreSessions.get(sessionKey);
+            if (!sess) return res.status(404).json({ success: false, error: '会话不存在' });
+            const character = req.body.character || sess.character || '';
+            const cs = charState(sess, character);
+            const idx = Number(req.body.messageIndex);
+            if (!Number.isInteger(idx) || idx < 0 || idx >= cs.history.length)
+                return res.status(400).json({ success: false, error: '消息索引越界' });
+
+            const deleted = cs.history.splice(idx, 1)[0];
+            cs.dirty = true;
+            theatreSessions.set(sessionKey, sess);
+
+            res.json({
+                success: true,
+                deleted: { role: deleted.role },
+                remainingCount: cs.history.length,
+            });
+        } catch (e) {
+            res.status(500).json({ success: false, error: e.message });
+        }
+    });
+
+    /**
+     * GET /api/agent-theatre/messages/edit-history - 查询消息编辑历史。
+     * query: ?session=&character=&messageIndex=
+     */
+    app.get('/api/agent-theatre/messages/edit-history', (req, res) => {
+        try {
+            const sessionKey = _theatreSessionKey(req);
+            const sess = theatreSessions.get(sessionKey);
+            if (!sess) return res.json({ success: true, editHistory: [] });
+            const character = (req.query.character || sess.character || '');
+            const cs = charState(sess, character);
+            const idx = Number(req.query.messageIndex);
+            if (!Number.isInteger(idx) || idx < 0 || idx >= cs.history.length)
+                return res.status(400).json({ success: false, error: '消息索引越界' });
+
+            const msg = cs.history[idx];
+            res.json({
+                success: true,
+                editHistory: msg.editHistory || [],
+                editedAt: msg.editedAt || null,
+                currentContent: msg.content,
+            });
         } catch (e) {
             res.status(500).json({ success: false, error: e.message });
         }
