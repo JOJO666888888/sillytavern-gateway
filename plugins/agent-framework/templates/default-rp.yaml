@@ -77,6 +77,11 @@ context:
     - "memory/feedback.md"
     - "memory/user.md"
 
+# P1-2: 启用 run 级 workspace/journal：工具调用/状态变更/子代理事件落盘 events.jsonl，
+# 前端时间线可实时（agent_event SSE）+ 历史（/api/agent-theatre/events/:runId）双通道消费。
+workspace:
+  enabled: true
+
 subAgents:
   - name: critic-character
     trigger: after_draft

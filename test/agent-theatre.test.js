@@ -309,6 +309,45 @@ describe('TheatreBroadcaster - run_state 广播（P2 停止生成）', () => {
     });
 });
 
+describe('TheatreBroadcaster - prompt_built 广播（P2 提示词查看器）', () => {
+    let b;
+    beforeEach(() => { b = new TheatreBroadcaster(); });
+    afterEach(() => { b.shutdown(); });
+
+    test('broadcastPromptBuilt 推送 prompt_built 事件并携带完整 messages', () => {
+        const res = mockSseRes();
+        b.addClient(res, 'native:default');
+        const prompt = {
+            messages: [{ role: 'system', content: 'sys' }, { role: 'user', content: '你好' }],
+            builtAt: 123456,
+            runId: 'run-1',
+        };
+        b.broadcastPromptBuilt('native:default', prompt);
+
+        const events = parseSseEvents(res.chunks);
+        const ev = events.find(e => e.event === 'prompt_built');
+        assert.ok(ev, '应推送 prompt_built 事件');
+        assert.strictEqual(ev.data.prompt.runId, 'run-1');
+        assert.strictEqual(ev.data.prompt.builtAt, 123456);
+        assert.strictEqual(ev.data.prompt.messages.length, 2);
+        assert.strictEqual(ev.data.prompt.messages[1].content, '你好');
+    });
+
+    test('prompt_built 事件按 session 隔离推送', () => {
+        const resA = mockSseRes();
+        const resB = mockSseRes();
+        b.addClient(resA, 'native:chatA');
+        b.addClient(resB, 'native:chatB');
+
+        b.broadcastPromptBuilt('native:chatA', { messages: [], builtAt: 1, runId: 'r1' });
+
+        const evA = parseSseEvents(resA.chunks).find(e => e.event === 'prompt_built');
+        const evB = parseSseEvents(resB.chunks).find(e => e.event === 'prompt_built');
+        assert.ok(evA, '会话 A 应收到 prompt_built');
+        assert.ok(!evB, '会话 B 不应收到 prompt_built');
+    });
+});
+
 describe('TheatreBroadcaster - SSE 协议格式', () => {
     let b;
     beforeEach(() => { b = new TheatreBroadcaster(); });

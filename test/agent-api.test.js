@@ -47,9 +47,12 @@ function makeDeps(overrides = {}) {
             getEvents: () => [],
         },
         _agentService: {
-            run: async () => ({ runId: 'run-1', aborted: false, text: 'ok', result: null }),
+            run: overrides.run || (async () => ({ runId: 'run-1', aborted: false, text: 'ok', result: null })),
             abortRun: () => true,
             getStatus: () => ({ activeAgents: [] }),
+            // P2/P3 新端点依赖：默认无提示词记录 / 无开场白，测试可通过 overrides 注入
+            getLastPrompt: (sessionKey) => (overrides.getLastPrompt ? overrides.getLastPrompt(sessionKey) : null),
+            getGreetings: (character) => (overrides.getGreetings ? overrides.getGreetings(character) : null),
         },
     };
 
@@ -191,6 +194,127 @@ describe('registerAgentApi - Agent 剧场 API', () => {
             const body = await resp.json();
             assert.strictEqual(body.success, false);
             assert.match(body.error, /未加载/);
+        });
+    });
+
+    test('POST /api/agent-theatre/input 透传 character/worldbook/style/greetingIndex/history/turn 到 run 的 session', async () => {
+        // P1/P3 修复守护：角色卡/世界书此前只放 ctx（agentService.run 不读取），
+        // 导致剧场流注入落空；现在必须进入 session 参数，同时透传历史与开场白序号。
+        let captured = null;
+        const deps = makeDeps({
+            run: async (profile, input, session, ctx) => {
+                captured = { profile, input, session, ctx };
+                return { runId: 'run-x', aborted: false, text: 'ok', result: null };
+            },
+        });
+        await withServer(deps, async (base) => {
+            // 独立 session key（theatreSessions 为模块级单例，避免 turn 被其它测试累积）
+            const resp = await fetch(`${base}/api/agent-theatre/input?session=native:passthrough`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    input: '你好',
+                    character: '测试角色',
+                    worldbook: '世界书A',
+                    style: 'default',
+                    greetingIndex: 2,
+                }),
+            });
+            assert.strictEqual(resp.status, 200);
+        });
+
+        assert.ok(captured, '应捕获 run 参数');
+        assert.strictEqual(captured.session.character, '测试角色', 'character 必须进入 session 参数');
+        assert.strictEqual(captured.session.worldbook, '世界书A', 'worldbook 必须进入 session 参数');
+        assert.strictEqual(captured.session.style, 'default');
+        assert.strictEqual(captured.session.greetingIndex, 2, 'greetingIndex 必须透传');
+        assert.strictEqual(captured.session.turn, 1, '首轮 turn=1');
+        assert.deepStrictEqual(captured.session.history, [], 'history 初始为空数组');
+        assert.strictEqual(captured.input, '你好');
+    });
+});
+
+describe('registerAgentApi - 提示词 / 开场白端点（P2/P3）', () => {
+    test('GET /api/agent-theatre/prompt 无记录返回 prompt:null', async () => {
+        await withServer(makeDeps(), async (base) => {
+            const resp = await fetch(`${base}/api/agent-theatre/prompt?session=native:default`);
+            assert.strictEqual(resp.status, 200);
+            const body = await resp.json();
+            assert.strictEqual(body.success, true);
+            assert.strictEqual(body.prompt, null);
+        });
+    });
+
+    test('GET /api/agent-theatre/prompt 有记录返回 messages/builtAt/runId', async () => {
+        const deps = makeDeps({
+            getLastPrompt: () => ({
+                messages: [{ role: 'system', content: 'sys' }, { role: 'user', content: '你好' }],
+                builtAt: 123456,
+                runId: 'run-9',
+            }),
+        });
+        await withServer(deps, async (base) => {
+            const resp = await fetch(`${base}/api/agent-theatre/prompt?session=native:default`);
+            assert.strictEqual(resp.status, 200);
+            const body = await resp.json();
+            assert.strictEqual(body.success, true);
+            assert.strictEqual(body.prompt.builtAt, 123456);
+            assert.strictEqual(body.prompt.runId, 'run-9');
+            assert.deepStrictEqual(body.prompt.messages.map(m => m.role), ['system', 'user']);
+            assert.strictEqual(body.prompt.messages[1].content, '你好');
+        });
+    });
+
+    test('GET /api/agent-theatre/prompt 在 agent 服务缺失时返回 503', async () => {
+        const deps = makeDeps({
+            getPluginManager: () => ({ loader: { getPlugin: () => null } }),
+        });
+        await withServer(deps, async (base) => {
+            const resp = await fetch(`${base}/api/agent-theatre/prompt?session=native:default`);
+            assert.strictEqual(resp.status, 503);
+        });
+    });
+
+    test('GET /api/agent-theatre/greetings 无角色卡时返回空列表', async () => {
+        // 用独立 session key（theatreSessions 为模块级单例，避免被其它测试污染）
+        await withServer(makeDeps(), async (base) => {
+            const resp = await fetch(`${base}/api/agent-theatre/greetings?session=native:greet-empty`);
+            assert.strictEqual(resp.status, 200);
+            const body = await resp.json();
+            assert.strictEqual(body.success, true);
+            assert.strictEqual(body.character, '');
+            assert.deepStrictEqual(body.greetings, []);
+        });
+    });
+
+    test('GET /api/agent-theatre/greetings 有角色卡返回开场白列表', async () => {
+        const deps = makeDeps({
+            getGreetings: (character) => ({
+                character,
+                firstMessage: '初次见面，你好。',
+                alternateGreetings: ['另一个开场'],
+                greetings: ['初次见面，你好。', '另一个开场'],
+            }),
+        });
+        await withServer(deps, async (base) => {
+            const resp = await fetch(`${base}/api/agent-theatre/greetings?session=native:default&character=测试角色`);
+            assert.strictEqual(resp.status, 200);
+            const body = await resp.json();
+            assert.strictEqual(body.success, true);
+            assert.strictEqual(body.character, '测试角色');
+            assert.strictEqual(body.firstMessage, '初次见面，你好。');
+            assert.deepStrictEqual(body.alternateGreetings, ['另一个开场']);
+            assert.deepStrictEqual(body.greetings, ['初次见面，你好。', '另一个开场']);
+        });
+    });
+
+    test('GET /api/agent-theatre/greetings 在 agent 服务缺失时返回 503（有角色卡）', async () => {
+        const deps = makeDeps({
+            getPluginManager: () => ({ loader: { getPlugin: () => null } }),
+        });
+        await withServer(deps, async (base) => {
+            const resp = await fetch(`${base}/api/agent-theatre/greetings?session=native:default&character=x`);
+            assert.strictEqual(resp.status, 503);
         });
     });
 });

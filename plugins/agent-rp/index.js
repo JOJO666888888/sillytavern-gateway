@@ -36,6 +36,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { GatewayPlugin } from '../../server/plugin-sdk.js';
 import { OutboundMessage } from '../../server/adapters/base-adapter.js';
+import { userProfileStore } from '../../server/runtime/user-profile-store.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // 插件数据目录（与 ctx.fs 的沙箱根目录一致）
@@ -55,6 +56,11 @@ const DEFAULT_SYSTEM_PROMPT = '你是一个善于角色扮演的 AI 助手，能
 
 // 正文段落切分阈值：单段超过此长度时尝试按单换行二次切分
 const PARAGRAPH_MAX_LEN = 800;
+
+// 引擎（agent-framework）数据目录：记忆/文风文件的唯一权威目录。
+// P0-2 修复：此前记忆/文风种子播到 agent-rp 目录而引擎 ContextBuilder 读 agent-framework 目录，
+// 导致引擎模式下默认文风与记忆模板缺失、自动摘要写入引擎读不到的位置。
+const ENGINE_DATA_DIR = path.resolve(__dirname, '..', '..', 'data', 'plugins', 'agent-framework');
 
 export default class AgentRPPlugin extends GatewayPlugin {
     static commands = [
@@ -229,6 +235,9 @@ export default class AgentRPPlugin extends GatewayPlugin {
             case 'character':
             case '角色':
                 return this._cmdCharacter(ctx);
+            case 'world':
+            case '世界书':
+                return this._cmdWorld(ctx);
             case 'profile':
             case '档案':
                 return this._cmdProfile(ctx);
@@ -490,6 +499,45 @@ export default class AgentRPPlugin extends GatewayPlugin {
         return ctx.reply(`✅ 角色卡已切换为「${displayName}」`);
     }
 
+    /** /rp world [名称] - 切换世界书（引擎模式注入用） */
+    async _cmdWorld(ctx) {
+        const session = await this._getSession(ctx);
+        const bookName = ctx.args.slice(1).join(' ').trim();
+
+        if (!bookName) {
+            const books = ctx.assets.listWorldbooks();
+            const lines = [
+                '📖 世界书设置',
+                `  当前：${session.worldbook || '（无）'}`,
+                '',
+            ];
+            if (books.length > 0) {
+                lines.push('可用世界书：');
+                books.forEach(b => lines.push(`  - ${b.replace(/\.json$/, '')}`));
+            } else {
+                lines.push('（暂无世界书，请在 assets/worldbooks/ 目录放置世界书）');
+            }
+            lines.push('\n用法：/rp world <世界书名>，/rp world 无 清除');
+            return ctx.reply(lines.join('\n'));
+        }
+
+        if (bookName === '无' || bookName === 'none') {
+            session.worldbook = '';
+            await this._saveSession(ctx, session);
+            return ctx.reply('✅ 世界书已清除');
+        }
+
+        const card = ctx.assets.readWorldbook(bookName);
+        if (!card) {
+            const books = ctx.assets.listWorldbooks();
+            return ctx.reply(`❌ 未找到世界书「${bookName}」。\n可用：${books.length ? books.map(b => b.replace(/\.json$/, '')).join('、') : '无'}`);
+        }
+
+        session.worldbook = bookName;
+        await this._saveSession(ctx, session);
+        return ctx.reply(`✅ 世界书已切换为「${bookName}」\n（引擎模式下世界书条目将按关键词激活注入）`);
+    }
+
     /** /rp profile [Profile名] - 切换 Agent Profile（引擎模式） */
     async _cmdProfile(ctx) {
         const session = await this._getSession(ctx);
@@ -695,7 +743,8 @@ export default class AgentRPPlugin extends GatewayPlugin {
             platform: ctx.platform,
             chatId: ctx.chatId,
             character: session.character || '',
-            worldbook: '',
+            // P0-2 修复：此前硬编码 '' 导致世界书永远无法注入；现由 /rp world 设置的 session.worldbook 传入
+            worldbook: session.worldbook || '',
             style: session.style || '',
             viewMode: session.viewMode || 'actor',
             turn: session.turnCount || 0,
@@ -724,9 +773,13 @@ export default class AgentRPPlugin extends GatewayPlugin {
         }
 
         // 调表现层分发（SubTask 2.1）
-        // primarySurfaceType='im' 必调 IM 适配器；bypassSurfaceTypes 留空（状态图在 IM 适配器内联渲染）
+        // P1-3 修复：primarySurfaceType='im' 必调 IM 适配器；
+        // bypassSurfaceTypes=['native'] 让同一结果也推送到剧场面板（SSE），实现 IM 与面板同步。
         try {
-            await ctx.surface.dispatch(runOutput.result, ctx, { primarySurfaceType: 'im' });
+            await ctx.surface.dispatch(runOutput.result, ctx, {
+                primarySurfaceType: 'im',
+                bypassSurfaceTypes: ['native'],
+            });
         } catch (e) {
             // surface 不可用时回退到直接发文本
             this.logger.warn(`[agent-rp] surface.dispatch 失败，回退直接发文本: ${e.message}`);
@@ -916,40 +969,49 @@ export default class AgentRPPlugin extends GatewayPlugin {
     }
 
     /**
-     * 首次启动引导：从 agent-framework 的 templates/defaults/ 复制默认记忆模板与文风
-     * 到 agent-rp 的 memory/ 和 styles/ 目录（仅在目标文件不存在时复制）。
+     * 首次启动引导：从 agent-framework 的 templates/defaults/ 复制默认记忆模板与文风。
+     * P0-2 修复：同时播种到引擎目录（data/plugins/agent-framework，引擎模式 ContextBuilder 的读取位置）
+     * 与本插件目录（兜底模式 ctx.fs 沙箱的读取位置），保证两种模式零配置可用。
      * SubTask 6.2/6.3/6.5：保证 /rp start 无参数时零配置可用。
      * @private
      */
     _seedDefaultMemoryAndStyle() {
         const templatesRoot = path.resolve(__dirname, '..', 'agent-framework', 'templates', 'defaults');
-        const memoryDst = path.join(DATA_DIR, 'memory');
-        const stylesDst = path.join(DATA_DIR, 'styles');
-
-        // 复制记忆模板（仅缺失项）
         const memoryFiles = ['project.md', 'reference.md', 'feedback.md', 'user.md', 'SUMMARY_RULES.md'];
-        for (const fname of memoryFiles) {
-            const src = path.join(templatesRoot, 'memory', fname);
-            const dst = path.join(memoryDst, fname);
-            if (!fs.existsSync(src)) continue;
-            if (fs.existsSync(dst)) continue;
-            try {
-                fs.copyFileSync(src, dst);
-                this.logger.info(`[agent-rp] 已播种默认记忆模板: memory/${fname}`);
-            } catch (e) {
-                this.logger.warn(`[agent-rp] 播种记忆模板 ${fname} 失败: ${e.message}`);
-            }
-        }
 
-        // 复制默认文风 default.md
-        const styleSrc = path.join(templatesRoot, 'styles', 'default.md');
-        const styleDst = path.join(stylesDst, 'default.md');
-        if (fs.existsSync(styleSrc) && !fs.existsSync(styleDst)) {
-            try {
-                fs.copyFileSync(styleSrc, styleDst);
-                this.logger.info('[agent-rp] 已播种默认文风: styles/default.md');
-            } catch (e) {
-                this.logger.warn(`[agent-rp] 播种默认文风失败: ${e.message}`);
+        // 目标目录对：引擎模式（权威）+ 兜底模式（ctx.fs 沙箱）
+        const targets = [
+            { memory: path.join(ENGINE_DATA_DIR, 'memory'), styles: path.join(ENGINE_DATA_DIR, 'styles') },
+            { memory: path.join(DATA_DIR, 'memory'), styles: path.join(DATA_DIR, 'styles') },
+        ];
+
+        for (const { memory, styles } of targets) {
+            // 复制记忆模板（仅缺失项）
+            for (const fname of memoryFiles) {
+                const src = path.join(templatesRoot, 'memory', fname);
+                const dst = path.join(memory, fname);
+                if (!fs.existsSync(src)) continue;
+                if (fs.existsSync(dst)) continue;
+                try {
+                    fs.mkdirSync(path.dirname(dst), { recursive: true });
+                    fs.copyFileSync(src, dst);
+                    this.logger.info(`[agent-rp] 已播种默认记忆模板: ${dst}`);
+                } catch (e) {
+                    this.logger.warn(`[agent-rp] 播种记忆模板 ${fname} 失败: ${e.message}`);
+                }
+            }
+
+            // 复制默认文风 default.md
+            const styleSrc = path.join(templatesRoot, 'styles', 'default.md');
+            const styleDst = path.join(styles, 'default.md');
+            if (fs.existsSync(styleSrc) && !fs.existsSync(styleDst)) {
+                try {
+                    fs.mkdirSync(styles, { recursive: true });
+                    fs.copyFileSync(styleSrc, styleDst);
+                    this.logger.info(`[agent-rp] 已播种默认文风: ${styleDst}`);
+                } catch (e) {
+                    this.logger.warn(`[agent-rp] 播种默认文风失败: ${e.message}`);
+                }
             }
         }
     }
@@ -1391,8 +1453,12 @@ ${sections.join('')}
             });
 
             if (summary && summary.trim()) {
-                ctx.fs.write('memory/project.md', summary.trim());
-                this.logger.info('剧情摘要已自动更新');
+                // P0-2 修复：摘要必须写入引擎读取的目录（memory/project.md 由 ContextBuilder 注入）。
+                // ctx.fs 沙箱只覆盖本插件目录，因此这里用直接 fs 写引擎目录（与 _seedDefaultMemoryAndStyle 一致）。
+                const projectPath = path.join(ENGINE_DATA_DIR, 'memory', 'project.md');
+                fs.mkdirSync(path.dirname(projectPath), { recursive: true });
+                fs.writeFileSync(projectPath, summary.trim(), 'utf-8');
+                this.logger.info('剧情摘要已自动更新（写入引擎记忆目录）');
             }
         } catch (e) {
             this.logger.warn(`自动摘要失败: ${e.message}`);
@@ -1455,6 +1521,14 @@ ${sections.join('')}
 
         const template = this.getConfig('systemPromptTemplate');
         if (template) parts.push(template);
+
+        // 用户自定义角色注入（兜底模式）：恒注入自定义用户名；提供人设时追加人设段
+        const up = userProfileStore.get();
+        const rpUserName = session.userName || up.name || 'user';
+        parts.push(`【用户】${rpUserName}`);
+        if (up.persona) {
+            parts.push(`【用户人设】\n${up.persona}`);
+        }
 
         const messages = [{ role: 'system', content: parts.join('\n\n') }];
 
@@ -1607,6 +1681,8 @@ ${sections.join('')}
             profile: this.getConfig('defaultProfile') || '',
             // 兜底模式
             character: this.getConfig('defaultCharacter') || '',
+            // 引擎模式世界书（/rp world 设置，注入到 agentSession）
+            worldbook: '',
             // 共享
             viewMode: this.getConfig('defaultViewMode') || 'actor',
             style: this.getConfig('defaultStyle') || '',

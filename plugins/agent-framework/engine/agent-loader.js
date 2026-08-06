@@ -12,15 +12,27 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * （锚点/别名、合并键、flow 语法、多行块标量、复杂嵌套等）。
  * 失败时回退到简易解析（simpleYAMLParse），保证旧容错行为不回归：
  * 面板编辑写出非法 YAML 时，定义加载不崩溃。
+ *
+ * 返回 { ok, data, error, fallback, jsYamlError }：
+ *   - ok：是否得到可用对象
+ *   - data：解析结果（可为 null）
+ *   - error：js-yaml 与简易解析都失败时的错误
+ *   - fallback：是否走了简易解析回退（js-yaml 曾失败）
+ *   - jsYamlError：js-yaml 的原始错误消息（供保存时报明确错误，避免误导为"缺少 name"）
  */
 function parseYAML(text) {
     try {
         const doc = yamlLoad(text);
-        return doc && typeof doc === 'object' ? doc : null;
+        return { ok: true, data: doc && typeof doc === 'object' ? doc : null, error: null, fallback: false, jsYamlError: null };
     } catch (e) {
-        // js-yaml 解析失败（非法语法等），回退简易解析
-        try { return simpleYAMLParse(text); }
-        catch (_) { return null; }
+        const jsYamlError = e.message || String(e);
+        // js-yaml 解析失败（非法语法/缩进错乱等），回退简易解析
+        try {
+            const data = simpleYAMLParse(text);
+            return { ok: true, data, error: null, fallback: true, jsYamlError };
+        } catch (_) {
+            return { ok: false, data: null, error: jsYamlError, fallback: true, jsYamlError };
+        }
     }
 }
 
@@ -161,6 +173,18 @@ function simpleYAMLParse(text) {
     }
 
     const parsed = parseBlock(0, result);
+    // 兜底：若顶层被解析成数组（例如 YAML 中存在缩进错乱的多行文本，
+    // 或顶层混入 "- item" 列表导致 result 被改为数组），
+    // 把数组内对象条目的键合并回顶层对象，保证 def.name 等顶层字段可被识别。
+    if (Array.isArray(parsed)) {
+        const merged = {};
+        for (const item of parsed) {
+            if (item && typeof item === 'object' && !Array.isArray(item)) {
+                Object.assign(merged, item);
+            }
+        }
+        return merged;
+    }
     return parsed;
 }
 
@@ -183,7 +207,7 @@ export class AgentLoader {
             if (!file.endsWith('.yaml') && !file.endsWith('.yml')) continue;
             try {
                 const text = fs.readFileSync(path.join(this.agentsDir, file), 'utf-8');
-                const def = parseYAML(text);
+                const def = parseYAML(text).data;
                 if (def && def.name) {
                     this.agents.set(def.name, def);
                 }
@@ -243,7 +267,14 @@ export class AgentLoader {
      * 保存 Agent 定义
      */
     save(name, yamlText) {
-        const def = parseYAML(yamlText);
+        const parsed = parseYAML(yamlText);
+        if (parsed.jsYamlError && parsed.fallback) {
+            // 严格模式：js-yaml 解析失败说明 YAML 语法/缩进有问题（如块内文本顶格）。
+            // 直接报出 js-yaml 的明确错误（含行号），避免宽松解析静默丢失 name/systemPrompt 等字段，
+            // 也避免把问题误导成"缺少 name 字段"。
+            throw new Error(`YAML 解析失败，请检查缩进与格式: ${parsed.jsYamlError}`);
+        }
+        const def = parsed.data;
         if (!def || !def.name) throw new Error('Agent 定义缺少 name 字段');
         const filePath = path.join(this.agentsDir, `${def.name}.yaml`);
         fs.writeFileSync(filePath, yamlText, 'utf-8');

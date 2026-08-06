@@ -2722,7 +2722,7 @@ function renderRuntimeAssets(assets) {
         group('角色卡', 'characters', assets.characters, '无，点击下方导入或放入 assets/characters/', { allowEntries: false }) +
         group('世界书', 'worldbooks', assets.worldbooks, '无', { allowEntries: true }) +
         group('预设', 'presets', assets.presets, '无（用内置默认）', { allowEntries: true }) +
-        group('存档', 'archives', assets.archives, '无（首次对话自动创建）', { allowDelete: false, allowEntries: false })
+        group('存档', 'chats', assets.archives, '无（首次对话自动创建）', { allowEntries: false })
     );
 }
 
@@ -2956,6 +2956,7 @@ function bindRuntimeEvents() {
     $('#gateway_rt_import_char').on('click', () => triggerAssetUpload('characters'));
     $('#gateway_rt_import_world').on('click', () => triggerAssetUpload('worldbooks'));
     $('#gateway_rt_import_preset').on('click', () => triggerAssetUpload('presets'));
+    $('#gateway_rt_import_chat').on('click', () => triggerAssetUpload('chats'));
     $('#gateway_rt_file_input').on('change', handleAssetUpload);
     // ST 同步
     $('#gateway_rt_sync_st').on('click', syncFromSillyTavern);
@@ -2993,7 +2994,7 @@ async function handleAssetDelete() {
         return;
     }
     const confirmed = await callGenericPopup(
-        `确定删除选中的 ${names.length} 个${type === 'characters' ? '角色卡' : type === 'worldbooks' ? '世界书' : '预设'}？\n${names.map(n => '· ' + n).join('\n')}`,
+        `确定删除选中的 ${names.length} 个${type === 'characters' ? '角色卡' : type === 'worldbooks' ? '世界书' : type === 'presets' ? '预设' : '存档'}？\n${names.map(n => '· ' + n).join('\n')}`,
         POPUP_TYPE.CONFIRM, '', { okButton: '删除', cancelButton: '取消', wide: true },
     );
     if (confirmed !== 1 && confirmed !== true) return;
@@ -3057,7 +3058,7 @@ let pendingAssetType = null;
 function triggerAssetUpload(type) {
     if (!rtDirs) { toastr.warning('请先启用自建推理管线'); return; }
     pendingAssetType = type;
-    const accept = type === 'characters' ? '.png,.json' : '.json';
+    const accept = type === 'characters' ? '.png,.json' : type === 'chats' ? '.jsonl' : '.json';
     $('#gateway_rt_file_input').attr('accept', accept).val('').trigger('click');
 }
 
@@ -3081,7 +3082,9 @@ async function handleAssetUpload() {
             throw new Error(body.error || `HTTP ${resp.status}`);
         }
         const data = await resp.json();
-        toastr.success(`已导入「${data.name}」`);
+        toastr.success(type === 'chats'
+            ? `已导入存档「${data.name}」\n使用 /load ${data.name} 切换会话存档`
+            : `已导入「${data.name}」`);
         rtAssets = data.assets || rtAssets;
         renderRuntimeAssets(rtAssets);
         // 刷新会话绑定：让刚导入的角色卡/世界书/预设立刻出现在下拉与多选列表里
@@ -3094,20 +3097,21 @@ async function handleAssetUpload() {
 /** 从 SillyTavern 目录一键同步资产 */
 async function syncFromSillyTavern() {
     if (!rtDirs) { toastr.warning('请先启用自建推理管线'); return; }
-    // 尝试自动推断 ST 路径：扩展目录回溯
-    let defaultPath = '';
-    try {
-        // sillytavern-gateway/ -> third-party/ -> extensions/ -> scripts/ -> public/ -> SillyTavern/
-        defaultPath = '../../../../..';
-    } catch (_) {}
-    const stPath = prompt('请输入 SillyTavern 安装路径（包含 data/default-user/ 的根目录）：', defaultPath);
+    // 注意：不能预填相对路径（如 ../../../../..）——该值会被服务端按网关进程的工作目录
+    // 解析，与浏览器端（ST 扩展）所在目录不一致，导致同步静默 0/0/0。
+    const stPath = prompt('请输入 SillyTavern 安装路径（应包含 data\\default-user 目录，例如 D:\\SillTavern）：', '');
     if (!stPath) return;
     try {
         const data = await apiRequest('/api/runtime/sync-from-st', {
             method: 'POST',
             body: JSON.stringify({ stPath }),
         });
-        toastr.success(`同步完成：角色卡 ${data.characters} / 世界书 ${data.worldbooks} / 预设 ${data.presets}`);
+        const total = (data.characters || 0) + (data.worldbooks || 0) + (data.presets || 0) + (data.chats || 0);
+        if (total === 0) {
+            toastr.error(`未从该路径同步到任何资产。请确认填写的是 SillyTavern 根目录（包含 data\\default-user\\characters 的那一层）。${data.missing?.length ? `缺失目录: ${data.missing.join(' / ')}` : ''}`);
+        } else {
+            toastr.success(`同步完成：角色卡 ${data.characters} / 世界书 ${data.worldbooks} / 预设 ${data.presets} / 存档 ${data.chats}${data.missing?.length ? `\n缺失目录: ${data.missing.join(' / ')}` : ''}`);
+        }
         rtAssets = data.assets || rtAssets;
         renderRuntimeAssets(rtAssets);
         loadRuntimeProfiles();

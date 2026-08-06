@@ -18,7 +18,9 @@ export class MemoryEngine {
     constructor(dataDir, options = {}) {
         this.memoryDir = path.join(dataDir, 'memory');
         fs.mkdirSync(this.memoryDir, { recursive: true });
-        this.summaryInterval = options.summaryInterval || 10;
+        // P1-4 修复：`|| 10` 会把配置值 0 误当成缺省而变回 10（0=禁用失效）；
+        // 改用 `?? 10` 仅对 null/undefined 生效，0 保持 0。
+        this.summaryInterval = options.summaryInterval ?? 10;
         this.llm = null; // 运行时注入
 
         // 任务 2b：可插拔检索器（默认倒排索引，嵌入引擎接口预留）

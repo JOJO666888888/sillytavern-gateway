@@ -1,6 +1,7 @@
 import { ContextBuilder, extractDefinitionVar } from '../../../server/agent/context-builder.js';
 import { Pipeline } from '../../../server/agent/pipeline.js';
 import { AgentRunResult, AgentEventType } from '../../../server/agent/run-result.js';
+import { extractOptions } from '../../../server/agent/option-utils.js';
 
 /**
  * Agent 执行引擎
@@ -19,8 +20,17 @@ export class AgentRunner {
         this.collabBus = options.collabBus || null;
         // 流式 token 增量回调：onTokenDelta(runId, delta, fullText, turn, sessionKey)
         this.onTokenDelta = typeof options.onTokenDelta === 'function' ? options.onTokenDelta : null;
+        // P1-2: 单个 Agent 事件实时回调：onAgentEvent(sessionKey, { type, payload, seq, timestamp })
+        // 由插件层接线到 theatre-broadcaster.broadcastEvent，供前端时间线实时消费。
+        this.onAgentEvent = typeof options.onAgentEvent === 'function' ? options.onAgentEvent : null;
+        // P2: 提示词构建回调：onPromptBuilt(sessionKey, { messages, builtAt, runId })
+        // 由插件层接线到 theatre-broadcaster，把最近一次注入的完整提示词推给 SSE 客户端。
+        this.onPromptBuilt = typeof options.onPromptBuilt === 'function' ? options.onPromptBuilt : null;
         this.activeRuns = new Map();
         this.runLog = [];
+        // P2: 最近一次构建的完整提示词：Map<sessionKey, { messages, builtAt, runId }>
+        // 供 GET /api/agent-theatre/prompt 查询（前端提示词查看器）。
+        this.lastPromptMap = new Map();
     }
 
     /**
@@ -53,9 +63,33 @@ export class AgentRunner {
         };
 
         try {
+            // P3: 角色卡开场白注入 —— 仅当无历史（新会话首轮）且会话绑定了角色卡时，
+            // 把角色卡 first_message / alternate_greetings[greetingIndex] 作为首条
+            // assistant 消息喂给模型（从角色视角开场）。有历史则不注入，避免开场白重复。
+            let historyForBuild = Array.isArray(history) ? history : [];
+            let greetingInjected = false;
+            if (historyForBuild.length === 0 && session?.character) {
+                const greeting = this._selectGreeting(session);
+                if (greeting) {
+                    historyForBuild = [{ role: 'assistant', content: greeting }, ...historyForBuild];
+                    greetingInjected = true;
+                }
+            }
+
             // 1. 构建上下文
-            const messages = this.contextBuilder.build(definition, session, history, userMessage);
-            this.logger.info(`[agent-runner] Agent "${definition.name}" 启动，messages: ${messages.length}`);
+            const messages = this.contextBuilder.build(definition, session, historyForBuild, userMessage);
+            if (greetingInjected && messages[0]?.role === 'system') {
+                messages[0].content += '\n\n（角色开场白已展示：首条 assistant 消息为角色开场白，请从角色视角自然延续，不要复述开场白内容）';
+            }
+            this.logger.info(`[agent-runner] Agent "${definition.name}" 启动，messages: ${messages.length}${greetingInjected ? '（含角色开场白）' : ''}`);
+
+            // P2: 捕获最近一次注入的完整提示词（供前端提示词查看器 + SSE prompt_built 实时刷新）
+            const sessionKey = `${session?.platform || 'unknown'}:${session?.chatId || 'unknown'}`;
+            const promptRecord = { messages, builtAt: Date.now(), runId };
+            this.lastPromptMap.set(sessionKey, promptRecord);
+            if (this.onPromptBuilt) {
+                try { this.onPromptBuilt(sessionKey, promptRecord); } catch (e) { /* 广播失败不阻塞主流程 */ }
+            }
 
             // 2. workspace 能力：若 definition 或 ctx 声明 workspace，初始化 run 级工作区
             const useWorkspace = !!this.workspaceManager
@@ -75,9 +109,23 @@ export class AgentRunner {
 
             // 3. 获取工具声明 + 执行器（包装一层以捕获事件 / 检测草稿生成 / 写 journal）
             const tools = this.toolRegistry.getDeclarations(definition.tools || []);
+            // 工具名规范化：OpenAI/Claude/Gemini 的 function.name 不允许点号（如 "state.read"），
+            // 发给模型前统一转下划线；模型返回工具调用时按映射还原为原始名再执行。
+            const sanitizeToolName = (n) => String(n).replace(/\./g, '_');
+            const toolNameMap = new Map();
+            const llmTools = tools.map(t => {
+                const sn = sanitizeToolName(t.name);
+                if (sn !== t.name) toolNameMap.set(sn, t.name);
+                return { ...t, name: sn };
+            });
             // runId 注入工具执行上下文，供 collab.* 协作工具绑定消息
             const baseExecutor = this.toolRegistry.createExecutor({ session, ctx, definition, runId });
-            const executor = this._wrapExecutor(baseExecutor, runId, useWorkspace, capturedEvents, () => { draftGenerated = true; });
+            // 先还原工具名（sanitized -> 原始名），再交给事件包装器（其内部按原始点号名匹配 state.* / narrative.generate）
+            const executor = this._wrapExecutor(
+                (name, args) => baseExecutor(toolNameMap.get(name) || name, args),
+                runId, useWorkspace, capturedEvents, () => { draftGenerated = true; },
+                sessionKey,
+            );
 
             // 4. 构建 pipeline（如有阶段定义）
             let pipeline = null;
@@ -91,11 +139,10 @@ export class AgentRunner {
                 max_tokens: definition.model?.maxTokens ?? 32768,
             };
             const maxSteps = definition.maxSteps || 10;
-            const sessionKey = `${session?.platform || 'unknown'}:${session?.chatId || 'unknown'}`;
 
             let result;
             if (typeof ctx.llm.runToolsStream === 'function') {
-                result = await ctx.llm.runToolsStream(messages, tools, executor, {
+                result = await ctx.llm.runToolsStream(messages, llmTools, executor, {
                     maxSteps,
                     sampling,
                     // P2: 中止信号，abort 后 LLM 工具循环在 step 边界抛 Error('aborted') 中断
@@ -103,7 +150,7 @@ export class AgentRunner {
                     onDelta: (delta, full, turn) => this.onTokenDelta?.(runId, delta, full, turn, sessionKey),
                 });
             } else {
-                result = await ctx.llm.runTools(messages, tools, executor, { maxSteps, sampling, signal: controller.signal });
+                result = await ctx.llm.runTools(messages, llmTools, executor, { maxSteps, sampling, signal: controller.signal });
             }
 
             // 6. 草稿生成后 checkpoint
@@ -117,6 +164,10 @@ export class AgentRunner {
                 subAgentResults = await this._triggerSubAgents(definition, result.text, session, ctx, runId);
                 for (const r of subAgentResults) {
                     capturedEvents.push({ type: AgentEventType.SUBAGENT, payload: r });
+                    // P1-2: 子代理结果实时广播
+                    if (this.onAgentEvent) {
+                        try { this.onAgentEvent(sessionKey, { type: AgentEventType.SUBAGENT, payload: r }); } catch (e) { /* 忽略 */ }
+                    }
                     if (useWorkspace) this.workspaceManager.appendEvent(runId, 'subagent', r);
                 }
             }
@@ -125,6 +176,24 @@ export class AgentRunner {
             const runResult = AgentRunResult.fromRunResult(result.text, result.steps, runId, meta);
             for (const ev of capturedEvents) {
                 runResult.addEvent(ev.type, ev.payload);
+            }
+
+            // P1-1: 从正文提取 >选项X： 格式的选项并填充 result.options。
+            // 此前 options 恒为空导致面板选项区恒空、IM 选项需靠 option-splitter 正则兜底；
+            // 现在引擎契约直接产出选项（含 callbackId 语义），前端可据此渲染可点击选项。
+            try {
+                const { mainText, options } = extractOptions(runResult.getMainText());
+                if (mainText) runResult.setMainText(mainText);
+                for (const opt of options) {
+                    runResult.addOption({
+                        text: opt.content,
+                        callbackId: `select:option:${opt.index}`,
+                        index: opt.index,
+                    });
+                }
+            } catch (e) {
+                // 选项提取失败不阻断主流程（保持原正文）
+                this.logger.warn(`[agent-runner] 选项提取失败: ${e.message}`);
             }
 
             // 9. commit 前 checkpoint + commit（成功才 promote，失败不污染稳定层）
@@ -218,26 +287,27 @@ export class AgentRunner {
      * @param {boolean} useWorkspace
      * @param {Array} capturedEvents - 待注入 AgentRunResult 的事件缓冲
      * @param {Function} onDraft - 草稿生成回调
+     * @param {string} sessionKey - 会话键（P1-2：实时广播事件用）
      * @returns {Function} 包装后的执行器
      * @private
      */
-    _wrapExecutor(baseExecutor, runId, useWorkspace, capturedEvents, onDraft) {
+    _wrapExecutor(baseExecutor, runId, useWorkspace, capturedEvents, onDraft, sessionKey) {
+        const fire = (type, payload) => {
+            const ev = { type, payload };
+            capturedEvents.push(ev);
+            // P1-2: 实时广播给剧场 SSE 客户端（时间线实时展示工具调用/状态变更）
+            if (this.onAgentEvent) {
+                try { this.onAgentEvent(sessionKey, { type, payload }); } catch (e) { /* 广播失败不阻断 */ }
+            }
+            return ev;
+        };
         return async (name, args) => {
-            capturedEvents.push({
-                type: AgentEventType.TOOL_CALL,
-                payload: { tool: name, args },
-            });
+            fire(AgentEventType.TOOL_CALL, { tool: name, args });
             if (typeof name === 'string' && name.startsWith('state.')) {
-                capturedEvents.push({
-                    type: AgentEventType.STATE_CHANGE,
-                    payload: { tool: name, args },
-                });
+                fire(AgentEventType.STATE_CHANGE, { tool: name, args });
             }
             if (name === 'narrative.generate') {
-                capturedEvents.push({
-                    type: AgentEventType.DRAFT,
-                    payload: { args },
-                });
+                fire(AgentEventType.DRAFT, { args });
                 onDraft();
             }
             if (useWorkspace) {
@@ -395,5 +465,37 @@ export class AgentRunner {
 
     getLogs(limit = 50) {
         return this.runLog.slice(-limit);
+    }
+
+    /**
+     * 获取某会话最近一次注入的完整提示词（P2，供 /api/agent-theatre/prompt 查询）。
+     * @param {string} sessionKey - 会话 key（"platform:chatId"）
+     * @returns {{messages:Array<{role:string, content:string}>, builtAt:number, runId:string}|null}
+     *          该会话无 run 记录时返回 null
+     */
+    getLastPrompt(sessionKey) {
+        return this.lastPromptMap.get(sessionKey) || null;
+    }
+
+    /**
+     * 选择角色开场白（P3）：
+     * 加载会话绑定的角色卡，从 [first_message, ...alternate_greetings] 中按
+     * session.greetingIndex（默认 0）取模选择。卡不存在 / 无开场白返回 ''。
+     * @param {Object} session - 会话状态（需含 character / greetingIndex）
+     * @returns {string}
+     * @private
+     */
+    _selectGreeting(session) {
+        try {
+            if (!this.contextBuilder || typeof this.contextBuilder.selectGreeting !== 'function') return '';
+            const greeting = this.contextBuilder.selectGreeting(
+                session.character,
+                session.greetingIndex ?? 0,
+            );
+            return greeting || '';
+        } catch (e) {
+            this.logger.warn?.(`[agent-runner] 开场白加载失败: ${e.message}`);
+            return '';
+        }
     }
 }

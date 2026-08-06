@@ -27,7 +27,24 @@ export class ChatArchive {
             create_date: meta.createDate || null, // 由调用方传入，避免此处产生副作用
             chat_metadata: {},
         };
-        if (fs.existsSync(filePath)) this.load();
+        // P2-2: 最近一次加载/写入时的文件 mtime（供 pipeline 缓存判断"外部是否改过"）
+        this._mtimeMs = 0;
+        if (fs.existsSync(filePath)) {
+            this.load();
+        }
+    }
+
+    /**
+     * P2-2: 记录当前文件 mtime（本实例最后一次加载/写入后的文件状态）。
+     * pipeline 层缓存复用该值：与磁盘当前 mtime 一致 → 无外部改动 → 可安全复用实例。
+     * @private
+     */
+    _refreshMtime() {
+        try {
+            this._mtimeMs = fs.statSync(this.filePath).mtimeMs;
+        } catch (_) {
+            this._mtimeMs = 0;
+        }
     }
 
     /**
@@ -62,6 +79,8 @@ export class ChatArchive {
             }
         } catch (e) {
             logger.error(`加载存档失败 ${this.filePath}: ${e.message}`);
+        } finally {
+            this._refreshMtime();
         }
     }
 
@@ -79,6 +98,7 @@ export class ChatArchive {
         };
         this.messages.push(entry);
         this._appendLine(entry);
+        this._refreshMtime(); // P2-2: 本实例写入后更新 mtime（供缓存判断）
         return entry;
     }
 
@@ -101,6 +121,7 @@ export class ChatArchive {
             fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
             fs.writeFileSync(tmp, lines.join('\n') + '\n');
             fs.renameSync(tmp, this.filePath);
+            this._refreshMtime(); // P2-2: 重写后同步 mtime
         } catch (e) {
             logger.error(`保存存档失败 ${this.filePath}: ${e.message}`);
         }

@@ -11,7 +11,11 @@
 import { test, describe, after, before } from 'node:test';
 import assert from 'node:assert';
 import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { applySchemaDefaults } from '../server/plugin-loader.js';
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 describe('schema 默认值注入', () => {
     test('补全缺失项，不覆盖已有值', () => {
@@ -64,8 +68,14 @@ describe('插件生命周期（禁用真正生效）', () => {
         // 等待插件系统的异步资源（winston 文件流、undici 连接等）收敛后再退出，
         // 否则 --test-force-exit 强杀时可能撞上 Windows libuv 的 UV_HANDLE_CLOSING 断言崩溃
         await new Promise(r => setTimeout(r, 1500));
-        for (const d of ['config', 'data', 'logs']) {
-            try { fs.rmSync(d, { recursive: true, force: true }); } catch (_) { /* ignore */ }
+        // ⚠️ 必须用绝对路径，且不能删 data/（里面可能有聊天存档等真实数据）。
+        // 曾经用相对路径递归删除，在部署目录跑一次 npm test 就把
+        // config/（全部 bot token）、data/（会话历史、聊天存档）整个删掉。
+        for (const name of ['config', 'logs']) {
+            const dir = path.join(REPO_ROOT, name);
+            const resolved = path.resolve(dir);
+            if (!resolved.startsWith(REPO_ROOT + path.sep) || resolved === REPO_ROOT) continue;
+            try { fs.rmSync(resolved, { recursive: true, force: true }); } catch (_) { /* ignore */ }
         }
     });
 

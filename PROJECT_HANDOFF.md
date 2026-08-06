@@ -1,8 +1,29 @@
 # SillyTavern Multi-Platform Gateway — 项目交接文档
 
 > **用途**：供新 AI 编码助手快速全面了解本项目架构、代码组织、设计决策、已知问题和开发约定。
-> **最后更新**：2026-07-19
+> **最后更新**：2026-08-05（本文档主体章节停留在 07-19，下方"最新状态"汇总了后续演进）
 > **GitHub**：https://github.com/JOJO666888888/sillytavern-gateway
+
+---
+
+## 0. 最新状态（2026-08-05）
+
+> 本文档其余章节为 2026-07-19 版本，未随 8 月迭代同步。以下是最新增量，接手的 AI 编码助手请以此为准。
+
+**已上线能力（07-19 之后）**：
+- **Agent 平台化体系**：`plugins/agent-framework/`（引擎）+ `plugins/agent-rp/`（IM 表现层）+ `server/agent/`（表现层抽象 / SSE 剧场 / 正则引擎 / AI 改配置）+ `public/agent.{html,css,js}`（独立 Agent 剧场前端 `/agent`，不依赖 SillyTavern）。
+- **新增平台适配器**：飞书（长连接）、QQ 官方、钉钉（共 6 平台）；AstrBot 兼容层（`server/compat/astrbot-shim.js`）。
+- **自建推理管线**（NativeRuntime，`server/runtime/pipeline.js`）：`runtime.enabled` 时网关自行组装 prompt 调 LLM，无需挂 ST 浏览器。
+- **插件生态**：llm-chat / access-control / multimodal-bridge / persona-router / group-manager / web-search / group-rp-bidding / rp-memory / st-data-manager / message-to-image / option-splitter / scheduler-service 等。
+- **测试体系**：`node:test`，约 46 个文件 / 900+ 用例（`npm test`）。
+- **安全基线**：插件安装披露 + 权限收窄 + 凭据脱敏；独立 Agent 服务与主网关共用 X-Gateway-Token 鉴权；ST 兼容桥方案已废弃（仅保留 `/api/generate` 双模式兼容）。
+
+**新 AI 助手快速导航**：
+- Agent 引擎：`plugins/agent-framework/`（index.js 装配 + engine/ 下 runner/loader/registry/state/memory/workspace/collab）
+- Agent 表现层：`server/agent/`（run-result / surface-manager / theatre-broadcaster / context-builder / regex-engine）+ `server/agent-api.js`（全部 REST/SSE 路由）
+- IM 适配：`plugins/agent-rp/index.js`（会话状态机 + 渲染）
+- 配置：`server/utils/config.js`（gateway.json）+ `env-config.js`（GATEWAY_* 环境变量）
+- 设计文档：`docs/AGENT_FRAMEWORK_GUIDE.md`、`AGENT_RP_TUTORIAL.md`、`AGENT_PLATFORM_ARCHITECTURE.md`、`COMPREHENSIVE_ANALYSIS_AND_OPTIMIZATION.md`
 
 ---
 

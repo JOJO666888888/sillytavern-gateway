@@ -8,6 +8,7 @@ import { ChatArchive, listArchives } from './chat-archive.js';
 import { loadPreset, defaultPreset, buildPrompt, listPresetEntries } from './preset-engine.js';
 import { LLMClient } from './llm-client.js';
 import { ProfileStore } from './profile-store.js';
+import { userProfileStore } from './user-profile-store.js';
 
 const logger = createLogger('runtime');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -105,6 +106,9 @@ export class NativeRuntime {
         this._cardCache = new Map();
         this._bookCache = new Map();
         this._presetCache = new Map();
+        // P2-2: 聊天存档实例缓存（filePath -> ChatArchive），
+        // 按 ChatArchive._mtimeMs 与磁盘 mtime 比对判断外部改动，避免每轮生成全量读盘+JSON.parse。
+        this._archiveCache = new Map();
         // 条目级启停覆盖（资产级，sidecar 文件，非破坏式：不改原资产文件）
         this._overridesFile = path.resolve(ROOT, cfg.overridesFile || 'data/asset-overrides.json');
         this._overrides = this._loadOverrides();
@@ -162,6 +166,7 @@ export class NativeRuntime {
         this._cardCache.clear();
         this._bookCache.clear();
         this._presetCache.clear();
+        this._archiveCache.clear(); // P2-2
     }
 
     // ==================== 资产管理：删除 + 条目级启停覆盖 ====================
@@ -213,8 +218,10 @@ export class NativeRuntime {
     deleteAsset(type, name) {
         const dir = this.dirs[type];
         if (!dir) throw new Error(`未知资产类型: ${type}`);
-        if (!this.listAssets()[type].includes(name)) throw new Error(`未找到资产: ${type}/${name}`);
-        const validExts = type === 'characters' ? ['.png', '.json'] : ['.json'];
+        // listAssets 的键名：存档在返回里叫 archives（dirs 里叫 chats）
+        const assetKey = type === 'chats' ? 'archives' : type;
+        if (!this.listAssets()[assetKey].includes(name)) throw new Error(`未找到资产: ${type}/${name}`);
+        const validExts = type === 'characters' ? ['.png', '.json'] : type === 'chats' ? ['.jsonl'] : ['.json'];
         for (const ext of validExts) {
             const file = path.join(dir, name + ext);
             if (fs.existsSync(file)) fs.unlinkSync(file);
@@ -258,7 +265,7 @@ export class NativeRuntime {
 
     /**
      * 导入资产文件（写入磁盘 + 清缓存）
-     * @param {string} type - characters | worldbooks | presets
+     * @param {string} type - characters | worldbooks | presets | chats
      * @param {string} filename - 原始文件名
      * @param {Buffer} buffer - 文件内容
      * @returns {{name: string, path: string}}
@@ -274,6 +281,10 @@ export class NativeRuntime {
         }
         // 安全文件名：去掉路径分隔符
         const safeName = filename.replace(/[\\/]/g, '_');
+        // 存档必须是 .jsonl（listArchives 只认该扩展名，落错扩展名会"导入成功但列表里看不到"）
+        if (type === 'chats' && path.extname(safeName).toLowerCase() !== '.jsonl') {
+            throw new Error('存档文件必须是 .jsonl 格式（SillyTavern 聊天记录）');
+        }
         const filePath = path.join(dir, safeName);
         fs.writeFileSync(filePath, buffer);
         this.clearCache();
@@ -283,10 +294,14 @@ export class NativeRuntime {
     /**
      * 从 SillyTavern 目录批量同步资产
      * @param {string} stRoot - SillyTavern 安装根目录
-     * @returns {{characters: number, worldbooks: number, presets: number}}
+     * @returns {{characters: number, worldbooks: number, presets: number, chats: number, missing: string[]}}
      */
     syncFromSillyTavern(stRoot) {
-        const result = { characters: 0, worldbooks: 0, presets: 0 };
+        const result = { characters: 0, worldbooks: 0, presets: 0, chats: 0, missing: [] };
+        // 确保目标目录存在（构造时创建过，但可能被外部删除）
+        for (const dir of Object.values(this.dirs)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
         // ST 默认用户数据目录
         const userData = path.join(stRoot, 'data', 'default-user');
         // 角色卡: data/default-user/characters/*.png + *.json
@@ -299,6 +314,8 @@ export class NativeRuntime {
                     result.characters++;
                 }
             }
+        } else {
+            result.missing.push('characters');
         }
         // 世界书: data/default-user/worlds/*.json
         const worldDir = path.join(userData, 'worlds');
@@ -309,6 +326,8 @@ export class NativeRuntime {
                     result.worldbooks++;
                 }
             }
+        } else {
+            result.missing.push('worlds');
         }
         // 预设: data/default-user/OpenAI Settings/*.json
         const presetDir = path.join(userData, 'OpenAI Settings');
@@ -319,19 +338,52 @@ export class NativeRuntime {
                     result.presets++;
                 }
             }
+        } else {
+            result.missing.push('OpenAI Settings');
+        }
+        // 存档: data/default-user/chats/<角色>/*.jsonl（ST 按角色分子目录）
+        // 保留原名（含角色与时间戳），listArchives 去 .jsonl 后缀即为可 /load 的存档名
+        const chatRoot = path.join(userData, 'chats');
+        if (fs.existsSync(chatRoot)) {
+            for (const sub of fs.readdirSync(chatRoot)) {
+                const subDir = path.join(chatRoot, sub);
+                if (!fs.statSync(subDir).isDirectory()) continue;
+                for (const f of fs.readdirSync(subDir)) {
+                    if (path.extname(f).toLowerCase() !== '.jsonl') continue;
+                    fs.copyFileSync(path.join(subDir, f), path.join(this.dirs.chats, f));
+                    result.chats++;
+                }
+            }
+        } else {
+            result.missing.push('chats');
         }
         this.clearCache();
         return result;
     }
 
-    /** 取会话的存档对象 */
+    /** 取会话的存档对象（P2-2：进程内缓存复用，外部改档按 mtime 重载） */
     getArchive(platform, chatId, profile, card) {
         const nameBase = profile.archive || `${platform}_${chatId}`;
         const file = path.join(this.dirs.chats, `${nameBase}.jsonl`);
-        return new ChatArchive(file, {
-            userName: profile.persona?.name || 'User',
+
+        // 复用已加载实例：仅当磁盘 mtime 与本实例最后一次加载/写入时一致（无外部改动）
+        const cached = this._archiveCache.get(file);
+        if (cached) {
+            try {
+                const diskMtime = fs.statSync(file).mtimeMs;
+                if (cached._mtimeMs === diskMtime) return cached;
+            } catch (_) {
+                // 文件被删除：按新文件处理
+            }
+        }
+
+        const archive = new ChatArchive(file, {
+            // 存档首行 user_name：会话 profile persona 优先，其次用户自定义配置名，兜底 'User'
+            userName: profile.persona?.name || userProfileStore.get().name || 'User',
             characterName: card?.name || 'Assistant',
         });
+        this._archiveCache.set(file, archive);
+        return archive;
     }
 
     /**
@@ -376,14 +428,20 @@ export class NativeRuntime {
             { maxImages: this.config.maxImages ?? 4 },
         );
 
+        // 用户自定义档案：用户提供人设 → 自定义用户名 + 完整人设生效（会话 profile persona 兜底）；
+        // 未提供人设 → 仅自定义用户名（宏 {{user}} 用配置名），persona 维持会话 profile 的
+        const up = userProfileStore.get();
+        const userName = up.name || profile.persona?.name || 'User';
+        const persona = up.persona ? { name: up.name, description: up.persona } : profile.persona;
+
         const { messages, sampling } = buildPrompt({
             card,
             preset,
-            persona: profile.persona,
+            persona,
             world,
             history,
             userInput: userContent,
-            userName: profile.persona?.name || 'User',
+            userName,
             tokenBudget: this.config.tokenBudget ?? 0,
             enableMacros: this.config.enableMacros !== false,
             // 体验优先：回复预算下限，防止推理模型思维链吃光 max_tokens 或正文截断

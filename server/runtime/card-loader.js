@@ -95,17 +95,26 @@ export function normalizeCard(card) {
     const spec = card.spec || '';
     const d = (spec.startsWith('chara_card_') && card.data) ? card.data : card;
 
+    // first_mes（V1/V2/V3 字段）→ 归一化导出 firstMes / firstMessage / first_message 三种别名：
+    //  - firstMes：历史遗留命名，现有调用方（如 runtime-assets.test.js）依赖
+    //  - firstMessage / first_message：P3 开场白机制的规范命名（V2 规范 first_mes）
+    const firstMessage = d.first_mes || d.char_greeting || '';
+
     return {
         spec: spec || 'chara_card_v1',
         name: d.name || d.char_name || '',
         description: d.description || '',
         personality: d.personality || '',
         scenario: d.scenario || '',
-        firstMes: d.first_mes || d.char_greeting || '',
+        firstMes: firstMessage,
+        firstMessage,
+        first_message: firstMessage,
         mesExample: d.mes_example || d.example_dialogue || '',
         systemPrompt: d.system_prompt || '',
         postHistoryInstructions: d.post_history_instructions || '',
         alternateGreetings: Array.isArray(d.alternate_greetings) ? d.alternate_greetings : [],
+        // alternate_greetings：与 first_message 一致的规范命名（V2 字段原名）
+        alternate_greetings: Array.isArray(d.alternate_greetings) ? d.alternate_greetings : [],
         // 内嵌世界书（character_book）——归一化交给世界书引擎的 normalizeLorebook
         characterBook: d.character_book || null,
         tags: Array.isArray(d.tags) ? d.tags : [],
@@ -122,6 +131,16 @@ export function normalizeCard(card) {
  * @returns {object} 归一化后的角色卡
  */
 export function loadCharacterCard(filePath) {
+    // 防御：确保传入的是文件而非目录（避免 EISDIR）
+    let stat;
+    try {
+        stat = fs.statSync(filePath);
+    } catch (e) {
+        throw new Error(`角色卡文件不存在: ${filePath}`);
+    }
+    if (!stat.isFile()) {
+        throw new Error(`角色卡路径不是文件: ${filePath}`);
+    }
     const ext = path.extname(filePath).toLowerCase();
     const buf = fs.readFileSync(filePath);
     let raw;
@@ -135,6 +154,66 @@ export function loadCharacterCard(filePath) {
     const card = normalizeCard(raw);
     card._sourcePath = filePath;
     return card;
+}
+
+/**
+ * 按名称从目录加载角色卡（修复 EISDIR：正确区分文件与目录）。
+ *
+ * 加载顺序：
+ *   1. 精确匹配：`<dir>/<name>.json` / `<dir>/<name>.png`（name 已带扩展名时直接精确匹配）
+ *   2. 目录扫描回退：basename 忽略大小写匹配（覆盖 .PNG/.Json 等大小写差异与特殊字符文件名）
+ *   3. 每步均校验 statSync().isFile()，目录不会被误当作文件读取
+ *
+ * @param {string} dir - 角色卡目录
+ * @param {string} name - 角色名（可带或不带 .json/.png 扩展名）
+ * @returns {object|null} 归一化角色卡，未找到返回 null
+ */
+export function loadCharacterCardByName(dir, name) {
+    if (!dir || !name || !fs.existsSync(dir)) return null;
+    const ext = path.extname(name).toLowerCase();
+    const hasExt = ext === '.json' || ext === '.png';
+    // 带其他扩展名（如 .txt）直接返回 null：避免去掉扩展名后误匹配同 basename 的角色卡
+    if (ext && !hasExt) return null;
+    const candidates = hasExt
+        ? [path.join(dir, name)]
+        : [path.join(dir, name + '.json'), path.join(dir, name + '.png')];
+    for (const filePath of candidates) {
+        try {
+            const stat = fs.statSync(filePath);
+            if (!stat.isFile()) continue; // 目录/其他类型跳过，不尝试读取
+        } catch (e) {
+            continue; // 不存在
+        }
+        try {
+            return loadCharacterCard(filePath);
+        } catch (e) {
+            // 解析失败继续尝试下一个候选
+        }
+    }
+    // 目录扫描回退：大小写不敏感匹配 basename
+    const targetExt = path.extname(name).toLowerCase();
+    const baseName = targetExt ? name.slice(0, -targetExt.length) : name;
+    const baseLower = baseName.toLowerCase();
+    const extSet = new Set(['.json', '.png']);
+    for (const f of fs.readdirSync(dir)) {
+        const fExt = path.extname(f).toLowerCase();
+        if (!extSet.has(fExt)) continue;
+        const fBase = f.slice(0, -fExt.length);
+        if (fBase.toLowerCase() !== baseLower) continue;
+        const filePath = path.join(dir, f);
+        try {
+            const stat = fs.statSync(filePath);
+            if (!stat.isFile()) continue;
+        } catch (e) {
+            continue;
+        }
+        try {
+            return loadCharacterCard(filePath);
+        } catch (e) {
+            // 解析失败尝试下一个
+        }
+    }
+    return null;
 }
 
 /**
@@ -154,4 +233,4 @@ export function listCharacterCards(dir) {
     return out;
 }
 
-export default { loadCharacterCard, parseCharacterCardPng, extractPngTextChunks, normalizeCard, listCharacterCards };
+export default { loadCharacterCard, loadCharacterCardByName, parseCharacterCardPng, extractPngTextChunks, normalizeCard, listCharacterCards };

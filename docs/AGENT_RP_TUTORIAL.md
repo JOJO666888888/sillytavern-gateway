@@ -201,7 +201,7 @@ IM 界面特性：
 | 模块 | 功能 | 入口 |
 |------|------|------|
 | Agent Profile | 定义 Agent 行为的 YAML 配置 | `templates/*.yaml` |
-| 工具注册表 | 15 个内置工具 + 第三方扩展 | `engine/tool-registry.js` |
+| 工具注册表 | 内置工具（8 类：状态/记忆/叙事/文件/Skill/子代理/协作/角色卡·世界书）+ 第三方扩展 | `engine/tool-registry.js` |
 | 记忆系统 | 四层记忆 + 自动摘要 + namespace 隔离 | `engine/memory-engine.js` |
 | 状态引擎 | 键值对状态管理 + 领域校验 | `engine/state-manager.js` |
 | 子代理调度 | 并行/串行子代理 + 上下文隔离 | `engine/subagent-dispatcher.js` |
@@ -273,7 +273,7 @@ Bot：七月的阳光毫不留情地砸在柏油路上...
 /rp skill clear       # 清空所有 skill
 ```
 
-记忆文件在 `data/plugins/agent-rp/memory/` 下，你可以手动编辑：
+记忆文件在 `data/plugins/agent-framework/memory/` 下（引擎数据目录，Agent 模式的权威位置；`/rp start` 首启会从框架模板自动播种），你可以手动编辑：
 - `project.md` — 剧情进度、下一阶段方向（每轮自动更新）
 - `reference.md` — 文件位置索引、角色卡路径
 - `feedback.md` — 用户偏好、踩过的坑

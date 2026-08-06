@@ -2,6 +2,11 @@ import { createLogger } from '../utils/logger.js';
 
 const logger = createLogger('llm');
 
+// P2-3: 瞬态容错——非流式 generate/generateWithTools 对网络错误/5xx/超时做 1 次重试。
+// 流式路径不做重试（已有"流式失败→降级非流式"的自愈，且 runtime-llm.test.js 守护请求次数）。
+const RETRY_ATTEMPTS = 1;
+const RETRY_DELAY_MS = 250;
+
 /**
  * LLM 客户端 —— provider 抽象
  *
@@ -73,6 +78,16 @@ function contentToText(content) {
 }
 
 /**
+ * 工具名规范化：OpenAI / Claude / Gemini 的 function.name 只允许字母数字与 _ -，
+ * 不允许点号（如 "state.read"）。统一把点号替换为下划线再发给模型。
+ * @param {string} name
+ * @returns {string}
+ */
+export function sanitizeToolName(name) {
+    return String(name).replace(/\./g, '_');
+}
+
+/**
  * 把统一工具声明转成各 provider 的 tools 规格。
  *
  * 统一工具声明（插件/调用方提供）：
@@ -89,7 +104,7 @@ export function buildToolsSpec(provider, tools) {
     if (p === 'claude') {
         return {
             tools: tools.map(t => ({
-                name: t.name,
+                name: sanitizeToolName(t.name),
                 description: t.description || '',
                 input_schema: t.parameters || { type: 'object', properties: {} },
             })),
@@ -100,7 +115,7 @@ export function buildToolsSpec(provider, tools) {
         return {
             tools: [{
                 functionDeclarations: tools.map(t => ({
-                    name: t.name,
+                    name: sanitizeToolName(t.name),
                     description: t.description || '',
                     parameters: t.parameters || { type: 'object', properties: {} },
                 })),
@@ -113,7 +128,7 @@ export function buildToolsSpec(provider, tools) {
         tools: tools.map(t => ({
             type: 'function',
             function: {
-                name: t.name,
+                name: sanitizeToolName(t.name),
                 description: t.description || '',
                 parameters: t.parameters || { type: 'object', properties: {} },
             },
@@ -632,6 +647,21 @@ export class LLMClient {
     }
 
     /**
+     * P2-3: 判断错误是否为"可重试的瞬态错误"（网络中断 / 5xx / 超时）。
+     * 4xx（参数/鉴权/配额）、空回复、截断等非瞬态错误不重试，避免掩盖真实问题。
+     * @param {Error} e
+     * @returns {boolean}
+     */
+    _isTransientError(e) {
+        if (!e) return false;
+        if (e.name === 'AbortError') return true; // 超时中止
+        if (e.message && e.message.includes('fetch failed')) return true; // 网络层失败
+        const m = /HTTP (\d{3})/.exec(e.message || '');
+        if (m) return Number(m[1]) >= 500;
+        return false;
+    }
+
+    /**
      * 生成回复（非流式）
      * @param {Array<{role,content}>} messages
      * @param {object} sampling
@@ -646,28 +676,38 @@ export class LLMClient {
         }
 
         const { url, headers, body } = buildRequest(cfg, messages, sampling, false);
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), cfg.timeout ?? 120000);
-        try {
-            const resp = await fetch(url, {
-                method: 'POST',
-                headers,
-                body: JSON.stringify(body),
-                signal: controller.signal,
-            });
-            if (!resp.ok) {
-                const errText = await resp.text().catch(() => '');
-                throw new Error(`LLM 请求失败 HTTP ${resp.status}: ${errText.slice(0, 300)}`);
+        // P2-3: 瞬态错误（网络/5xx/超时）重试一次，避免瞬时抖动整轮失败
+        for (let attempt = 0; ; attempt++) {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), cfg.timeout ?? 120000);
+            try {
+                const resp = await fetch(url, {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify(body),
+                    signal: controller.signal,
+                });
+                if (!resp.ok) {
+                    const errText = await resp.text().catch(() => '');
+                    throw new Error(`LLM 请求失败 HTTP ${resp.status}: ${errText.slice(0, 300)}`);
+                }
+                const data = await resp.json();
+                const text = extractText(cfg.provider, data);
+                if (!text) throw new Error(`LLM 返回空内容${describeEmptyCompletion(cfg.provider, data)}`);
+                // 正文非空却触达长度上限 = 半截回复，绝不静默：记 WARN 让运维发现并调大下限。
+                const trunc = describeTruncation(cfg.provider, data);
+                if (trunc) logger.warn(`[LLM] 回复被截断：${trunc}`);
+                return text;
+            } catch (e) {
+                if (attempt < RETRY_ATTEMPTS && this._isTransientError(e)) {
+                    logger.warn(`[LLM] 瞬态错误（${e.message}），${RETRY_DELAY_MS}ms 后重试（${attempt + 1}/${RETRY_ATTEMPTS}）`);
+                    await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
+                    continue;
+                }
+                throw e;
+            } finally {
+                clearTimeout(timer);
             }
-            const data = await resp.json();
-            const text = extractText(cfg.provider, data);
-            if (!text) throw new Error(`LLM 返回空内容${describeEmptyCompletion(cfg.provider, data)}`);
-            // 正文非空却触达长度上限 = 半截回复，绝不静默：记 WARN 让运维发现并调大下限。
-            const trunc = describeTruncation(cfg.provider, data);
-            if (trunc) logger.warn(`[LLM] 回复被截断：${trunc}`);
-            return text;
-        } finally {
-            clearTimeout(timer);
         }
     }
 
@@ -706,24 +746,34 @@ export class LLMClient {
         if (!cfg.model) throw new Error('LLM model 未配置');
 
         const { url, headers, body } = buildRequest(cfg, messages, { ...sampling, tools }, false);
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), cfg.timeout ?? 120000);
-        try {
-            const resp = await fetch(url, {
-                method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal,
-            });
-            if (!resp.ok) {
-                const errText = await resp.text().catch(() => '');
-                throw new Error(`LLM 请求失败 HTTP ${resp.status}: ${errText.slice(0, 300)}`);
+        // P2-3: 瞬态错误重试一次（与 generate 一致）
+        for (let attempt = 0; ; attempt++) {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), cfg.timeout ?? 120000);
+            try {
+                const resp = await fetch(url, {
+                    method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal,
+                });
+                if (!resp.ok) {
+                    const errText = await resp.text().catch(() => '');
+                    throw new Error(`LLM 请求失败 HTTP ${resp.status}: ${errText.slice(0, 300)}`);
+                }
+                const data = await resp.json();
+                return {
+                    text: extractText(cfg.provider, data),
+                    toolCalls: extractToolCalls(cfg.provider, data),
+                    raw: data,
+                };
+            } catch (e) {
+                if (attempt < RETRY_ATTEMPTS && this._isTransientError(e)) {
+                    logger.warn(`[LLM] 瞬态错误（${e.message}），${RETRY_DELAY_MS}ms 后重试（${attempt + 1}/${RETRY_ATTEMPTS}）`);
+                    await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
+                    continue;
+                }
+                throw e;
+            } finally {
+                clearTimeout(timer);
             }
-            const data = await resp.json();
-            return {
-                text: extractText(cfg.provider, data),
-                toolCalls: extractToolCalls(cfg.provider, data),
-                raw: data,
-            };
-        } finally {
-            clearTimeout(timer);
         }
     }
 
@@ -951,7 +1001,9 @@ export class LLMClient {
     /** 简易连通性校验 */
     async verify() {
         try {
-            const text = await this.generate([{ role: 'user', content: 'ping' }], { max_tokens: 8 });
+            // P2-3 修复：原 max_tokens:8 对推理模型（思维链先烧预算）几乎必然空回复，连通性校验误报；
+            // 提到 512 给推理模型留足思考空间，同时仍远小于正常回复长度，验证成本可控。
+            const text = await this.generate([{ role: 'user', content: 'ping' }], { max_tokens: 512 });
             return { ok: true, message: `连通正常（示例返回 ${text.slice(0, 20)}...）` };
         } catch (e) {
             return { ok: false, message: e.message };
@@ -959,4 +1011,4 @@ export class LLMClient {
     }
 }
 
-export default { LLMClient, buildRequest, extractText, extractToolCalls, extractDelta, parseSSEStream, buildMultimodalContent, buildToolsSpec, describeEmptyCompletion, describeTruncation };
+export default { LLMClient, buildRequest, extractText, extractToolCalls, extractDelta, parseSSEStream, buildMultimodalContent, buildToolsSpec, sanitizeToolName, describeEmptyCompletion, describeTruncation };

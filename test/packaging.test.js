@@ -250,7 +250,7 @@ describe('测试自身不能破坏别人的数据', () => {
     function stripComments(src) {
         return src
             .replace(/\/\*[\s\S]*?\*\//g, '')
-            .split('\n').map(l => l.replace(/\/\/.*$/, '')).join('\n');
+            .split(/\r?\n/).map(l => l.replace(/\/\/.*$/, '')).join('\n');
     }
 
     test('测试代码里不存在相对路径的递归删除', () => {

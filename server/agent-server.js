@@ -25,6 +25,7 @@ import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createLogger } from './utils/logger.js';
+import { createCorsMiddleware, createGatewayAuthMiddleware } from './utils/auth-middleware.js';
 import configManager from './utils/config.js';
 import { gatewayCore } from './gateway-core.js';
 import { sessionManager } from './session-manager.js';
@@ -45,15 +46,10 @@ const HOST = process.env.AGENT_HOST || '127.0.0.1';
 const app = express();
 app.use(express.json());
 
-// 开发服务 CORS：允许所有来源（本机开发工具，鉴权可选）。
-// 页面内所有 API 请求由前端自行携带 X-Gateway-Token（若主网关开启了鉴权）。
-app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Gateway-Token');
-    if (req.method === 'OPTIONS') return res.sendStatus(204);
-    next();
-});
+// P0-4 安全修复：独立 Agent 服务与主网关共用同一套 CORS 白名单 + X-Gateway-Token 鉴权。
+// 此前该服务无任何鉴权、CORS 全开，任意可访问该端口者都能调用全部 /api/*（含保存 LLM Key、删 Profile、删聊天）。
+app.use(createCorsMiddleware(configManager));
+app.use(createGatewayAuthMiddleware(configManager));
 
 // Agent 剧场事件广播器（SSE）：单例，进程级
 const theatreBroadcaster = new TheatreBroadcaster();
@@ -73,20 +69,27 @@ async function startAgentServer() {
     await pluginManager.init();
     pluginManager.registerRoutes(app);
 
-    // 2. LLM 服务（runtime.llm 配置）
+    // 2. LLM 服务（runtime.llm 配置）——惰性创建：配置 model 后才实例化。
+    //    前端保存 LLM 配置后 resetLlmService() 失效缓存，下次调用自动重建（无需重启）。
     let llmService = null;
-    const runtimeCfg = configManager.get('runtime') || {};
-    if (runtimeCfg.llm?.model) {
-        llmService = createLLMService(configManager);
-        logger.info('🤖 LLM 服务已就绪');
-    } else {
-        logger.warn('⚠️ runtime.llm.model 未配置，Agent run 将失败。请在 config/gateway.json 的 runtime.llm 中设置 provider/apiKey/model');
+    const getLlmService = () => {
+        const runtimeCfg = configManager.get('runtime') || {};
+        if (!runtimeCfg.llm?.model) return null;
+        if (!llmService) {
+            llmService = createLLMService(configManager);
+            logger.info('🤖 LLM 服务已就绪');
+        }
+        return llmService;
+    };
+    if (!(configManager.get('runtime') || {}).llm?.model) {
+        logger.warn('⚠️ runtime.llm.model 未配置，Agent run 将失败。请在页面设置中配置 LLM，或编辑 config/gateway.json 的 runtime.llm');
     }
 
     // 3. Agent 路由（与主网关共用同一实现：agents / agent-theatre / ai-modify / /agent 静态页）
     registerAgentApi(app, {
         getPluginManager: () => pluginManager,
-        getLlmService: () => llmService,
+        getLlmService: () => getLlmService(),
+        resetLlmService: () => { llmService = null; },
         theatreBroadcaster,
         configManager,
         logger,

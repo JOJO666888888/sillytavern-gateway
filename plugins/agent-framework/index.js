@@ -36,6 +36,7 @@ import { createFileTools } from './tools/file-tools.js';
 import { createSkillTools } from './tools/skill-tools.js';
 import { createSubAgentTools } from './tools/subagent-tools.js';
 import { createCollabTools } from './tools/collab-tools.js';
+import { createCharacterTools } from './tools/character-tools.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.resolve(__dirname, '..', '..', 'data', 'plugins', 'agent-framework');
@@ -104,6 +105,13 @@ export default class AgentFrameworkPlugin extends GatewayPlugin {
             // 流式 token 增量 → theatre-broadcaster 实时推送到 Agent 剧场 SSE 客户端
             onTokenDelta: (runId, delta, full, turn, sessionKey) =>
                 this._broadcastTokenDelta(runId, delta, full, turn, sessionKey),
+            // P2: 提示词构建完成 → theatre-broadcaster 推送 prompt_built 事件
+            // （前端提示词查看器可据此实时刷新最近一次注入的完整提示词）
+            onPromptBuilt: (sessionKey, prompt) =>
+                this._broadcastPromptBuilt(sessionKey, prompt),
+            // P1-2: 单个 Agent 事件 → theatre-broadcaster 推送 agent_event（前端时间线实时展示）
+            onAgentEvent: (sessionKey, event) =>
+                this._broadcastAgentEvent(sessionKey, event),
         });
 
         // 3. 注册内置工具
@@ -114,6 +122,8 @@ export default class AgentFrameworkPlugin extends GatewayPlugin {
         this.toolRegistry.registerAll(createSkillTools(DATA_DIR), 'framework');
         this.toolRegistry.registerAll(createSubAgentTools(this.subagentDispatcher), 'framework');
         this.toolRegistry.registerAll(createCollabTools(this.collabBus), 'framework');
+        // P0-1: 角色卡/世界书按需查阅工具（模板工作流第 3 步依赖）
+        this.toolRegistry.registerAll(createCharacterTools(), 'framework');
 
         // 4. 暴露 agent 服务（供其他插件通过 ctx.agent 访问）
         this._agentService = {
@@ -128,7 +138,21 @@ export default class AgentFrameworkPlugin extends GatewayPlugin {
             getStatus: () => this.agentRunner.getStatus(),
             // P2: 中止指定 run（透传 runner.abort），供 server/index.js 的 /api/agent-theatre/abort 调用
             abortRun: (runId) => this.agentRunner.abort(runId),
+            // P2: 查询某会话最近一次注入的完整提示词，供 /api/agent-theatre/prompt 调用
+            //（前端提示词查看器）。无记录返回 null。
+            getLastPrompt: (sessionKey) => this.agentRunner.getLastPrompt(sessionKey),
+            // P3: 查询角色卡开场白列表（first_message + alternate_greetings），
+            // 供 /api/agent-theatre/greetings 调用（前端展示开场白切换箭头）。
+            getGreetings: (characterName) => this.contextBuilder.getGreetingList(characterName),
             getWorkspaceManager: () => this.workspaceManager,
+            // P0-2: 暴露引擎数据目录（记忆/文风/技能文件的唯一权威位置），供其它插件（如 agent-rp）对齐
+            getDataDir: () => DATA_DIR,
+            // P1-6: 查询 Profile 的上下文历史轮数（context.historyLimit，默认 20），
+            // 供 agent-api 按配置动态计算历史条数上限（2×轮数），替代硬编码 40。
+            getHistoryLimit: (profile) => {
+                const def = this.agentLoader.get(profile);
+                return def?.context?.historyLimit || 20;
+            },
             /**
              * 协作总线（Phase 3）：供其他插件编程式发布/订阅 run 内协作消息。
              * publish(msg) / request(topic, payload, opts) / subscribe(topic, handler) / unsubscribe(topic, handler)
@@ -422,6 +446,38 @@ export default class AgentFrameworkPlugin extends GatewayPlugin {
             broadcaster.broadcastTokenDelta(sessionKey, delta, runId);
         } catch (e) {
             this.logger.warn?.(`[agent-framework] token 增量广播失败: ${e.message}`);
+        }
+    }
+
+    /**
+     * 把 agent run 构建的完整提示词广播给订阅该会话的 Agent 剧场 SSE 客户端（P2）。
+     * 事件名 prompt_built，data = { prompt: { messages, builtAt, runId } }，
+     * 前端提示词查看器可据此实时刷新。广播器未就绪时静默跳过。
+     * @private
+     */
+    _broadcastPromptBuilt(sessionKey, prompt) {
+        const broadcaster = this._services?.theatreBroadcaster;
+        if (!broadcaster || typeof broadcaster.broadcastPromptBuilt !== 'function') return;
+        try {
+            broadcaster.broadcastPromptBuilt(sessionKey, prompt);
+        } catch (e) {
+            this.logger.warn?.(`[agent-framework] prompt_built 广播失败: ${e.message}`);
+        }
+    }
+
+    /**
+     * 把单个 Agent 事件广播给订阅该会话的 Agent 剧场 SSE 客户端（P1-2）。
+     * 事件名 agent_event，data = { event: { type, payload } }，
+     * 前端时间线可实时展示工具调用 / 状态变更 / 子代理执行。广播器未就绪时静默跳过。
+     * @private
+     */
+    _broadcastAgentEvent(sessionKey, event) {
+        const broadcaster = this._services?.theatreBroadcaster;
+        if (!broadcaster || typeof broadcaster.broadcastEvent !== 'function') return;
+        try {
+            broadcaster.broadcastEvent(sessionKey, event);
+        } catch (e) {
+            this.logger.warn?.(`[agent-framework] agent_event 广播失败: ${e.message}`);
         }
     }
 

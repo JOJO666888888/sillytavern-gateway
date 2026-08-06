@@ -394,8 +394,7 @@ Agent 引擎不再直接 `ctx.reply(text)`，而是产出结构化的 `AgentRunR
 | 界面 | 适配器 | 能力 |
 |------|--------|------|
 | **IM 增强** | `agent-rp`（`/rp start`） | 正文分段 + `>选项X：` 交互按钮（复用 option-splitter）+ 实时状态图（复用 message-to-image）+ 群聊多 Bot 协同 |
-| **ST 兼容桥** | `server/index.js` 路由 shim | 真实 ST 前端直连网关，复用 ST 成熟 UI（立绘 / macro / 正则 / QuickReply）+ Agent 引擎 |
-| **Agent 专用前端** | `panel.html` "Agent 剧场" | SSE 订阅 AgentRunResult 流，实时正文流 + 状态面板 + 时间线 + 边玩边改（YAML 热重载） |
+| **Agent 专用前端** | 独立页 `/agent`（`public/agent.*`） | 不依赖 SillyTavern 的独立 Agent 剧场：SSE 实时正文流 + 状态面板 + 事件时间线 + 提示词查看器 + 聊天记录管理 + AI 修改 Profile（YAML 热重载） |
 
 插件通过 `ctx.surface.register(adapter)` 注册适配器（需声明 `surface` 权限），一个会话可绑定一个主适配器 + 多个旁路适配器。
 

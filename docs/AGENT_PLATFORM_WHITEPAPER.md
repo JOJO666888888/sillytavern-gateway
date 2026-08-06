@@ -249,7 +249,7 @@ TauriTavern 已验证"Workspace-as-Truth + Journal/Checkpoint + Profile + Delega
 | 权限 | risk | desc | default |
 |------|------|------|---------|
 | `surface` | medium | 注册表现层适配器（可拦截 / 改写 Agent 渲染输出） | false |
-| `workspace` | medium | 跨插件共享 workspace（多 Bot 协同场景） | false |
+| `workspace` | low | 跨插件共享 workspace（多 Bot 协同场景） | false |
 
 - **`surface` 权限**：只有声明了 `surface` 权限的插件才能调用 `ctx.surface.register(adapter)` 注册适配器。适配器能消费 `AgentRunResult`（含 `state.private` 私有层），风险中等，非默认授予。
 - **`workspace` 权限**：多 Bot 协同场景下，多个 bot 绑定不同 Agent Profile 但共用 workspace。只有声明了 `workspace` 权限的插件才能跨插件访问 workspace。

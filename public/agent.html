@@ -24,11 +24,12 @@
                     <!-- 连接配置 -->
                     <div class="agent-dropdown-section">
                         <div class="gateway-section" data-gw-theme="connection">
-                            <div class="gateway-section-title">
+                            <div class="gateway-section-title gateway-accordion-toggle" data-toggle="gw_body_connection">
+                                <i class="fa-solid fa-chevron-right gateway-collapse-arrow expanded"></i>
                                 <i class="fa-solid fa-plug"></i> 连接配置
                                 <i class="fa-solid fa-circle-question agent-help-icon" data-help="connection" title="点击查看说明"></i>
                             </div>
-                            <div class="gateway-collapse-body" style="display:block;">
+                            <div id="gw_body_connection" class="gateway-collapse-body gateway-accordion-body" style="display:block;">
                                 <div class="gateway-field-row">
                                     <input type="text" id="agent_conn_url" class="text_pole" placeholder="http://127.0.0.1:3210" value="http://127.0.0.1:3210" title="网关地址">
                                 </div>
@@ -45,11 +46,12 @@
                     <!-- Agent 设置 -->
                     <div class="agent-dropdown-section">
                         <div class="gateway-section" data-gw-theme="agent" id="agent_settings_section">
-                            <div class="gateway-section-title">
+                            <div class="gateway-section-title gateway-accordion-toggle" data-toggle="gw_body_agent">
+                                <i class="fa-solid fa-chevron-right gateway-collapse-arrow"></i>
                                 <i class="fa-solid fa-sitemap"></i> Agent 设置
                                 <i class="fa-solid fa-circle-question agent-help-icon" data-help="agent-settings" title="点击查看说明"></i>
                             </div>
-                            <div class="gateway-collapse-body" style="display:block;">
+                            <div id="gw_body_agent" class="gateway-collapse-body gateway-accordion-body" style="display:none;">
                                 <!-- 显示选项 -->
                                 <div class="gateway-field-row">
                                     <label class="checkbox-label">
@@ -163,14 +165,61 @@
                         </div>
                     </div>
 
+                    <!-- LLM 配置 -->
+                    <div class="agent-dropdown-section">
+                        <div class="gateway-section" data-gw-theme="llm">
+                            <div class="gateway-section-title gateway-accordion-toggle" data-toggle="gw_body_llm">
+                                <i class="fa-solid fa-chevron-right gateway-collapse-arrow"></i>
+                                <i class="fa-solid fa-microchip"></i> LLM 配置
+                                <i class="fa-solid fa-circle-question agent-help-icon" data-help="llm" title="点击查看说明"></i>
+                            </div>
+                            <div id="gw_body_llm" class="gateway-collapse-body gateway-accordion-body" style="display:none;">
+                                <div class="gateway-hint">配置 LLM 后即可触发 Agent run。保存后立即生效，无需重启服务。</div>
+                                <div class="gateway-field-row">
+                                    <select id="agent_llm_provider" class="text_pole">
+                                        <option value="openai">OpenAI 兼容（含 DeepSeek/Ollama/vLLM）</option>
+                                        <option value="claude">Claude (Anthropic)</option>
+                                        <option value="gemini">Gemini (Google)</option>
+                                    </select>
+                                </div>
+                                <div class="gateway-field-row">
+                                    <input type="text" id="agent_llm_baseurl" class="text_pole" placeholder="Base URL（留空用官方默认）" title="Base URL（留空用官方默认）">
+                                </div>
+                                <div class="gateway-field-row">
+                                    <input type="password" id="agent_llm_apikey" class="text_pole" placeholder="API Key" title="API Key">
+                                </div>
+                                <div class="gateway-field-row">
+                                    <input type="text" id="agent_llm_model" class="text_pole" list="agent_llm_model_list" placeholder="模型名，如 deepseek-chat" title="模型名">
+                                    <datalist id="agent_llm_model_list"></datalist>
+                                </div>
+                                <div class="gateway-field-row">
+                                    <input type="number" id="agent_llm_timeout" class="text_pole" min="1000" step="1000" placeholder="超时(ms)，默认 120000" title="请求超时毫秒数">
+                                </div>
+                                <div class="gateway-field-row">
+                                    <input type="number" id="agent_llm_maxtokens" class="text_pole" min="1" step="1024" placeholder="maxTokens，默认 131072" title="回复 token 上限">
+                                </div>
+                                <div class="gateway-field-row">
+                                    <button id="agent_llm_fetch_models" class="menu_button" title="用上方 Base URL / API Key 拉取可用模型列表">
+                                        <i class="fa-solid fa-cloud-arrow-down"></i> 获取模型
+                                    </button>
+                                    <button id="agent_llm_save" class="menu_button gateway-save-btn" title="保存 LLM 配置并立即生效">
+                                        <i class="fa-solid fa-floppy-disk"></i> 保存 LLM 配置
+                                    </button>
+                                </div>
+                                <div id="agent_llm_hint" class="gateway-hint" style="display:none;"></div>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Profile 管理（YAML 编辑 + AI 助手） -->
                     <div class="agent-dropdown-section">
                         <div class="gateway-section" data-gw-theme="theatre" id="agent_theatre_section">
-                            <div class="gateway-section-title">
+                            <div class="gateway-section-title gateway-accordion-toggle" data-toggle="gw_body_profile">
+                                <i class="fa-solid fa-chevron-right gateway-collapse-arrow"></i>
                                 <i class="fa-solid fa-masks-theater"></i> Profile 管理
                                 <i class="fa-solid fa-circle-question agent-help-icon" data-help="theatre" title="点击查看说明"></i>
                             </div>
-                            <div class="gateway-collapse-body" style="display:block;">
+                            <div id="gw_body_profile" class="gateway-collapse-body gateway-accordion-body" style="display:none;">
                                 <div class="gateway-field">
                                     <label>Profile YAML（保存即热重载）</label>
                                     <textarea id="agent_theatre_profile_yaml" class="text_pole gateway-theatre-yaml" rows="10" placeholder="name: default-rp&#10;displayName: 默认RP&#10;tools: []&#10;model:&#10;  temperature: 0.8&#10;  maxTokens: 4096&#10;maxSteps: 10"></textarea>
@@ -203,6 +252,56 @@
                         </div>
                     </div>
 
+                    <!-- 用户设定 -->
+                    <div class="agent-dropdown-section">
+                        <div class="gateway-section" data-gw-theme="connection">
+                            <div class="gateway-section-title gateway-accordion-toggle" data-toggle="gw_body_user_profile">
+                                <i class="fa-solid fa-chevron-right gateway-collapse-arrow"></i>
+                                <i class="fa-solid fa-user"></i> 用户设定
+                                <i class="fa-solid fa-circle-question agent-help-icon" data-help="user-profile" title="点击查看说明"></i>
+                            </div>
+                            <div id="gw_body_user_profile" class="gateway-collapse-body gateway-accordion-body" style="display:none;">
+                                <div class="gateway-hint">自定义你在 RP 中的角色名；填写人设后每轮注入完整设定，留空则仅注入名字。</div>
+                                <div class="gateway-field">
+                                    <label>角色名称（name）</label>
+                                    <input type="text" id="user_profile_name" class="text_pole" placeholder="user" value="user" title="你在 RP 中的角色名（默认 user）">
+                                </div>
+                                <div class="gateway-field">
+                                    <label>用户人设（persona）</label>
+                                    <textarea id="user_profile_persona" class="text_pole" rows="4" placeholder="填写你的角色设定/人设，每轮对话注入给 LLM（可留空）"></textarea>
+                                </div>
+                                <div class="gateway-field-row">
+                                    <button id="user_profile_save" class="menu_button gateway-save-btn"><i class="fa-solid fa-floppy-disk"></i> 保存</button>
+                                    <button id="user_profile_reset" class="menu_button" title="恢复默认（名称 user，人设留空）"><i class="fa-solid fa-rotate-left"></i> 重置</button>
+                                </div>
+                                <span id="user_profile_hint" class="gateway-hint" style="display:none;"></span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 正则表达式配置 -->
+                    <div class="agent-dropdown-section">
+                        <div class="gateway-section" data-gw-theme="connection">
+                            <div class="gateway-section-title gateway-accordion-toggle" data-toggle="gw_body_regex">
+                                <i class="fa-solid fa-chevron-right gateway-collapse-arrow"></i>
+                                <i class="fa-solid fa-filter"></i> 正则表达式
+                                <i class="fa-solid fa-circle-question agent-help-icon" data-help="regex" title="点击查看说明"></i>
+                            </div>
+                            <div id="gw_body_regex" class="gateway-collapse-body gateway-accordion-body" style="display:none;">
+                                <div class="gateway-hint">正则脚本在发送/接收时自动应用。正则分为<b>全局</b>（所有角色下启用）与<b>角色</b>（仅对应角色激活时启用）两种类型；角色卡内嵌的 regex_scripts 可通过「导入全部角色卡」一键入库。</div>
+                                <div class="gateway-field-row" style="margin-bottom:8px;">
+                                    <button id="agent_regex_add" class="menu_button"><i class="fa-solid fa-plus"></i> 新建脚本</button>
+                                    <button id="agent_regex_import_card" class="menu_button" title="从当前角色卡导入内嵌正则"><i class="fa-solid fa-file-import"></i> 从角色卡导入</button>
+                                    <button id="agent_regex_import_all" class="menu_button" title="扫描全部角色卡并导入各自内嵌正则（已导入不重复）"><i class="fa-solid fa-database"></i> 导入全部角色卡</button>
+                                    <button id="agent_regex_refresh" class="menu_button" title="重新加载列表"><i class="fa-solid fa-rotate-right"></i></button>
+                                </div>
+                                <div id="agent_regex_list" class="agent-regex-list">
+                                    <div class="gateway-empty-hint">（暂无正则脚本，点击「新建脚本」创建）</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                 </div>
             </div>
 
@@ -226,6 +325,10 @@
                 </div>
             </div>
 
+            <!-- P4: 聊天记录管理入口（与设置/状态/提示词按钮同级，点击打开聊天记录管理浮层） -->
+            <button id="agent_chat_records_btn" class="agent-icon-btn" title="聊天记录管理"><i class="fa-solid fa-folder-open"></i></button>
+            <!-- P2: 提示词查看器入口 -->
+            <button id="agent_prompt_viewer_btn" class="agent-icon-btn" title="提示词查看器"><i class="fa-solid fa-scroll"></i></button>
             <button id="agent_guide_btn" class="agent-icon-btn" title="使用说明"><i class="fa-solid fa-circle-question"></i></button>
         </div>
     </header>
@@ -272,14 +375,37 @@
 
     <!-- 聊天主区：消息流 + 事件内联 + 选项区 + 轮次信息 + 底部输入栏 -->
     <main class="agent-chat-main">
+        <!-- P5: 保存状态悬浮条（右上角悬浮，不占独立横栏，最大化主对话区） -->
+        <span class="agent-save-indicator" id="agent_save_indicator" data-state="unsaved" title="保存状态">
+            <i class="fa-solid fa-circle"></i>
+            <span class="agent-save-text">未保存</span>
+        </span>
+        <button id="agent_save_now_btn" class="agent-save-now-btn" type="button" title="立即保存当前会话到服务器">
+            <i class="fa-solid fa-floppy-disk"></i>
+        </button>
         <div id="agent_theatre_narrative" class="agent-chat-messages">
             <div class="gateway-empty-hint">在下方输入消息开始 Agent RP（Enter 发送 / Shift+Enter 换行）</div>
+            <!-- P3: 开场白预览气泡（角色卡有开场白且会话刚开始时由 JS 显示） -->
+            <div id="agent_greeting_preview" class="agent-chat-msg assistant agent-greeting-preview" style="display:none;">
+                <div class="agent-chat-avatar"><i class="fa-solid fa-robot"></i></div>
+                <div class="agent-chat-bubble">
+                    <span class="agent-greeting-badge">开场白</span>
+                    <div class="agent-chat-bubble-text"></div>
+                </div>
+            </div>
         </div>
         <div id="agent_theatre_events_inline" class="agent-chat-events-inline" style="display:none;"></div>
         <div id="agent_theatre_options" class="agent-chat-options">
             <div class="gateway-empty-hint">（选项将在 Agent 输出后出现）</div>
         </div>
         <div class="agent-chat-meta"><span id="agent_theatre_turn_info" class="gateway-hint"></span></div>
+        <!-- P3: 开场白切换条（角色卡有多条开场白且会话刚开始时显示） -->
+        <div id="agent_greeting_bar" class="agent-greeting-bar" style="display:none;">
+            <button id="agent_greeting_prev" class="agent-greeting-nav" type="button" title="上一个开场白">‹</button>
+            <span id="agent_greeting_indicator" class="agent-greeting-indicator">开场白 1/1</span>
+            <button id="agent_greeting_next" class="agent-greeting-nav" type="button" title="下一个开场白">›</button>
+            <button id="agent_greeting_send" class="menu_button agent-greeting-send" type="button" title="发送当前开场白"><i class="fa-solid fa-paper-plane"></i> 发送</button>
+        </div>
         <!-- 底部输入栏 -->
         <div class="agent-chat-inputbar">
             <textarea id="agent_theatre_input" class="agent-chat-input" rows="2" placeholder="输入消息…（Enter 发送 / Shift+Enter 换行）"></textarea>
@@ -307,7 +433,94 @@
     </div>
 </div>
 
+<!-- P2: 提示词查看器浮层（暗色主题，等宽字体，可滚动） -->
+<div id="agent_prompt_viewer" class="agent-prompt-viewer" style="display:none;">
+    <div class="agent-prompt-viewer-panel">
+        <div class="agent-prompt-viewer-header">
+            <span class="agent-prompt-viewer-title">📜 提示词查看器</span>
+            <span id="agent_prompt_built_at" class="agent-prompt-built-at" title="最近构建时间"></span>
+            <span class="agent-prompt-viewer-actions">
+                <button id="agent_prompt_viewer_refresh" class="menu_button" type="button" title="刷新"><i class="fa-solid fa-rotate-right"></i> 刷新</button>
+                <button id="agent_prompt_viewer_close" class="agent-dropdown-close" type="button" title="关闭">×</button>
+            </span>
+        </div>
+        <div id="agent_prompt_viewer_body" class="agent-prompt-viewer-body">
+            <div class="gateway-empty-hint">暂无提示词记录，触发一次 Agent run 后自动出现</div>
+        </div>
+    </div>
+</div>
+
 <div id="agent_toast_container" class="agent-toast-container"></div>
+
+<!-- 页内确认对话框（替代 window.confirm：原生模态弹窗在 IDE 内置浏览器/WebView 中不受支持，
+     会导致宿主 React 渲染循环异常；统一改为页面内非阻塞确认） -->
+<div id="agent_confirm_dialog" class="agent-confirm-dialog" role="dialog" aria-modal="true" aria-hidden="true" style="display:none;">
+    <div class="agent-confirm-mask"></div>
+    <div class="agent-confirm-box">
+        <div class="agent-confirm-title" id="agent_confirm_title">确认操作</div>
+        <div class="agent-confirm-message" id="agent_confirm_message"></div>
+        <div class="agent-confirm-actions">
+            <button type="button" class="menu_button agent-confirm-cancel" id="agent_confirm_cancel">取消</button>
+            <button type="button" class="menu_button agent-confirm-ok" id="agent_confirm_ok">确定</button>
+        </div>
+    </div>
+</div>
+
+<!-- P4: 聊天记录管理浮层（header 入口，居中弹层，与提示词查看器同交互模式） -->
+<div id="agent_chat_records_panel" class="agent-chat-records-panel" style="display:none;">
+    <div class="agent-chat-records-panel-box">
+        <div class="agent-chat-records-panel-header">
+            <span class="agent-chat-records-panel-title"><i class="fa-solid fa-folder-open"></i> 聊天记录管理</span>
+            <span class="agent-chat-records-panel-actions">
+                <button id="agent_chat_records_close" class="agent-dropdown-close" type="button" title="关闭">×</button>
+            </span>
+        </div>
+        <div class="agent-chat-records-panel-body">
+            <!-- 多维搜索：角色卡名 / 时间范围 / 关键词 -->
+            <div class="agent-chat-search">
+                <div class="agent-chat-search-row">
+                    <input type="text" id="agent_chat_search_character" class="text_pole" placeholder="角色卡名" title="按角色卡名搜索">
+                    <input type="date" id="agent_chat_search_from" class="text_pole" title="更新日期起始（当天 00:00）">
+                    <input type="date" id="agent_chat_search_to" class="text_pole" title="更新日期结束（当天 23:59）">
+                    <input type="text" id="agent_chat_search_keyword" class="text_pole" placeholder="关键词" title="按消息内容关键词搜索">
+                </div>
+                <div class="agent-chat-search-actions">
+                    <button id="agent_chat_search_btn" class="menu_button" type="button"><i class="fa-solid fa-magnifying-glass"></i> 搜索</button>
+                    <button id="agent_chat_search_reset" class="menu_button" type="button"><i class="fa-solid fa-rotate-left"></i> 重置</button>
+                </div>
+            </div>
+
+            <!-- 列表头：全选本页 + 选中计数 -->
+            <div class="agent-chat-list-header">
+                <label class="checkbox-label agent-chat-select-all-label" title="选中本页全部记录">
+                    <input type="checkbox" id="agent_chat_select_all"> 全选本页
+                </label>
+                <span id="agent_chat_selected_count" class="agent-chat-selected-count"></span>
+            </div>
+
+            <!-- 记录列表（JS 渲染） -->
+            <div id="agent_chat_list" class="agent-chat-record-list">
+                <div class="gateway-empty-hint">（点击上方 📁 按钮打开面板后加载列表）</div>
+            </div>
+
+            <!-- 内容重复旧存档合并提示（列表加载时由 JS 填充） -->
+            <div id="agent_chat_dedup_hint" class="agent-chat-dedup-hint"></div>
+
+            <!-- 底部：分页 + 批量删除 -->
+            <div class="agent-chat-list-footer">
+                <span id="agent_chat_page_info" class="agent-chat-page-info">第 1 / 1 页</span>
+                <button id="agent_chat_page_prev" class="menu_button" type="button" disabled><i class="fa-solid fa-chevron-left"></i> 上一页</button>
+                <button id="agent_chat_page_next" class="menu_button" type="button" disabled>下一页 <i class="fa-solid fa-chevron-right"></i></button>
+                <button id="agent_chat_delete_btn" class="menu_button agent-chat-delete-btn" type="button" disabled><i class="fa-solid fa-trash"></i> 删除选中 (0)</button>
+            </div>
+
+            <!-- 迁移旧版聊天记录入口 -->
+            <button id="agent_chat_migrate_btn" class="menu_button agent-chat-migrate-btn" type="button"
+                title="把旧版聊天存档（runtime.chatsDir 指向的目录，默认 &lt;网关仓库&gt;/data/chats，支持平铺 .jsonl 与 SillyTavern 的「角色卡/xxx.jsonl」结构）复制进新的分级聊天库。复制而非移动，重复点击幂等安全，不会覆盖已有记录。"><i class="fa-solid fa-truck-fast"></i> 迁移旧版聊天记录</button>
+            <div class="agent-chat-migrate-hint">说明：迁移的是「旧版聊天存档目录」中的 .jsonl 文件（默认 <code>&lt;网关仓库&gt;/data/chats</code>，可把 SillyTavern 的聊天记录复制进去后迁移）。仅复制不删除原文件，重复点击安全。</div>
+        </div>
+    </div>
+</div>
 
 <script src="agent.js"></script>
 </body>

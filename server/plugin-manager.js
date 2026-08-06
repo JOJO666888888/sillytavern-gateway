@@ -28,6 +28,33 @@ const PLUGIN_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 const MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024;  // 单个插件 ZIP 上限 25MB
 const DOWNLOAD_TIMEOUT_MS = 30000;
 
+// P0-3: 插件配置敏感键（对齐 config.js SENSITIVE_KEY_RE 并补充 auth，覆盖 stAuth 这类 base64 凭据），经 API 返回时脱敏
+const PLUGIN_CONFIG_SENSITIVE_RE = /token|secret|password|apikey|api_key|accesstoken|access_token|auth/i;
+
+/**
+ * 递归脱敏插件配置：命中敏感键名且值为非空字符串时替换为掩码（保留末 4 位便于核对）。
+ * 防止插件凭据（如 st-data-manager 的 stAuth）经 /api/plugins/:name/config 明文泄露。
+ * @param {object} obj
+ * @returns {object} 新对象（不修改入参）
+ */
+export function redactPluginConfig(obj) {
+    if (Array.isArray(obj)) return obj.map(v => (v && typeof v === 'object' ? redactPluginConfig(v) : v));
+    if (obj && typeof obj === 'object') {
+        const out = {};
+        for (const [key, val] of Object.entries(obj)) {
+            if (val && typeof val === 'object') {
+                out[key] = redactPluginConfig(val);
+            } else if (typeof val === 'string' && val.length > 0 && PLUGIN_CONFIG_SENSITIVE_RE.test(key)) {
+                out[key] = val.length > 4 ? `***${val.slice(-4)}` : '***';
+            } else {
+                out[key] = val;
+            }
+        }
+        return out;
+    }
+    return obj;
+}
+
 /**
  * 校验插件名合法性；非法则抛错。
  * @param {string} name
@@ -705,7 +732,8 @@ export class PluginManager {
                 return res.status(404).json({ success: false, error: '插件不存在' });
             }
             const config = this.loadPluginConfig(req.params.name);
-            res.json({ success: true, config });
+            // P0-3 安全修复：插件凭据（token/secret/password 等）脱敏后返回
+            res.json({ success: true, config: redactPluginConfig(config) });
         });
 
         // 更新插件配置

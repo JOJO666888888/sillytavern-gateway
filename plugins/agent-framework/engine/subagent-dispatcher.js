@@ -74,6 +74,14 @@ export class SubagentDispatcher {
 
         // 获取工具声明（使用子代理自己的白名单）
         const tools = this.toolRegistry.getDeclarations(definition.tools || []);
+        // 工具名规范化：function.name 不允许点号，发给模型前转下划线，执行时按映射还原
+        const sanitizeToolName = (n) => String(n).replace(/\./g, '_');
+        const toolNameMap = new Map();
+        const llmTools = tools.map(t => {
+            const sn = sanitizeToolName(t.name);
+            if (sn !== t.name) toolNameMap.set(sn, t.name);
+            return { ...t, name: sn };
+        });
         const executor = this.toolRegistry.createExecutor({
             session: scopedSession,
             ctx,
@@ -81,6 +89,8 @@ export class SubagentDispatcher {
             isSubAgent: true,
             runId: options.runId || '',
         });
+        // 包装：还原工具名后再执行
+        const executorWithNames = (name, args) => executor(toolNameMap.get(name) || name, args);
 
         // 执行
         const sampling = {
@@ -90,7 +100,7 @@ export class SubagentDispatcher {
         const maxSteps = definition.maxSteps || 5;
 
         try {
-            const result = await ctx.llm.runTools(messages, tools, executor, { maxSteps, sampling });
+            const result = await ctx.llm.runTools(messages, llmTools, executorWithNames, { maxSteps, sampling });
             return {
                 text: result.text,
                 steps: result.steps,

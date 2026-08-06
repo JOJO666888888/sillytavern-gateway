@@ -209,6 +209,26 @@ export class TheatreBroadcaster {
         this.broadcast(sessionKey, 'run_state', { runId: runId || null, state });
     }
 
+    /**
+     * 推送最近一次注入的完整提示词（P2，前端提示词查看器实时刷新）。
+     * data = { prompt: { messages, builtAt, runId } }，messages 为 [{role, content}] 数组。
+     * @param {string} sessionKey
+     * @param {{messages:Array, builtAt:number, runId:string}} prompt
+     */
+    broadcastPromptBuilt(sessionKey, prompt) {
+        this.broadcast(sessionKey, 'prompt_built', { prompt });
+    }
+
+    /**
+     * 推送聊天存档自动保存状态（聊天记录持久化）。
+     * data = { state: 'saved' | 'save_failed', savedAt, error? }
+     * @param {string} sessionKey
+     * @param {{state:string, savedAt:number|null, error?:string}} payload
+     */
+    broadcastSaveState(sessionKey, payload) {
+        this.broadcast(sessionKey, 'save_state', payload);
+    }
+
     /** 启动周期心跳 */
     _startHeartbeat() {
         if (this._heartbeatTimer) return;

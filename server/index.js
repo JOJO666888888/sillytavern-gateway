@@ -6,10 +6,10 @@ import express from 'express';
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
-import crypto from 'crypto';
 import { exec } from 'child_process';
 import { fileURLToPath } from 'url';
 import { createLogger, getRecentLogs } from './utils/logger.js';
+import { createCorsMiddleware, createGatewayAuthMiddleware } from './utils/auth-middleware.js';
 import configManager from './utils/config.js';
 import { gatewayCore } from './gateway-core.js';
 import { sessionManager } from './session-manager.js';
@@ -49,93 +49,12 @@ const theatreBroadcaster = new TheatreBroadcaster();
 // 插件 LLM 服务（runtime.llm 配置后供 agent run / 兼容桥 使用）
 let llmService = null;
 
-/**
- * 判断请求 Origin 是否允许跨域。
- *
- * 放行规则（任一命中即放行）：
- *   1) server.allowedOrigins 白名单里显式列出的 Origin
- *   2) localhost / 127.0.0.1 / [::1] 的任意端口（本机 ST 常见部署）
- *   3) 鉴权开启（requireAuth=true）时放行任意 Origin
- *
- * 第 3 条是关键：服务器部署时，用户从浏览器经公网 IP 访问 ST（Origin 形如
- * http://<公网IP>:8000），既非 localhost 也不在白名单，会被 CORS 拦掉，
- * 表现为 ST 面板 "Failed to fetch"——而且陷入死循环（连不上就没法在面板加白名单）。
- * 由于网关用 X-Gateway-Token 头鉴权（非 Cookie），恶意网页拿不到 token 就调不动
- * 任何 /api/* 写读接口（health 除外，本就公开），所以鉴权开启时放行 Origin 不引入
- * 实质风险，token 仍是真正的保护层。
- *
- * 鉴权关闭（requireAuth=false）时**不**走第 3 条，CORS 退回严格白名单，
- * 避免无鉴权的网关被任意网页 drive-by 调用。
- */
-function isOriginAllowed(origin) {
-    if (!origin) return false;
-    const allowed = configManager.get('server.allowedOrigins') || [];
-    if (allowed.includes(origin)) return true;
-    try {
-        const { hostname } = new URL(origin);
-        if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') return true;
-    } catch (_) {
-        return false;
-    }
-    // 鉴权开启时放行任意 Origin：token 头是真正的保护，CORS 不应阻挡合法跨域访问
-    const requireAuth = configManager.get('server.requireAuth') !== false;
-    return requireAuth;
-}
+// CORS：收敛为 Origin 反射白名单（非通配），并声明自定义鉴权头（P0-4 抽至共享模块）
+app.use(createCorsMiddleware(configManager));
 
-// CORS：收敛为 Origin 反射白名单（非通配），并声明自定义鉴权头
-app.use((req, res, next) => {
-    const origin = req.headers.origin;
-    if (isOriginAllowed(origin)) {
-        res.header('Access-Control-Allow-Origin', origin);
-        res.header('Vary', 'Origin');
-    }
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Gateway-Token');
-    if (req.method === 'OPTIONS') {
-        return res.sendStatus(204);
-    }
-    next();
-});
-
-/** 恒定时间比较两个 token，避免时序侧信道 */
-function tokenEquals(a, b) {
-    if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
-    try {
-        return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
-    } catch (_) {
-        return false;
-    }
-}
-
-// 鉴权中间件：所有 /api/* 需携带正确的 X-Gateway-Token。
-// 例外：健康检查（前端探活用，先于配置 token）与 OPTIONS 预检。
-app.use((req, res, next) => {
-    if (req.method === 'OPTIONS') return next();
-    if (!req.path.startsWith('/api/')) return next();
-    if (req.path === '/api/gateway/health') return next();
-
-    const requireAuth = configManager.get('server.requireAuth') !== false;
-    if (!requireAuth) return next();
-
-    const expected = configManager.get('server.authToken');
-    if (!expected) {
-        // requireAuth 开启但无 token（异常状态）→ 拒绝，避免裸奔
-        return res.status(503).json({ success: false, error: '网关鉴权未就绪（authToken 缺失）' });
-    }
-
-    const provided = req.headers['x-gateway-token'] ||
-        (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '') ||
-        // EventSource(SSE) 无法设置自定义 header，只能通过 query 传递 token。
-        // 仅对 GET 请求、且仅在 header 缺 token 时回退，避免 token 常驻 URL。
-        (req.method === 'GET' ? (req.query.token || '') : '');
-    if (!tokenEquals(String(provided), String(expected))) {
-        return res.status(401).json({
-            success: false,
-            error: '鉴权失败：缺少或错误的 X-Gateway-Token。请在 SillyTavern 网关面板填入正确的 token（网关启动控制台会明文打印）',
-        });
-    }
-    next();
-});
+// 鉴权中间件：所有 /api/* 需携带正确的 X-Gateway-Token（P0-4 抽至共享模块，
+// 与独立 Agent 服务共用同一策略）。例外：健康检查与 OPTIONS 预检。
+app.use(createGatewayAuthMiddleware(configManager));
 
 /**
  * 适配器注册表 —— 新增平台只需在此加一行（配置驱动）。
@@ -192,13 +111,6 @@ function setupMessageHandling() {
             }
         }
 
-        // 非命令消息：记录到会话历史
-        sessionManager.addMessage(message.platform, message.chatId, {
-            role: 'user',
-            content: message.content,
-            name: message.senderName,
-        });
-
         // ⭐ 自建推理管线（P2）：启用后由网关自己生成回复，不再依赖 ST 浏览器前端
         if (nativeRuntime) {
             try {
@@ -224,6 +136,16 @@ function setupMessageHandling() {
             }
             return; // 已由自建管线处理，不再走 ST 前端通道
         }
+
+        // 非命令消息：记录到会话历史（仅非 runtime 模式）。
+        // P2-4：runtime 模式下历史以 ChatArchive（data/chats/*.jsonl）为权威
+        // （nativeRuntime.generate 内部会落 user+assistant），不再写 sessions.json，
+        // 避免同一对话两份存储漂移（完整合并留路线图）。
+        sessionManager.addMessage(message.platform, message.chatId, {
+            role: 'user',
+            content: message.content,
+            name: message.senderName,
+        });
 
         // 放入入站待处理队列（完整内容 + 唯一 ID + ack 语义），供 ST 前端可靠消费
         gatewayCore.enqueueInbound(message);
@@ -397,12 +319,12 @@ app.post('/api/runtime/preview', async (req, res) => {
     }
 });
 
-/** 上传资产文件（角色卡/世界书/预设） */
+/** 上传资产文件（角色卡/世界书/预设/存档） */
 app.post('/api/runtime/assets/:type', upload.single('file'), (req, res) => {
     if (!nativeRuntime) return res.status(400).json({ success: false, error: '自建推理管线未启用' });
     const { type } = req.params;
-    if (!['characters', 'worldbooks', 'presets'].includes(type)) {
-        return res.status(400).json({ success: false, error: '类型必须是 characters / worldbooks / presets' });
+    if (!['characters', 'worldbooks', 'presets', 'chats'].includes(type)) {
+        return res.status(400).json({ success: false, error: '类型必须是 characters / worldbooks / presets / chats' });
     }
     if (!req.file) return res.status(400).json({ success: false, error: '未收到文件' });
     try {
@@ -414,12 +336,12 @@ app.post('/api/runtime/assets/:type', upload.single('file'), (req, res) => {
     }
 });
 
-/** 删除一个已导入资产（角色卡/世界书/预设） */
+/** 删除一个已导入资产（角色卡/世界书/预设/存档） */
 app.delete('/api/runtime/assets/:type/:name', (req, res) => {
     if (!nativeRuntime) return res.status(400).json({ success: false, error: '自建推理管线未启用' });
     const { type, name } = req.params;
-    if (!['characters', 'worldbooks', 'presets'].includes(type)) {
-        return res.status(400).json({ success: false, error: '类型必须是 characters / worldbooks / presets' });
+    if (!['characters', 'worldbooks', 'presets', 'chats'].includes(type)) {
+        return res.status(400).json({ success: false, error: '类型必须是 characters / worldbooks / presets / chats' });
     }
     try {
         nativeRuntime.deleteAsset(type, name);
@@ -474,8 +396,15 @@ app.post('/api/runtime/sync-from-st', (req, res) => {
         if (!fs.existsSync(stPath)) {
             return res.status(400).json({ success: false, error: `路径不存在: ${stPath}` });
         }
+        // 关键校验：必须含 data/default-user，否则同步会静默 0/0/0 且难以察觉
+        if (!fs.existsSync(path.join(stPath, 'data', 'default-user'))) {
+            return res.status(400).json({
+                success: false,
+                error: `路径下未找到 data/default-user 目录，请填写 SillyTavern 根目录（如 D:\\SillTavern，包含 data\\default-user\\characters 的那一层）`,
+            });
+        }
         const result = nativeRuntime.syncFromSillyTavern(stPath);
-        logger.info(`从 ST 同步资产完成: 角色卡 ${result.characters} / 世界书 ${result.worldbooks} / 预设 ${result.presets}`);
+        logger.info(`从 ST 同步资产完成: 角色卡 ${result.characters} / 世界书 ${result.worldbooks} / 预设 ${result.presets} / 存档 ${result.chats}${result.missing?.length ? `，缺失目录: ${result.missing.join('/')}` : ''}`);
         res.json({ success: true, ...result, assets: nativeRuntime.listAssets() });
     } catch (error) {
         res.status(400).json({ success: false, error: error.message });
@@ -736,7 +665,16 @@ app.post('/api/gateway/update/apply', async (req, res) => {
 const PUBLIC_DIR = path.join(REPO_ROOT, 'public');
 registerAgentApi(app, {
     getPluginManager: () => pluginManager,
-    getLlmService: () => llmService,
+    // 惰性创建：保存 LLM 配置后 resetLlmService() 失效缓存，下次调用自动重建（无需重启）
+    getLlmService: () => {
+        if (llmService) return llmService;
+        if (configManager.get('runtime')?.llm?.model) {
+            llmService = createLLMService(configManager);
+            logger.info('🤖 LLM 服务已就绪（惰性重建）');
+        }
+        return llmService;
+    },
+    resetLlmService: () => { llmService = null; },
     theatreBroadcaster,
     configManager,
     logger,

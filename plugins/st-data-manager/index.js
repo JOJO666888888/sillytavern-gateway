@@ -19,6 +19,14 @@ import path from 'path';
 
 // ==================== 内置场景数据 ====================
 
+/** P0-3 安全修复：预设名校验（拒绝路径分隔符/../等，防止文件系统回退路径穿越） */
+export function isValidPresetName(name) {
+    return typeof name === 'string'
+        && name.length > 0
+        && name.length <= 64
+        && /^[a-zA-Z0-9_\-\u4e00-\u9fa5]+$/.test(name);
+}
+
 const BUILTIN_SCENES = {
     '赛博朋克': {
         description: '霓虹灯、义体、黑客、巨型企业统治的未来都市',
@@ -230,6 +238,11 @@ class STApiClient {
      * @param {string} dataDir - ST 的 data 目录路径
      */
     async savePreset(presetName, presetJson, dataDir) {
+        // P0-3 安全修复：预设名白名单校验，杜绝路径穿越（如 "../gateway.json"）
+        if (!isValidPresetName(presetName)) {
+            throw new Error('预设名非法：仅允许中文、字母、数字、下划线与短横线（最长64字符）');
+        }
+
         // 尝试 API
         try {
             return await this._request('/api/presets/save', {
@@ -271,6 +284,8 @@ export default class STDataManagerPlugin extends GatewayPlugin {
             handler: 'handleCharDelete',
             description: '删除ST角色',
             usage: '/char_delete <角色名>',
+            // P0-3 安全修复：删除角色（含聊天记录）属高危操作，仅管理员可用
+            adminOnly: true,
         },
         {
             name: 'char_list',
@@ -294,6 +309,8 @@ export default class STDataManagerPlugin extends GatewayPlugin {
             handler: 'handleWorldDelete',
             description: '删除世界书',
             usage: '/world_delete <名称>',
+            // P0-3 安全修复：删除世界书属高危操作，仅管理员可用
+            adminOnly: true,
         },
 
         // === 场景注入 ===
@@ -326,6 +343,8 @@ export default class STDataManagerPlugin extends GatewayPlugin {
             handler: 'handlePresetUpload',
             description: '上传预设JSON到ST',
             usage: '/preset_upload <名称> <json>',
+            // P0-3 安全修复：预设上传可能触发文件系统写入，仅管理员可用
+            adminOnly: true,
         },
 
         // === 会话-角色绑定 ===

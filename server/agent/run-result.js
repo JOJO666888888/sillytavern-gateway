@@ -199,6 +199,22 @@ export class AgentRunResult {
     }
 
     /**
+     * 覆盖主 artifact 文本（P1-1：选项提取后正文需剔除选项行）。
+     * 无 main artifact 时追加一个。
+     * @param {string} text
+     * @returns {AgentRunResult}
+     */
+    setMainText(text) {
+        const main = this.artifacts.find(a => a.type === 'main');
+        if (main) {
+            main.text = typeof text === 'string' ? text : String(text ?? '');
+        } else if (text) {
+            this.addArtifact({ type: 'main', text });
+        }
+        return this;
+    }
+
+    /**
      * 内部：导入已有事件对象（保持 seq 自增）。
      * @param {AgentEvent|object} e
      * @private
