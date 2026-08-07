@@ -24,14 +24,14 @@ SillyTavern 前端 (Extension UI)
         │
    ST Extension API (getContext / SlashCommand)
         │
-  Gateway Core (消息总线 + 路由 + 会话管理)
+  Gateway Core (消息总线 + 路由 + 会话管理 + 消息队列)
         │
-  ┌─────┼─────────────┐
-  │     │             │
-QQ适配器  Telegram适配器  Discord适配器
-(OneBot)  (Bot API)    (Discord.js)
-  │     │             │
-NapCat   Telegram     Discord
+  ┌─────┬───────┬──────────┬───────┬──────────┬──────────┐
+  │     │       │          │       │          │          │
+ QQ    TG     Discord    飞书   QQ官方     钉钉     自建推理管线
+(OneBot)(Bot API)(discord.js)(Lark SDK)(qq-official)(dingtalk) (NativeRuntime)
+  │     │       │          │       │          │
+NapCat Telegram Discord   飞书   QQ官方     钉钉
 ```
 
 ### 核心设计原则
@@ -47,33 +47,86 @@ NapCat   Telegram     Discord
 
 ```
 sillytavern-gateway/
-├── manifest.json              # SillyTavern 扩展元数据
-├── index.js                   # ST 扩展前端逻辑
-├── style.css                  # 扩展样式
-├── settings.html              # 设置面板模板
-├── window.html                # 控制台窗口模板
-├── package.json               # 依赖配置
-├── server/                    # 后端网关服务
-│   ├── index.js               # 服务入口 + REST API
-│   ├── gateway-core.js        # 消息总线 + 路由引擎
-│   ├── session-manager.js     # 跨平台会话管理
-│   ├── message-queue.js       # 消息队列（可靠投递）
-│   ├── adapters/
-│   │   ├── base-adapter.js    # 适配器基类（接口定义）
-│   │   ├── onebot-adapter.js  # QQ OneBot v11 适配器
-│   │   ├── telegram-adapter.js# Telegram Bot API 适配器
-│   │   └── discord-adapter.js # Discord.js 适配器
+├── manifest.json               # SillyTavern 扩展元数据
+├── index.js                    # ST 扩展前端逻辑（面板注入/AI 自动回复/角色路由）
+├── panel.html                  # 网关管理面板 HTML
+├── style.css                   # ST 前端面板样式
+├── window.html                 # 独立弹出窗口 HTML
+├── package.json                # 依赖配置与 scripts
+├── 启动网关.bat                 # Windows 一键启动脚本
+├── docker-entrypoint.sh        # Docker 容器入口脚本
+├── Dockerfile                  # Docker 镜像构建（node:22-slim）
+├── docker-compose.yml          # Docker Compose 编排
+├── .env.example                # 环境变量配置模板
+│
+├── server/                     # 后端网关服务（核心）
+│   ├── index.js                # 服务入口 + REST API 路由
+│   ├── gateway-core.js         # 消息总线 + 路由引擎
+│   ├── session-manager.js      # 跨平台会话管理
+│   ├── message-queue.js        # 消息队列（可靠投递 + 重试 + 死信）
+│   ├── command-router.js       # 命令路由器（/command 分发）
+│   ├── event-pipeline.js       # 事件管线（优先级 + stopPropagation）
+│   ├── plugin-manager.js       # 插件生命周期管理 + REST API
+│   ├── plugin-sdk.js           # 插件开发 SDK 基类 (GatewayPlugin)
+│   ├── llm-service.js          # 插件 LLM 调用服务
+│   ├── scheduler-service.js    # 定时任务服务
+│   ├── agent-server.js         # Agent 独立服务入口（端口 4321）
+│   ├── ai-modifier.js          # AI 修改配置（YAML 热重载）
+│   ├── adapters/               # 平台适配器
+│   │   ├── base-adapter.js     # 适配器基类
+│   │   ├── onebot-adapter.js   # QQ OneBot v11
+│   │   ├── telegram-adapter.js # Telegram Bot API
+│   │   ├── discord-adapter.js  # Discord.js
+│   │   ├── feishu-adapter.js   # 飞书/Lark
+│   │   ├── qqofficial-adapter.js # QQ 官方机器人
+│   │   └── dingtalk-adapter.js # 钉钉
 │   ├── protocols/
-│   │   └── onebot-v11.js      # OneBot v11 协议解析/封装
+│   │   └── onebot-v11.js       # OneBot v11 协议解析/封装
+│   ├── agent/                  # Agent 表现层抽象
+│   │   ├── pipeline.js         # 多阶段流水线引擎
+│   │   ├── surface-manager.js  # 表现层管理器（IM/ST/Native）
+│   │   └── theatre-broadcaster.js # SSE 事件广播器
+│   ├── runtime/                # 自建推理管线（NativeRuntime）
+│   │   ├── pipeline.js         # 管线主逻辑（prompt 组装 -> LLM）
+│   │   ├── llm-client.js       # LLM 客户端（OpenAI/Claude/Gemini）
+│   │   ├── card-loader.js      # 角色卡加载器（V1/V2/V3）
+│   │   ├── worldbook-engine.js # 世界书引擎
+│   │   ├── preset-engine.js    # 预设引擎
+│   │   └── macro-engine.js     # 宏替换引擎
 │   └── utils/
-│       ├── logger.js          # 日志系统 (Winston)
-│       ├── config.js          # 配置管理
-│       └── reconnect.js       # 指数退避重连策略
-├── config/                    # 配置文件目录（自动生成）
-│   └── gateway.json           # 网关配置
-├── data/                      # 数据目录（自动生成）
-│   └── sessions.json          # 会话持久化
-└── logs/                      # 日志目录（自动生成）
+│       ├── config.js           # 配置管理（gateway.json 读写 + 脱敏）
+│       ├── env-config.js       # 环境变量映射层
+│       ├── logger.js           # 日志系统 (Winston)
+│       ├── auth-middleware.js  # CORS + X-Gateway-Token 鉴权
+│       └── reconnect.js        # 指数退避重连策略
+│
+├── plugins/                    # 插件系统（内置 + 第三方）
+│   ├── agent-framework/        # Agent 框架核心（YAML 工作流 + 工具 + 记忆）
+│   ├── agent-rp/               # Agent RP IM 适配器
+│   ├── regex-filter/           # 正则过滤器
+│   ├── message-to-image/       # 消息转图片
+│   ├── option-splitter/        # 选项拆分（交互按钮）
+│   ├── multimodal-bridge/      # 多模态桥接
+│   ├── web-search/             # 联网搜索
+│   ├── group-manager/          # 群聊管理
+│   └── example-*/              # 示例插件
+│
+├── scripts/                    # 运维脚本
+│   ├── gateway-manager.sh      # 全平台一键管理脚本（Linux/macOS/Termux）
+│   ├── show-token.js           # 打印鉴权 token
+│   ├── validate-st-assets.js   # ST 资产验证
+│   └── deploy-to-test.ps1      # PowerShell 部署脚本
+│
+├── public/                     # Agent 独立前端
+│   ├── agent.html              # Agent 剧场页面
+│   ├── agent.js                # Agent 前端逻辑
+│   └── agent.css               # Agent 前端样式
+│
+├── docs/                       # 文档目录
+├── test/                       # 测试套件（900+ 用例）
+├── config/                     # 配置目录（自动生成）
+├── data/                       # 数据目录（自动生成）
+└── logs/                       # 日志目录（自动生成）
 ```
 
 ## 快速开始
@@ -95,7 +148,7 @@ docker compose exec gateway npm run token --silent   # 取鉴权 token
 
 ### 环境要求
 
-- Node.js >= 18
+- Node.js >= 20
 - Git
 - SillyTavern >= 1.10.0（如需使用 ST 扩展面板功能）
 
@@ -188,6 +241,89 @@ ln -s /path/to/sillytavern-gateway ~/SillyTavern/public/scripts/extensions/third
 ```
 
 > 链接建好后，仍需 `cd` 进入**真实项目目录**执行 `npm install` 和 `npm start` 来启动后端服务。
+
+### 方式三：一键启动脚本（推荐新手）
+
+如果你不想手动敲命令，项目提供了两个一键脚本，自动完成依赖检查、端口清理、更新拉取和后台启动。
+
+#### Windows -- `启动网关.bat`
+
+将 `启动网关.bat` 放在网关根目录或其上级目录（如 `D:\预设\` 或 `D:\SillyTavern\`），双击即可。
+
+**脚本功能**：
+1. 检查 Node.js >= 20 和 npm 是否安装
+2. 自动检测网关目录（支持脚本同级、子目录、ST 扩展路径等多种位置）
+3. 检查目录写入权限（提前发现 Program Files 等保护目录问题）
+4. 清理占用 3210 端口的旧进程
+5. 可选拉取 Git 更新（非 Git 仓库自动跳过）
+6. 检查并安装 npm 依赖
+7. 后台最小化窗口启动网关
+
+**手动指定路径**：如果自动检测失败，编辑 `.bat` 文件顶部的用户配置区：
+
+```batch
+REM 去掉 REM 前缀，填入实际路径:
+set "GATEWAY_PATH=D:\SillyTavern\public\scripts\extensions\third-party\sillytavern-gateway"
+```
+
+**检测覆盖的路径**（按顺序）：
+
+| 检测步骤 | 说明 |
+|---------|------|
+| Step 0 | 用户手动配置的 `GATEWAY_PATH` |
+| Step 1 | 脚本所在目录即为网关根目录 |
+| Step 2 | 脚本同级有 `sillytavern-gateway\` 子目录 |
+| Step 3 | 脚本位于网关子目录中（上溯 4 级） |
+| Step 4 | 向下搜索子目录（2 层深度） |
+| Step 5 | 常见 SillyTavern 扩展路径 |
+
+#### Linux / macOS / Termux -- `gateway-manager.sh`
+
+```bash
+# 赋予执行权限（首次）
+chmod +x scripts/gateway-manager.sh
+
+# 交互式管理菜单（安装/启动/停止/配置/插件管理）
+./scripts/gateway-manager.sh
+
+# 或直接启动
+./scripts/gateway-manager.sh start
+
+# 查看状态
+./scripts/gateway-manager.sh status
+
+# 停止
+./scripts/gateway-manager.sh stop
+```
+
+**支持的操作系统**：
+- Ubuntu / Debian（apt）
+- CentOS / RHEL / Rocky / AlmaLinux（dnf）
+- Arch / Manjaro（pacman）
+- Alpine（apk）
+- macOS（brew）
+- Termux（pkg，Android）
+- WSL / Git Bash
+
+**跨平台兼容性**：
+
+| 特性 | Ubuntu | CentOS | macOS | Termux | WSL |
+|------|--------|--------|-------|--------|-----|
+| 包管理器检测 | apt | dnf | brew | pkg | apt |
+| systemd 服务 | 支持 | 支持 | 不适用 | 不适用 | 支持 |
+| 端口检测 | /proc + ss | /proc + ss | lsof | /proc | /proc + ss |
+| 路径处理 | $HOME | $HOME | $HOME | $PREFIX | /mnt/* |
+| sed 兼容 | GNU | GNU | BSD (已适配) | GNU | GNU |
+
+> macOS 注意事项：`md5sum` 命令在 macOS 上不可用（使用 `md5` 替代），脚本更新后的自动热重载在 macOS 上不可用，需手动重新运行。macOS 暂不支持 launchd 开机自启。
+
+#### Docker -- `docker compose`
+
+```bash
+cp .env.example .env      # 填入配置
+docker compose up -d      # 后台启动
+docker compose logs -f    # 查看日志
+```
 
 ### 启用扩展并验证
 
@@ -383,6 +519,35 @@ curl -X POST http://127.0.0.1:3210/api/gateway/send \
 - 适当增大 `heartbeatInterval`（如 45000）
 - 检查网络环境是否有 WebSocket 干扰
 
+### 启动脚本问题排查
+
+**Q: 双击 `启动网关.bat` 闪退**
+- 右键编辑 `.bat` 文件，检查是否有 `chcp 65001` 残留（已修复版本不应有）
+- 确认文件编码为 GBK（非 UTF-8），否则中文显示乱码
+- 在 CMD 中手动运行 `.bat` 查看完整错误信息
+
+**Q: `启动网关.bat` 提示"未找到网关程序"**
+- 脚本自动检测覆盖 6 种路径模式（见上方"方式三"表格）
+- 若仍失败，编辑 `.bat` 顶部 `GATEWAY_PATH` 手动指定路径
+- 确认目标目录下存在 `server\index.js`
+
+**Q: `启动网关.bat` 提示"无法写入网关目录"**
+- 网关安装在 `C:\Program Files\` 等系统保护目录时会触发
+- 解决方案：以管理员身份运行脚本，或将网关移动到非保护目录
+
+**Q: `gateway-manager.sh` 在 macOS 上报 `md5sum: command not found`**
+- macOS 使用 `md5` 而非 `md5sum`，脚本已容错处理（仅影响更新后自动热重载）
+- 手动重新运行脚本即可
+
+**Q: `gateway-manager.sh` 权限不足**
+- 执行 `chmod +x scripts/gateway-manager.sh` 赋予执行权限
+- 系统级操作（安装依赖、systemd 服务）需要 `sudo`
+
+**Q: npm install 很慢或失败**
+- 使用国内镜像：`npm config set registry https://registry.npmmirror.com`
+- 检查网络连接和代理设置
+- 删除 `node_modules` 和 `package-lock.json` 后重试
+
 ## Agent 平台化能力
 
 网关内置一套 Agent 平台化能力（`plugins/agent-framework/` + `plugins/agent-rp/` + `server/agent/`），把"引擎产出"与"界面渲染"解耦，一套 Agent 引擎驱动三套界面，并借鉴 TauriTavern 的 Workspace-as-Truth 抑制长期 RP 的状态漂移。完整设计与开发指南见 [docs/AGENT_FRAMEWORK_GUIDE.md](docs/AGENT_FRAMEWORK_GUIDE.md)，架构设计见 [docs/AGENT_PLATFORM_ARCHITECTURE.md](docs/AGENT_PLATFORM_ARCHITECTURE.md)。
@@ -466,14 +631,59 @@ export class WeChatAdapter extends PlatformAdapter {
 
 | 组件 | 技术 |
 |------|------|
-| 运行时 | Node.js 18+ (ESM) |
+| 运行时 | Node.js 20+ (ESM) |
 | HTTP 服务 | Express |
 | WebSocket | ws |
 | QQ 协议 | OneBot v11 |
 | Telegram | node-telegram-bot-api |
 | Discord | discord.js v14 |
+| 飞书 | @larksuiteoapi/node-sdk（可选） |
+| 钉钉 | dingtalk-stream（可选） |
 | 日志 | Winston |
 | 事件总线 | EventEmitter3 |
+| YAML 解析 | js-yaml |
+| 容器化 | Docker (node:22-slim) + docker-compose |
+| CI/CD | GitHub Actions (Node 20/22 矩阵测试) |
+| 测试 | Node.js 内置 test runner (900+ 用例) |
+
+## 贡献指南
+
+### 开发环境搭建
+
+```bash
+git clone https://github.com/JOJO666888888/sillytavern-gateway.git
+cd sillytavern-gateway
+npm install
+npm test          # 确保所有测试通过
+npm run dev       # 开发模式（热重载）
+```
+
+### npm scripts 速查
+
+| 命令 | 说明 |
+|------|------|
+| `npm start` | 启动主网关服务（端口 3210） |
+| `npm run dev` | 开发模式（文件变更自动重启） |
+| `npm run agent` | 启动 Agent 独立服务（端口 4321） |
+| `npm run agent:dev` | Agent 开发模式 |
+| `npm test` | 运行全部测试 |
+| `npm run test:watch` | 测试监听模式 |
+| `npm run token` | 打印网关鉴权 token |
+
+### 提交规范
+
+1. Fork 仓库并创建功能分支
+2. 确保新代码有对应测试覆盖
+3. 运行 `npm test` 确认全部通过
+4. 提交 Pull Request，描述变更内容和动机
+
+### 文档
+
+- [插件开发指南](docs/PLUGIN_DEVELOPMENT_GUIDE.md)
+- [Agent 框架指南](docs/AGENT_FRAMEWORK_GUIDE.md)
+- [自建推理管线文档](docs/NATIVE_RUNTIME.md)
+- [部署指南](docs/DEPLOYMENT.md)
+- [新增平台适配器](docs/ADDING_PLATFORMS.md)
 
 ## 致谢
 

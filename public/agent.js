@@ -1570,6 +1570,8 @@
         }
         renderGreetingControls();
         if (autoScroll) el.scrollTop = el.scrollHeight;
+        // ST 兼容（P0）：通知兼容层楼层已渲染（前端卡/状态栏/编年史增强）
+        fireCompatHook('floorsRendered');
     }
 
     /** 局部重建单个楼层 DOM（翻页 / 流式切页时使用，不重建整个消息流） */
@@ -1742,7 +1744,36 @@
         // P3: 持久化楼层到 localStorage（修复刷新后历史丢失）
         saveChatHistory();
         if (payload.runId) fetchTimeline(payload.runId);
+        // ST 兼容（P0）：通知兼容层本轮结果已落地（前端卡/状态栏/MVU 变量增强）
+        fireCompatHook('agentResult', payload);
     }
+
+    /** ST 兼容（P0）：兼容层（agent-compat.js）注册的全局钩子转发 */
+    function fireCompatHook(name, arg) {
+        try {
+            var compat = window.__agentCompat;
+            if (compat && typeof compat[name] === 'function') compat[name](arg);
+        } catch (e) { /* 兼容层异常不阻断主流程 */ }
+    }
+
+    // ST 兼容（P0）：暴露给兼容层（agent-compat.js）的只读/操作桥，
+    // 用于读档截断、小手机发送等（避免兼容层直接触碰内部闭包状态）。
+    window.__agentBridge = {
+        getFloors: function () { return theatre.floors || []; },
+        truncateFloors: function (count) {
+            count = Math.max(0, Math.floor(Number(count) || 0));
+            if (theatre.floors.length <= count) return theatre.floors.length;
+            theatre.floors = theatre.floors.slice(0, count);
+            streaming.pendingFloorIdx = null;
+            renderFloors();
+            saveChatHistory();
+            return theatre.floors.length;
+        },
+        sendText: function (text) {
+            if (typeof text === 'string' && text.trim()) sendInput(text.trim(), null);
+        },
+        getCharacter: function () { return theatre.character || ''; },
+    };
 
     function handleAgentEvent(event) {
         if (!event) return;
@@ -3877,6 +3908,226 @@
         markSaved();
     }
 
+    // ==================== 存档选择页（初始页面，类 SillyTavern 存档列表） ====================
+
+    var archivePicker = {
+        loading: false,      // 列表请求在途
+        deleting: false,     // 删除请求在途（防重复）
+        items: [],
+        previews: {},        // file -> messages[]（read 端点懒加载缓存）
+        previewOpen: null,
+    };
+
+    /** JSON 角色卡占位图：静态资源走根路径（无 token 的 <img> 场景） */
+    var AGENT_ARCHIVE_PLACEHOLDER = '/' + encodeURIComponent('神秘问号男.png');
+
+    /** 存档角色卡头像：PNG 卡经 /character-image 返回原图；JSON 卡 404 → onerror 降级占位图 */
+    function archiveAvatarHtml(name) {
+        var url = characterAvatarUrl(name);
+        return '<img class="agent-archive-avatar-img" src="' + esc(url) +
+            '" alt="" loading="lazy" onerror="this.onerror=null;this.src=\'' + AGENT_ARCHIVE_PLACEHOLDER + '\';">';
+    }
+
+    function openArchivePicker() {
+        var el = $('agent_archive_picker');
+        if (!el) return;
+        el.style.display = 'flex';
+        loadArchiveList(); // 每次打开重新拉取，保证按最新保存时间倒序
+    }
+
+    function closeArchivePicker() {
+        var el = $('agent_archive_picker');
+        if (el) el.style.display = 'none';
+    }
+
+    /** 初始页面判定：无会话楼层（且未关联存档文件）时展示存档选择页 */
+    function maybeShowArchivePicker() {
+        var hasFloors = !!(theatre.floors && theatre.floors.length > 0);
+        var hasChatFile = !!theatre.chatFile;
+        if (!hasFloors && !hasChatFile) openArchivePicker();
+    }
+
+    /** 拉取存档列表（sort=updated 按保存时间倒序，pageSize 取大覆盖全部） */
+    function loadArchiveList() {
+        if (archivePicker.loading) return;
+        archivePicker.loading = true;
+        archivePicker.previewOpen = null;
+        var listEl = $('agent_archive_list');
+        if (listEl) listEl.innerHTML = '<div class="gateway-empty-hint"><i class="fa-solid fa-spinner fa-spin"></i> 加载存档中…</div>';
+        agentFetch('/api/agent-theatre/chats?sort=updated&pageSize=200')
+            .then(function (data) {
+                archivePicker.loading = false;
+                if (!data || !data.success) {
+                    if (listEl) listEl.innerHTML = '<div class="gateway-empty-hint">（加载存档失败：' + esc((data && data.error) || '未知错误') + '）</div>';
+                    return;
+                }
+                archivePicker.items = data.items || [];
+                renderArchiveList();
+            })
+            .catch(function (e) {
+                archivePicker.loading = false;
+                if (listEl) listEl.innerHTML = '<div class="gateway-empty-hint">（加载存档失败：' + esc(e.message) + '）</div>';
+            });
+    }
+
+    function renderArchiveList() {
+        var listEl = $('agent_archive_list');
+        if (!listEl) return;
+        var items = archivePicker.items || [];
+        if (items.length === 0) {
+            listEl.innerHTML = '<div class="gateway-empty-hint">暂无存档。在下方输入消息开始对话，保存后即可在此选择继续。</div>';
+            return;
+        }
+        var html = '';
+        for (var i = 0; i < items.length; i++) {
+            html += buildArchiveItemHtml(items[i]);
+        }
+        listEl.innerHTML = html;
+    }
+
+    /** 渲染单个存档项：头像 + 角色名 + 时间 + 消息数 + 概要 + 预览/删除/载入按钮 */
+    function buildArchiveItemHtml(item) {
+        var file = esc(item.file || '');
+        var charName = item.character || '未知';
+        var timeText = formatChatTime(item.updatedAt);
+        var preview = (item.preview || '').replace(/\s+/g, ' ').trim();
+        if (preview.length > 80) preview = preview.substring(0, 80) + '…';
+        var detailHtml = '';
+        if (archivePicker.previewOpen === item.file) {
+            detailHtml = '<div class="agent-archive-detail">' + renderArchiveDetail(item.file) + '</div>';
+        }
+        return '' +
+            '<div class="agent-archive-item" data-file="' + file + '">' +
+            '<div class="agent-archive-item-avatar">' + archiveAvatarHtml(charName) + '</div>' +
+            '<div class="agent-archive-item-main">' +
+            '<div class="agent-archive-item-title">' +
+            '<span class="agent-archive-item-char" title="' + esc(charName) + '">' + esc(charName) + '</span>' +
+            '<span class="agent-archive-item-time">' + esc(timeText) + '</span>' +
+            '</div>' +
+            '<div class="agent-archive-item-meta">' + (item.messageCount || 0) + ' 条消息</div>' +
+            '<div class="agent-archive-item-preview" title="' + file + '">' + esc(preview || '（无内容预览）') + '</div>' +
+            '<div class="agent-archive-item-actions">' +
+            '<button type="button" class="menu_button agent-archive-act-btn" data-act="preview" data-file="' + file + '"><i class="fa-solid fa-eye"></i> ' + (archivePicker.previewOpen === item.file ? '收起' : '预览') + '</button>' +
+            '<button type="button" class="menu_button agent-archive-act-btn agent-archive-delete" data-act="delete" data-file="' + file + '"><i class="fa-solid fa-trash"></i> 删除</button>' +
+            '<button type="button" class="menu_button agent-archive-act-btn agent-archive-load" data-act="load" data-file="' + file + '"><i class="fa-solid fa-arrow-up-right-from-square"></i> 载入</button>' +
+            '</div>' +
+            '</div>' +
+            detailHtml +
+            '</div>';
+    }
+
+    /** 存档概要详情：最近 10 条消息（正序展示，单条截断防长文撑爆布局） */
+    function renderArchiveDetail(file) {
+        var msgs = archivePicker.previews[file];
+        if (!msgs) return '<div class="gateway-empty-hint"><i class="fa-solid fa-spinner fa-spin"></i> 加载中…</div>';
+        if (msgs.length === 0) return '<div class="gateway-empty-hint">（无消息）</div>';
+        var last10 = msgs.slice(-10);
+        var html = '<div class="agent-archive-detail-list">';
+        for (var i = 0; i < last10.length; i++) {
+            var m = last10[i];
+            var roleCls = m.role === 'user' ? 'user' : 'assistant';
+            var name = m.role === 'user' ? '你' : (m.name || 'AI');
+            var content = (m.content || '').replace(/\s+/g, ' ').trim();
+            if (content.length > 100) content = content.substring(0, 100) + '…';
+            html += '<div class="agent-archive-detail-msg ' + roleCls + '">' +
+                '<span class="agent-archive-detail-role">' + esc(name) + '</span>' +
+                '<span class="agent-archive-detail-content">' + esc(content) + '</span>' +
+                '</div>';
+        }
+        html += '</div>';
+        return html;
+    }
+
+    /** 预览：展开/收起存档概要（首次展开懒加载 read 详情） */
+    function toggleArchivePreview(file) {
+        if (archivePicker.previewOpen === file) {
+            archivePicker.previewOpen = null;
+            renderArchiveList();
+            return;
+        }
+        archivePicker.previewOpen = file;
+        renderArchiveList();
+        if (archivePicker.previews[file] === undefined) {
+            agentFetch('/api/agent-theatre/chats/read?file=' + encodeURIComponent(file))
+                .then(function (data) {
+                    var chat = (data && data.chat) || data || {};
+                    archivePicker.previews[file] = chat.messages || [];
+                    if (archivePicker.previewOpen === file) renderArchiveList();
+                })
+                .catch(function () {
+                    archivePicker.previews[file] = [];
+                    if (archivePicker.previewOpen === file) renderArchiveList();
+                });
+        }
+    }
+
+    /** 删除存档：二次确认（不可恢复），仅确认后执行；取消保留 */
+    function deleteArchiveItem(file) {
+        if (archivePicker.deleting) return;
+        agentConfirm('确定要删除此存档吗？此操作不可恢复', {
+            title: '删除存档',
+            confirmText: '确认删除',
+            danger: true,
+        }).then(function (confirmed) {
+            if (!confirmed) return;
+            archivePicker.deleting = true;
+            agentFetch('/api/agent-theatre/chats/delete', {
+                method: 'POST',
+                body: JSON.stringify({ files: [file] }),
+            }).then(function (data) {
+                if (!data || !data.success) {
+                    showToast('error', '删除失败: ' + ((data && data.error) || '未知错误'));
+                    return;
+                }
+                showToast('success', '已删除存档');
+                delete archivePicker.previews[file];
+                loadArchiveList();
+            }).catch(function (e) {
+                showToast('error', '删除失败: ' + e.message);
+            }).finally(function () {
+                archivePicker.deleting = false;
+            });
+        }).catch(function (e) {
+            showToast('error', '操作中断: ' + (e && e.message ? e.message : String(e)));
+        });
+    }
+
+    /** 载入存档到剧场（复用 /chats/load → applyLoadedMessages），成功后关闭选择页 */
+    function loadArchiveItem(file) {
+        agentFetch('/api/agent-theatre/chats/load', {
+            method: 'POST',
+            body: JSON.stringify({ file: file }),
+        }).then(function (data) {
+            if (!data || !data.success) {
+                showToast('error', '载入失败: ' + ((data && data.error) || '未知错误'));
+                return;
+            }
+            applyLoadedMessages(data.messages || [], data.character || '', file);
+            closeArchivePicker();
+            showToast('success', '已载入存档（' + ((data.messages && data.messages.length) || 0) + ' 条消息）');
+        }).catch(function (e) {
+            showToast('error', '载入失败: ' + e.message);
+        });
+    }
+
+    /** 存档选择页事件绑定：关闭 / 开始新对话 / 列表按钮委托 */
+    function bindArchivePickerEvents() {
+        var closeBtn = $('agent_archive_picker_close');
+        if (closeBtn) closeBtn.addEventListener('click', function () { closeArchivePicker(); });
+        var newBtn = $('agent_archive_new_chat');
+        if (newBtn) newBtn.addEventListener('click', function () { closeArchivePicker(); });
+        var listEl = $('agent_archive_list');
+        if (listEl) listEl.addEventListener('click', function (e) {
+            var actBtn = e.target.closest('[data-act]');
+            if (!actBtn) return;
+            var act = actBtn.getAttribute('data-act');
+            var file = actBtn.getAttribute('data-file');
+            if (act === 'load') loadArchiveItem(file);
+            else if (act === 'preview') toggleArchivePreview(file);
+            else if (act === 'delete') deleteArchiveItem(file);
+        });
+    }
+
     // ==================== P4: 聊天记录管理面板 ====================
 
     var chatRecords = {
@@ -4701,6 +4952,8 @@
         bindDropdowns();
         bindDrawer();
         bindEvents();
+        // 存档选择页（初始页面）事件
+        bindArchivePickerEvents();
         // P4: 聊天记录面板 + 保存状态指示器 + 30 分钟未保存提醒
         bindChatRecordsEvents();
         bindSaveIndicatorEvents();
@@ -4729,6 +4982,9 @@
 
         // P1-5: 服务重启后回填本地历史到服务端（服务端历史为空时采纳），保证 LLM 上下文连续
         syncLocalHistoryToServer();
+
+        // 存档选择页：无会话楼层时展示（类 SillyTavern 存档列表，按保存时间倒序）
+        maybeShowArchivePicker();
 
         // 首次使用引导
         runFirstGuide();

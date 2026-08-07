@@ -6,6 +6,7 @@
 <title>Agent 前端 - 多平台网关</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" crossorigin="anonymous">
 <link rel="stylesheet" href="agent.css">
+<link rel="stylesheet" href="agent-compat.css">
 </head>
 <body>
 <div class="agent-page">
@@ -487,6 +488,25 @@
     </div>
 </div>
 
+<!-- 存档选择页（初始页面，类 SillyTavern 存档列表；打开剧场且无会话时显示） -->
+<div id="agent_archive_picker" class="agent-archive-picker" style="display:none;">
+    <div class="agent-archive-picker-box">
+        <div class="agent-archive-picker-header">
+            <span class="agent-archive-picker-title"><i class="fa-solid fa-folder-open"></i> 选择存档</span>
+            <span class="agent-archive-picker-actions">
+                <button id="agent_archive_picker_close" class="agent-dropdown-close" type="button" title="关闭（开始新对话）">×</button>
+            </span>
+        </div>
+        <div class="agent-archive-picker-hint">选择一个存档继续对话，或开始新对话。存档按保存时间倒序排列，最新在最上方。</div>
+        <div id="agent_archive_list" class="agent-archive-list">
+            <div class="gateway-empty-hint"><i class="fa-solid fa-spinner fa-spin"></i> 加载存档中…</div>
+        </div>
+        <div class="agent-archive-picker-footer">
+            <button id="agent_archive_new_chat" class="menu_button" type="button"><i class="fa-solid fa-plus"></i> 开始新对话</button>
+        </div>
+    </div>
+</div>
+
 <!-- P4: 聊天记录管理浮层（header 入口，居中弹层，与提示词查看器同交互模式） -->
 <div id="agent_chat_records_panel" class="agent-chat-records-panel" style="display:none;">
     <div class="agent-chat-records-panel-box">
@@ -544,5 +564,6 @@
 </div>
 
 <script src="agent.js"></script>
+<script src="agent-compat.js"></script>
 </body>
 </html>

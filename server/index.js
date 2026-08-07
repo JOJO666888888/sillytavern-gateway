@@ -35,7 +35,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.join(__dirname, '..');
 
 const app = express();
-app.use(express.json());
+// 413 修复：聊天存档等请求体可能远超 express.json() 默认的 100kb 限制。
+// 调大到 50mb（与 multer 资产上传 fileSize 一致），否则大聊天记录保存直接 413。
+app.use(express.json({ limit: '50mb' }));
 
 // 文件上传中间件（资产导入用）
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });

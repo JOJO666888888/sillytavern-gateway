@@ -1481,6 +1481,244 @@ select.text_pole { cursor: pointer; }
  * ============================================================ */
 
 /* 遮罩层（点击遮罩关闭） */
+/* ============ 存档选择页（初始页面，类 SillyTavern 存档列表） ============ */
+.agent-archive-picker {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 999;
+    padding: 20px;
+}
+
+.agent-archive-picker-box {
+    background: var(--gw-bg-card);
+    border: 1px solid rgba(var(--gw-accent-rgb), 0.4);
+    border-radius: 10px;
+    width: 100%;
+    max-width: 860px;
+    max-height: 86vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+    overflow: hidden;
+}
+
+.agent-archive-picker-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--gw-border);
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.agent-archive-picker-title {
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--gw-text);
+}
+
+.agent-archive-picker-title i { color: var(--gw-accent); margin-right: 6px; }
+
+.agent-archive-picker-actions { display: flex; align-items: center; gap: 6px; }
+
+.agent-archive-picker-hint {
+    padding: 8px 14px 4px;
+    font-size: 12px;
+    color: var(--gw-text-dim);
+}
+
+/* 存档列表滚动区 */
+.agent-archive-list {
+    flex: 1;
+    min-height: 200px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 10px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.agent-archive-list::-webkit-scrollbar { width: 6px; }
+.agent-archive-list::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 3px; }
+
+/* 存档项卡片 */
+.agent-archive-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--gw-border);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.02);
+    transition: border-color 0.15s, background 0.15s;
+}
+
+.agent-archive-item:hover {
+    border-color: rgba(var(--gw-accent-rgb), 0.6);
+    background: rgba(var(--gw-accent-rgb), 0.06);
+}
+
+/* 角色卡头像：PNG 原图 / JSON 占位图 */
+.agent-archive-item-avatar {
+    flex-shrink: 0;
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    overflow: hidden;
+    border: 2px solid rgba(var(--gw-accent-rgb), 0.35);
+    background: var(--gw-bg-input);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.agent-archive-avatar-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.agent-archive-item-main { flex: 1; min-width: 0; }
+
+.agent-archive-item-title {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.agent-archive-item-char {
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--gw-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.agent-archive-item-time {
+    font-size: 11.5px;
+    color: var(--gw-text-dim);
+    flex-shrink: 0;
+}
+
+.agent-archive-item-meta {
+    font-size: 11.5px;
+    color: var(--gw-text-dim);
+    margin-top: 2px;
+}
+
+.agent-archive-item-preview {
+    font-size: 12px;
+    color: var(--gw-text-dim);
+    margin-top: 4px;
+    line-height: 1.5;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+}
+
+/* 操作按钮 */
+.agent-archive-item-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 8px;
+}
+
+.agent-archive-act-btn {
+    padding: 3px 10px;
+    font-size: 12px;
+    border-radius: var(--gw-radius);
+    border: 1px solid var(--gw-border);
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--gw-text);
+    cursor: pointer;
+    transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.agent-archive-act-btn:hover { border-color: rgba(var(--gw-accent-rgb), 0.6); }
+
+.agent-archive-load { border-color: rgba(var(--gw-accent-rgb), 0.5); }
+.agent-archive-load:hover { background: rgba(var(--gw-accent-rgb), 0.12); color: var(--gw-accent); }
+
+.agent-archive-delete { border-color: rgba(240, 71, 71, 0.5); }
+.agent-archive-delete:hover { background: rgba(240, 71, 71, 0.12); color: var(--gw-red); }
+
+/* 预览详情区 */
+.agent-archive-detail {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--gw-border);
+    width: 100%;
+}
+
+.agent-archive-detail-list { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
+
+.agent-archive-detail-msg {
+    display: flex;
+    gap: 8px;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.agent-archive-detail-msg.user { justify-content: flex-end; }
+.agent-archive-detail-msg.user .agent-archive-detail-content { background: rgba(var(--gw-accent-rgb), 0.12); }
+
+.agent-archive-detail-role {
+    flex-shrink: 0;
+    color: var(--gw-text-dim);
+    font-weight: 600;
+}
+
+.agent-archive-detail-content {
+    min-width: 0;
+    padding: 4px 8px;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--gw-text);
+    word-break: break-word;
+}
+
+/* 底部：开始新对话 */
+.agent-archive-picker-footer {
+    padding: 10px 14px;
+    border-top: 1px solid var(--gw-border);
+    display: flex;
+    justify-content: center;
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.agent-archive-picker-footer .menu_button {
+    border-color: rgba(var(--gw-accent-rgb), 0.5);
+    background: rgba(var(--gw-accent-rgb), 0.1);
+    color: var(--gw-text);
+}
+
+.agent-archive-picker-footer .menu_button:hover {
+    background: rgba(var(--gw-accent-rgb), 0.2);
+    color: var(--gw-accent);
+}
+
+/* 响应式：小屏堆叠 */
+@media (max-width: 640px) {
+    .agent-archive-picker { padding: 10px; }
+    .agent-archive-item { flex-direction: column; align-items: center; text-align: center; }
+    .agent-archive-item-title { justify-content: center; }
+    .agent-archive-item-actions { justify-content: center; }
+    .agent-archive-picker-box { max-height: 90vh; }
+}
+
+/* ============ 聊天记录管理浮层 ============ */
 .agent-chat-records-panel {
     position: fixed;
     inset: 0;

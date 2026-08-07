@@ -44,7 +44,9 @@ const PORT = parseInt(process.env.AGENT_PORT || '4321', 10);
 const HOST = process.env.AGENT_HOST || '127.0.0.1';
 
 const app = express();
-app.use(express.json());
+// 413 修复：独立 Agent 服务与主网关共用同一 JSON 解析策略。
+// express.json() 默认 limit 100kb，大聊天存档保存会 413；调大到 50mb。
+app.use(express.json({ limit: '50mb' }));
 
 // P0-4 安全修复：独立 Agent 服务与主网关共用同一套 CORS 白名单 + X-Gateway-Token 鉴权。
 // 此前该服务无任何鉴权、CORS 全开，任意可访问该端口者都能调用全部 /api/*（含保存 LLM Key、删 Profile、删聊天）。

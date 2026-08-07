@@ -55,6 +55,7 @@ import {
     deleteChats,
     migrateLegacy,
 } from './runtime/chat-store.js';
+import { applyMvuToText, stripForDisplay } from './agent/mvu-engine.js';
 import { userProfileStore } from './runtime/user-profile-store.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -171,6 +172,8 @@ export function charState(sess, character) {
                 chatFile: sess.chatFile || null,
                 savedAt: sess.savedAt || null,
                 lastSavedAt: sess.lastSavedAt || null,
+                // ST 兼容（P0）：MVU stat_data 快照（该角色卡的变量状态）
+                mvu: sess.mvu || { stat_data: {} },
             };
         }
     }
@@ -178,6 +181,7 @@ export function charState(sess, character) {
         sess.chars[key] = {
             history: [], turn: 0, lastInput: '', lastRunId: null, lastResult: null,
             greetingIndex: 0, dirty: false, chatFile: null, savedAt: null, lastSavedAt: null,
+            mvu: { stat_data: {} },
         };
     }
     return sess.chars[key];
@@ -552,6 +556,9 @@ export function registerAgentApi(app, deps) {
                     history: historySnapshot,
                     turn: cs.turn,
                     greetingIndex: greetingIndex != null ? greetingIndex : cs.greetingIndex,
+                    // ST 兼容（P0）：MVU stat_data 快照 → context-builder 展开
+                    // {{get_message_variable::path}} / {{format_message_variable::stat_data}}
+                    variables: (cs.mvu && cs.mvu.stat_data) || {},
                 },
                 {
                     llm: getLlmService(),
@@ -570,10 +577,20 @@ export function registerAgentApi(app, deps) {
             cs.lastResult = runResult.result?.toJSON?.() || null;
             // 把本轮结果文本作为 assistant 消息加入当前角色卡槽历史，便于下一轮续写
             const mainText = runResult.result?.getMainText?.() || runResult.text || '';
+            // ST 兼容（P0）：MVU 变量差分应用 —— 解析消息中的 <UpdateVariable> 块
+            // （JSON Patch / set|old→new|() / _.set 三语法）并更新该角色卡的 stat_data 快照。
+            cs.mvu = cs.mvu || { stat_data: {} };
+            const mvuApplied = applyMvuToText(mainText, cs.mvu.stat_data);
+            cs.mvu.stat_data = mvuApplied.snapshot;
+            cs.mvu.changed = mvuApplied.changed;
+            cs.mvu.lastUpdate = mvuApplied.applied.length > 0 ? { at: Date.now(), count: mvuApplied.applied.length } : null;
             // 正则引擎：对 AI 输出应用 markdownOnly + 非短暂性脚本（placement: AI_OUTPUT）
             const regexedOutput = regexScripts.length > 0
                 ? getRegexedString(mainText, REGEX_PLACEMENT.AI_OUTPUT, { isMarkdown: true, scripts: regexScripts })
                 : mainText;
+            // ST 兼容（P0）：显示文本剥离 MVU 内部块（<UpdateVariable>/<StatusPlaceHolderImpl/>/<Analysis>），
+            // 历史仍存原始文本（下一轮上下文可见，与 ST 行为一致）；前端据此渲染状态栏卡。
+            const displayText = stripForDisplay(regexedOutput);
             cs.history = cs.history || [];
             const newMessages = [];
             if (actualInput) newMessages.push({ role: 'user', content: actualInput });
@@ -592,19 +609,21 @@ export function registerAgentApi(app, deps) {
             const maxHistory = Math.max(40, histLimit * 2);
             if (cs.history.length > maxHistory) cs.history = cs.history.slice(-maxHistory);
 
-            // 广播完整结果 + 状态给所有订阅者（正则处理后的文本用于显示）
+            // 广播完整结果 + 状态 + MVU 变量给所有订阅者（正则处理后的文本用于显示）
             theatreBroadcaster.broadcastResult(sessionKey, {
                 runId: runResult.runId,
                 result: cs.lastResult,
-                text: regexedOutput,
+                text: displayText,
+                variables: { stat_data: cs.mvu.stat_data, changed: cs.mvu.changed },
             });
             theatreBroadcaster.broadcastState(sessionKey, cs.lastResult?.state || {});
 
             res.json({
                 success: true,
                 runId: runResult.runId,
-                text: regexedOutput,
+                text: displayText,
                 result: cs.lastResult,
+                variables: { stat_data: cs.mvu.stat_data, changed: cs.mvu.changed },
             });
         } catch (e) {
             // P2: 异常兜底：清理 running 标记并广播 error 终态
@@ -1193,6 +1212,8 @@ export function registerAgentApi(app, deps) {
             turn: cs.turn,
             lastRunId: cs.lastRunId,
             lastResult: cs.lastResult,
+            // ST 兼容（P0）：MVU 变量快照（前端变量查看器 / 状态栏恢复用）
+            variables: { stat_data: (cs.mvu && cs.mvu.stat_data) || {} },
         });
     });
 
@@ -1260,6 +1281,71 @@ export function registerAgentApi(app, deps) {
             logger.info(`[theatre] history-sync: 角色「${character || '(无角色)'}」服务端为空，采纳客户端 ${merged} 条历史（${sessionKey}）`);
         }
         res.json({ success: true, merged, serverLength: cs.history.length });
+    });
+
+    /**
+     * POST /api/agent-theatre/variables-set - 初始化 / 覆盖 MVU stat_data 快照（ST 兼容）。
+     *
+     * 背景：ST 中 MVU 由 `[initvar]初始` 世界书条目 + zod schema 自动初始化；
+     * agent 剧场没有该通道，改为由前端"初始化变量"弹窗提供初始变量表 JSON。
+     *
+     * body: { session?, character?, variables: object }（stat_data 整体替换）
+     */
+    app.post('/api/agent-theatre/variables-set', (req, res) => {
+        const sessionKey = _theatreSessionKey(req);
+        const body = req.body || {};
+        const character = body.character || '';
+        let sess = theatreSessions.get(sessionKey);
+        if (!sess) {
+            sess = { profile: 'default-rp' };
+            theatreSessions.set(sessionKey, sess);
+        }
+        if (character) sess.character = character;
+        const cs = charState(sess, character || sess.character || '');
+        const vars = body.variables && typeof body.variables === 'object' ? body.variables : {};
+        cs.mvu = cs.mvu || {};
+        cs.mvu.stat_data = structuredClone(vars);
+        cs.mvu.changed = true;
+        cs.mvu.lastUpdate = { at: Date.now(), count: 1 };
+        theatreBroadcaster.broadcastResult(sessionKey, {
+            runId: '',
+            result: null,
+            text: '',
+            variables: { stat_data: cs.mvu.stat_data, changed: true },
+        });
+        logger.info(`[theatre] variables-set: 角色「${character || '(无角色)'}」stat_data 已更新（${Object.keys(vars).length} 顶层键）`);
+        res.json({ success: true, variables: { stat_data: cs.mvu.stat_data } });
+    });
+
+    /**
+     * POST /api/agent-theatre/history-truncate - 读档截断（ST 兼容）。
+     *
+     * 背景：ST 读档 = `/branch-create <楼层>` 从该楼层创建分支；agent 剧场以会话历史为上下文，
+     * 等价实现为"截断到指定消息条数"（前端配合把楼层裁到该轮）。
+     *
+     * body: { session?, character?, keepMessages: number }（保留前 N 条消息）
+     */
+    app.post('/api/agent-theatre/history-truncate', (req, res) => {
+        const sessionKey = _theatreSessionKey(req);
+        const body = req.body || {};
+        const character = body.character || '';
+        const keep = Math.max(0, Math.floor(Number(body.keepMessages) || 0));
+        const sess = theatreSessions.get(sessionKey);
+        if (!sess) {
+            return res.json({ success: true, keepMessages: 0 });
+        }
+        const cs = charState(sess, character || sess.character || '');
+        if (!Array.isArray(cs.history)) cs.history = [];
+        const before = cs.history.length;
+        if (keep < before) {
+            cs.history = cs.history.slice(0, keep);
+            // 截断后该槽的"最后结果/输入"一并失效，防止选项回调误触旧轮
+            cs.lastResult = null;
+            cs.lastInput = '';
+            cs.dirty = true;
+            logger.info(`[theatre] history-truncate: 角色「${character || '(无角色)'}」${before} → ${keep} 条（${sessionKey}）`);
+        }
+        res.json({ success: true, keepMessages: cs.history.length, truncated: before - cs.history.length });
     });
 
     // ==================== 聊天记录存储 API（Agent 剧场聊天存档） ====================

@@ -5,6 +5,7 @@ import { loadCharacterCard } from '../runtime/card-loader.js';
 import { loadLorebook, normalizeLorebook, activateEntries } from '../runtime/worldbook-engine.js';
 import { MacroEngine } from '../runtime/macro-engine.js';
 import { userProfileStore } from '../runtime/user-profile-store.js';
+import { expandMessageVariables } from './mvu-engine.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -236,11 +237,18 @@ export class ContextBuilder {
         const charName = this._getCharName(session);
         // userName 优先级：会话级显式覆盖 > 用户自定义配置 > 默认 'user'
         const userName = session.userName || this._userProfile?.get()?.name || 'user';
+        // ST 兼容（P0）：先展开 MVU 消息变量宏（{{get_message_variable::path}} /
+        // {{format_message_variable::stat_data}} / {{lastMessageId}} / {{isMobile}}），
+        // 数据来自会话 stat_data 快照（session.variables），供"变量列表"世界书条目注入。
+        const expanded = expandMessageVariables(text, session.variables || {}, {
+            historyLength: Array.isArray(session.history) ? session.history.length : 0,
+            isMobile: session.isMobile,
+        });
         if (this.enableMacros) {
             // MacroEngine 实例轻量，每次新建即可；变量表（Map 引用）持久是关键
-            return new MacroEngine({ charName, userName, variables: this._getMacroVariables(session) }).process(text);
+            return new MacroEngine({ charName, userName, variables: this._getMacroVariables(session) }).process(expanded);
         }
-        return text
+        return expanded
             .replace(/\{\{char\}\}/gi, charName)
             .replace(/\{\{user\}\}/gi, userName);
     }

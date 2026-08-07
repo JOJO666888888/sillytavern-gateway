@@ -1,0 +1,389 @@
+/**
+ * agent-compat.css —— SillyTavern 前端生态兼容层样式（暗色主题，与 agent.css 协调）
+ */
+
+/* ==================== 楼层富渲染卡片 ==================== */
+.th-card {
+    margin-top: 8px;
+    border-radius: 10px;
+    padding: 10px 12px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.th-maintext {
+    line-height: 1.7;
+    font-size: 14px;
+    color: #e8e8f0;
+    white-space: normal;
+    word-break: break-word;
+}
+.th-raw-toggle {
+    margin-top: 8px;
+    font-size: 11px;
+    color: #9aa0b5;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 2px 4px;
+}
+.th-raw-toggle:hover { color: #c9cdf5; }
+
+/* ==================== 状态栏卡 ==================== */
+.th-statusbar {
+    margin-top: 10px;
+    border-radius: 10px;
+    padding: 10px 12px;
+    background: linear-gradient(135deg, rgba(120, 90, 200, 0.12), rgba(60, 60, 120, 0.10));
+    border: 1px solid rgba(140, 130, 230, 0.25);
+}
+.th-statusbar-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: #b9b0f5;
+    margin-bottom: 8px;
+}
+.th-statusbar-grid {
+    display: grid;
+    gap: 6px;
+}
+.th-statusbar-section {
+    font-size: 12px;
+    font-weight: 700;
+    color: #9fd0ff;
+    margin: 4px 0 2px;
+}
+.th-statusbar-field {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12.5px;
+    line-height: 1.5;
+}
+.th-statusbar-key {
+    flex: 0 0 auto;
+    min-width: 64px;
+    color: #c9cdf5;
+    font-weight: 600;
+}
+.th-statusbar-val {
+    flex: 1;
+    color: #f0eef8;
+    word-break: break-word;
+}
+.th-statusbar-track {
+    flex: 1;
+    height: 6px;
+    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.1);
+    overflow: hidden;
+}
+.th-statusbar-fill {
+    height: 100%;
+    border-radius: 3px;
+    background: linear-gradient(90deg, #7c5cff, #ff7ab8);
+    transition: width 0.4s ease;
+}
+.th-sum {
+    margin-top: 8px;
+    font-size: 12px;
+    color: #8fd0a0;
+    background: rgba(80, 180, 120, 0.1);
+    border-radius: 8px;
+    padding: 6px 10px;
+}
+.th-mission {
+    margin-top: 8px;
+    font-size: 12px;
+    color: #f0c078;
+    background: rgba(200, 140, 60, 0.1);
+    border-radius: 8px;
+    padding: 6px 10px;
+}
+
+/* ==================== 小手机 ==================== */
+.th-phone-btn {
+    position: fixed;
+    right: 18px;
+    bottom: 88px;
+    width: 46px;
+    height: 46px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #7c5cff, #a05cff);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    cursor: grab;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+    z-index: 900;
+    user-select: none;
+    transition: transform 0.15s ease;
+}
+.th-phone-btn:hover { transform: scale(1.06); }
+.th-phone-btn.th-dragging { cursor: grabbing; transform: scale(1.12); }
+
+.th-phone-panel {
+    position: fixed;
+    right: 18px;
+    bottom: 140px;
+    width: 320px;
+    max-height: 480px;
+    flex-direction: column;
+    border-radius: 14px;
+    background: #1d1e2c;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 10px 34px rgba(0, 0, 0, 0.55);
+    z-index: 910;
+    overflow: hidden;
+}
+.th-phone-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    font-weight: 700;
+    font-size: 13px;
+    color: #e8e8f0;
+    background: rgba(255, 255, 255, 0.05);
+}
+.th-phone-min {
+    background: none;
+    border: none;
+    color: #9aa0b5;
+    cursor: pointer;
+    font-size: 13px;
+}
+.th-phone-tabs {
+    display: flex;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.th-phone-tab {
+    flex: 1;
+    padding: 8px 0;
+    background: none;
+    border: none;
+    color: #9aa0b5;
+    font-size: 12.5px;
+    cursor: pointer;
+}
+.th-phone-tab.active {
+    color: #fff;
+    border-bottom: 2px solid #7c5cff;
+}
+.th-phone-body {
+    flex: 1;
+    overflow-y: auto;
+    max-height: 330px;
+    padding: 8px 10px;
+}
+.th-phone-pane { display: none; }
+.th-phone-pane.active { display: block; }
+.th-phone-footer {
+    display: flex;
+    gap: 6px;
+    padding: 8px 10px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* ==================== 编年史 ==================== */
+.th-chronicle-item {
+    display: flex;
+    gap: 8px;
+    padding: 6px 4px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    font-size: 12.5px;
+}
+.th-chronicle-num {
+    flex: 0 0 auto;
+    color: #7c5cff;
+    font-weight: 700;
+}
+.th-chronicle-text {
+    color: #d8d8e8;
+    line-height: 1.5;
+}
+
+/* ==================== 读档 ==================== */
+.th-savelist {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.th-save-item {
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    cursor: pointer;
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+}
+.th-save-item:hover { background: rgba(124, 92, 255, 0.15); }
+.th-save-floor {
+    flex: 0 0 auto;
+    color: #7c5cff;
+    font-weight: 700;
+    font-size: 12px;
+}
+.th-save-label {
+    font-size: 12.5px;
+    color: #e0e0ee;
+    line-height: 1.5;
+}
+
+/* ==================== 阅读模式 / 思维链 ==================== */
+.th-reader-chapter, .th-cot-chapter {
+    margin-bottom: 18px;
+}
+.th-reader-floor {
+    text-align: center;
+    color: #8a90b5;
+    font-size: 12px;
+    margin: 8px 0;
+}
+.th-reader-body {
+    text-indent: 2em;
+    font-size: 14.5px;
+    line-height: 1.9;
+    color: #ececf4;
+    word-break: break-word;
+}
+.th-reader-mission {
+    margin-top: 8px;
+    font-size: 12.5px;
+    color: #f0c078;
+}
+.th-cot-block {
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: #b8c4d8;
+    background: rgba(70, 90, 140, 0.15);
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+}
+.th-cot-update {
+    font-size: 11.5px;
+    color: #8a90b5;
+    word-break: break-all;
+    padding: 4px 8px;
+}
+
+/* ==================== 变量查看器 ==================== */
+.th-var-list { display: flex; flex-direction: column; gap: 4px; }
+.th-var-row {
+    display: flex;
+    gap: 10px;
+    font-size: 12.5px;
+    padding: 4px 6px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.th-var-key {
+    flex: 0 0 45%;
+    color: #c9cdf5;
+    word-break: break-all;
+}
+.th-var-val {
+    flex: 1;
+    color: #e8e8f0;
+    word-break: break-all;
+}
+
+/* ==================== Overlay ==================== */
+.th-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(10, 10, 18, 0.72);
+    z-index: 950;
+    display: none;
+    align-items: center;
+    justify-content: center;
+}
+.th-overlay-box {
+    width: min(680px, 92vw);
+    max-height: 84vh;
+    display: flex;
+    flex-direction: column;
+    background: #1d1e2c;
+    border-radius: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 14px 44px rgba(0, 0, 0, 0.6);
+    overflow: hidden;
+}
+.th-overlay-full { width: min(960px, 96vw); }
+.th-overlay-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 14px;
+    font-weight: 700;
+    color: #e8e8f0;
+    background: rgba(255, 255, 255, 0.05);
+}
+.th-overlay-close {
+    background: none;
+    border: none;
+    color: #9aa0b5;
+    cursor: pointer;
+    font-size: 16px;
+}
+.th-overlay-body {
+    padding: 14px;
+    overflow-y: auto;
+    flex: 1;
+}
+
+/* ==================== 通用 ==================== */
+.th-empty {
+    color: #8a90b5;
+    font-size: 13px;
+    padding: 14px 0;
+    text-align: center;
+}
+.th-hint {
+    color: #8a90b5;
+    font-size: 12px;
+    margin: 8px 0;
+}
+.th-textarea {
+    width: 100%;
+    min-height: 140px;
+    background: #14151f;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 8px;
+    color: #e8e8f0;
+    font-family: Consolas, Menlo, monospace;
+    font-size: 12.5px;
+    padding: 8px;
+    box-sizing: border-box;
+}
+.th-toast {
+    position: fixed;
+    bottom: 40px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #2a2b3e;
+    color: #e8e8f0;
+    border: 1px solid rgba(124, 92, 255, 0.5);
+    border-radius: 10px;
+    padding: 10px 18px;
+    font-size: 13px;
+    z-index: 990;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+    animation: th-toast-in 0.2s ease;
+}
+@keyframes th-toast-in {
+    from { opacity: 0; transform: translateX(-50%) translateY(8px); }
+    to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+/* 移动端适配 */
+@media (max-width: 640px) {
+    .th-phone-panel {
+        right: 8px;
+        width: min(92vw, 320px);
+    }
+    .th-phone-btn { right: 10px; }
+}
