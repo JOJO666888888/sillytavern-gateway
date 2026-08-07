@@ -233,8 +233,8 @@
     line-height: 1.5;
 }
 
-/* ==================== 阅读模式 / 思维链 ==================== */
-.th-reader-chapter, .th-cot-chapter {
+/* ==================== 阅读模式 ==================== */
+.th-reader-chapter {
     margin-bottom: 18px;
 }
 .th-reader-floor {
@@ -255,20 +255,151 @@
     font-size: 12.5px;
     color: #f0c078;
 }
-.th-cot-block {
-    font-size: 12.5px;
-    line-height: 1.6;
-    color: #b8c4d8;
-    background: rgba(70, 90, 140, 0.15);
+
+/* ==================== 脚本库（对标酒馆助手） ==================== */
+.th-script-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+}
+.th-script-scope {
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: rgba(255, 255, 255, 0.05);
+    color: #c8cce0;
+    border-radius: 6px;
+    padding: 3px 8px;
+    font-size: 12px;
+    cursor: pointer;
+}
+.th-script-scope-character {
+    border-color: #e07850;
+    color: #e8a080;
+    background: rgba(224, 120, 80, 0.12);
+}
+.th-script-act {
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: rgba(255, 255, 255, 0.06);
+    color: #e0e0ee;
+    border-radius: 6px;
+    padding: 3px 9px;
+    font-size: 13px;
+    cursor: pointer;
+    margin-left: auto;
+}
+.th-script-act:hover { background: rgba(255, 255, 255, 0.14); }
+.th-script-item {
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.03);
     border-radius: 8px;
-    padding: 8px 10px;
+    padding: 6px 8px;
     margin-bottom: 6px;
 }
-.th-cot-update {
+.th-script-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.th-script-enable { display: inline-flex; }
+.th-script-name {
+    flex: 1;
+    font-size: 13px;
+    font-weight: 600;
+    color: #ececf4;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.th-script-ops { display: inline-flex; gap: 4px; }
+.th-script-op {
+    border: none;
+    background: rgba(255, 255, 255, 0.07);
+    color: #d0d4e8;
+    border-radius: 5px;
+    padding: 2px 7px;
+    font-size: 12px;
+    cursor: pointer;
+}
+.th-script-op:hover { background: rgba(255, 255, 255, 0.16); }
+.th-script-btns {
+    display: flex;
+    gap: 5px;
+    flex-wrap: wrap;
+    margin-top: 5px;
+}
+.th-script-btn {
+    border: 1px solid rgba(120, 180, 255, 0.4);
+    background: rgba(80, 140, 220, 0.15);
+    color: #a8d0ff;
+    border-radius: 5px;
+    padding: 2px 9px;
+    font-size: 12px;
+    cursor: pointer;
+}
+.th-script-btn:hover { background: rgba(80, 140, 220, 0.3); }
+.th-script-editor-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+.th-script-editor-label { font-size: 12.5px; color: #8a90b5; width: 40px; flex-shrink: 0; }
+.th-input {
+    flex: 1;
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    color: #ececf4;
+    border-radius: 6px;
+    padding: 5px 8px;
+    font-size: 12.5px;
+}
+.th-script-editor-code {
+    font-family: Consolas, 'Courier New', monospace;
+    font-size: 12.5px;
+    line-height: 1.5;
+    white-space: pre;
+    min-height: 220px;
+}
+.th-script-editor-ops {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 8px;
+}
+.th-script-logs {
+    margin-top: 8px;
+    max-height: 160px;
+    overflow-y: auto;
+    background: rgba(0, 0, 0, 0.3);
+    border-radius: 6px;
+    padding: 6px 8px;
+}
+.th-script-log {
+    font-family: Consolas, 'Courier New', monospace;
     font-size: 11.5px;
-    color: #8a90b5;
+    color: #b8c4d8;
     word-break: break-all;
-    padding: 4px 8px;
+    padding: 1px 0;
+}
+.th-ver-list { display: flex; flex-direction: column; gap: 4px; }
+.th-ver-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 6px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    font-size: 12px;
+}
+.th-ver-time { color: #8a90b5; }
+.th-ver-restore {
+    border: 1px solid rgba(255, 160, 120, 0.4);
+    background: rgba(255, 160, 120, 0.12);
+    color: #f0c0a0;
+    border-radius: 5px;
+    padding: 2px 8px;
+    font-size: 11.5px;
+    cursor: pointer;
 }
 
 /* ==================== 变量查看器 ==================== */

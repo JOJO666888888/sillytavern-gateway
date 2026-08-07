@@ -478,33 +478,77 @@ select.text_pole { cursor: pointer; }
     color: var(--gw-text-dim);
 }
 
-/* 时间线 */
-.gateway-theatre-timeline { min-height: 120px; max-height: 320px; overflow-y: auto; }
+/* R1: MVU 状态面板（整合 ST MVU 系统：stat_data 键值网格 + 来源标记 + 变更历史） */
+.gateway-mvu-grid {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 3px 10px;
+    margin: 4px 0 6px;
+    font-size: 12.5px;
+}
 
-.gateway-theatre-tl-item {
+.gateway-mvu-row { display: contents; }
+
+.gateway-mvu-key {
+    color: var(--gw-text-dim);
+    white-space: nowrap;
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.gateway-mvu-val {
+    color: var(--gw-text);
+    word-break: break-all;
+    font-family: var(--gw-mono);
+    font-size: 12px;
+}
+
+.gateway-mvu-meta {
+    font-size: 11.5px;
+    color: var(--gw-text-dim);
+    margin: 3px 0;
+    padding: 2px 6px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 4px;
+}
+
+.gateway-mvu-hist { margin-top: 8px; }
+
+.gateway-mvu-hist-title {
+    font-size: 12px;
+    font-weight: 600;
+    margin-bottom: 3px;
+    color: var(--gw-text);
+}
+
+.gateway-mvu-hist-item {
+    font-size: 11.5px;
+    color: var(--gw-text-dim);
+    padding: 2px 0;
+    border-bottom: 1px dashed rgba(255, 255, 255, 0.06);
+    word-break: break-all;
+}
+
+/* R1: 编年史面板（服务端同步，子代理实时生成） */
+.gateway-theatre-chronicle { min-height: 80px; max-height: 280px; overflow-y: auto; }
+
+.gateway-chronicle-item {
     display: flex;
-    align-items: center;
     gap: 6px;
     padding: 4px 2px;
     font-size: 12px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    align-items: baseline;
 }
 
-.gateway-theatre-tl-icon { font-size: 12px; }
-
-.gateway-theatre-tl-label { color: var(--gw-text-dim); flex-shrink: 0; }
-
-.gateway-theatre-tl-detail {
+.gateway-chronicle-num {
+    color: var(--gw-accent);
     font-family: var(--gw-mono);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--gw-text);
+    flex-shrink: 0;
 }
 
-.gateway-theatre-tl-ts { margin-left: auto; color: #6f6f7c; font-size: 11px; }
-
-.gateway-theatre-tl-error .gateway-theatre-tl-label { color: var(--gw-red); }
+.gateway-chronicle-text { color: var(--gw-text); }
 
 /* YAML 编辑器 */
 .gateway-theatre-yaml {
@@ -1341,6 +1385,132 @@ select.text_pole { cursor: pointer; }
 .agent-greeting-send { padding: 3px 10px; font-size: 12px; }
 
 /* ============================================================
+ * P3.5: 开场白管理弹窗（编辑 / 新建 / 删除）
+ * ============================================================ */
+
+.agent-greeting-mgr-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 14px;
+}
+
+.agent-greeting-mgr-item {
+    border: 1px solid var(--gw-border);
+    border-radius: var(--gw-radius);
+    background: rgba(255, 255, 255, 0.03);
+    padding: 8px 10px;
+}
+
+.agent-greeting-mgr-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+
+.agent-greeting-mgr-num {
+    font-family: var(--gw-mono);
+    font-size: 12px;
+    color: var(--gw-text-dim);
+    min-width: 26px;
+}
+
+.agent-greeting-mgr-badge {
+    font-size: 10.5px;
+    padding: 1px 8px;
+    border-radius: 8px;
+    background: rgba(157, 108, 255, 0.2);
+    color: #c9b3ff;
+}
+
+.agent-greeting-mgr-badge.custom {
+    background: rgba(76, 175, 80, 0.2);
+    color: #8fd79a;
+}
+
+.agent-greeting-mgr-actions {
+    margin-left: auto;
+    display: flex;
+    gap: 6px;
+}
+
+.agent-greeting-mgr-actions .menu_button { padding: 3px 10px; font-size: 12px; }
+
+.agent-greeting-mgr-text {
+    font-size: 12.5px;
+    color: var(--gw-text);
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 66px;
+    overflow: hidden;
+}
+
+.agent-greeting-mgr-edit {
+    width: 100%;
+    min-height: 64px;
+    font-size: 13px;
+    line-height: 1.6;
+    resize: vertical;
+    margin-top: 4px;
+}
+
+.agent-greeting-mgr-preview {
+    margin-top: 6px;
+    padding: 6px 8px;
+    border-radius: var(--gw-radius);
+    background: rgba(0, 0, 0, 0.18);
+    border: 1px dashed var(--gw-border);
+    font-size: 12.5px;
+}
+
+.agent-greeting-mgr-preview b {
+    display: block;
+    font-size: 11px;
+    color: var(--gw-text-dim);
+    margin-bottom: 2px;
+}
+
+.agent-greeting-mgr-preview-body {
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.6;
+    max-height: 110px;
+    overflow-y: auto;
+    color: var(--gw-text);
+}
+
+.agent-greeting-mgr-preview-body.empty { color: var(--gw-text-dim); }
+
+.agent-greeting-mgr-count {
+    margin-top: 4px;
+    text-align: right;
+    font-size: 11px;
+    font-family: var(--gw-mono);
+    color: var(--gw-text-dim);
+}
+
+.agent-greeting-mgr-new {
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    padding-top: 12px;
+}
+
+.agent-greeting-mgr-new h4 {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.agent-greeting-mgr-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 8px;
+}
+
+/* ============================================================
  * P3: 楼层翻页（用户一句话 = 一个楼层，重试产物 = 楼层内多页）
  * ============================================================ */
 
@@ -1524,6 +1694,56 @@ select.text_pole { cursor: pointer; }
 .agent-archive-picker-title i { color: var(--gw-accent); margin-right: 6px; }
 
 .agent-archive-picker-actions { display: flex; align-items: center; gap: 6px; }
+
+/* 角色卡选择工具栏（角色卡下拉 + 新建存档按钮） */
+.agent-archive-picker-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--gw-border);
+    flex-wrap: wrap;
+}
+.agent-archive-picker-char-label {
+    font-size: 12px;
+    color: var(--gw-text-dim);
+    white-space: nowrap;
+}
+.agent-archive-picker-char-select {
+    flex: 1;
+    min-width: 160px;
+    max-width: 320px;
+}
+.agent-archive-new-btn {
+    white-space: nowrap;
+}
+.agent-archive-new-btn:hover { border-color: rgba(var(--gw-accent-rgb), 0.6); color: var(--gw-accent); }
+
+/* 新建存档表单（展开式，名称/描述 + 创建/取消） */
+.agent-archive-new-form {
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--gw-border);
+    background: rgba(var(--gw-accent-rgb), 0.06);
+}
+.agent-archive-new-form .text_pole { width: 100%; }
+.agent-archive-new-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+/* 存档项：元数据描述（新建存档时可填） */
+.agent-archive-item-desc {
+    font-size: 12px;
+    color: var(--gw-text-dim);
+    margin-top: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 
 .agent-archive-picker-hint {
     padding: 8px 14px 4px;
@@ -1716,6 +1936,11 @@ select.text_pole { cursor: pointer; }
     .agent-archive-item-title { justify-content: center; }
     .agent-archive-item-actions { justify-content: center; }
     .agent-archive-picker-box { max-height: 90vh; }
+    .agent-archive-picker-toolbar { flex-direction: column; align-items: stretch; }
+    .agent-archive-picker-char-select { max-width: none; }
+    .agent-archive-new-btn { width: 100%; }
+    .agent-archive-new-actions { justify-content: stretch; }
+    .agent-archive-new-actions .menu_button { flex: 1; }
 }
 
 /* ============ 聊天记录管理浮层 ============ */
@@ -1774,18 +1999,47 @@ select.text_pole { cursor: pointer; }
 .agent-chat-records-panel-body::-webkit-scrollbar { width: 6px; }
 .agent-chat-records-panel-body::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 3px; }
 
-/* 搜索区 */
-.agent-chat-search { display: flex; flex-direction: column; gap: 6px; }
+/* 角色卡选择 + 新建存档工具栏 */
+.agent-chat-records-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 0 10px;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--gw-border);
+    margin-bottom: 6px;
+}
+.agent-chat-records-char-label {
+    font-size: 12px;
+    color: var(--gw-text-dim);
+    white-space: nowrap;
+}
+.agent-chat-records-char-select {
+    flex: 1;
+    min-width: 140px;
+    max-width: 280px;
+}
+.agent-chat-records-new-btn { white-space: nowrap; }
+.agent-chat-records-new-btn:hover { border-color: rgba(var(--gw-accent-rgb), 0.6); color: var(--gw-accent); }
 
-.agent-chat-search-row { display: flex; gap: 6px; flex-wrap: wrap; }
-
-.agent-chat-search .text_pole { flex: 1 1 140px; min-width: 0; }
-
-.agent-chat-search input[type="date"] { font-family: var(--gw-mono); }
-
-.agent-chat-search-actions { display: flex; gap: 6px; }
-
-.agent-chat-search-actions .menu_button { flex: 1; justify-content: center; }
+/* 新建存档表单（展开式） */
+.agent-chat-records-new-form {
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px 0 10px;
+    border-bottom: 1px solid var(--gw-border);
+    margin-bottom: 6px;
+    background: rgba(var(--gw-accent-rgb), 0.06);
+    padding: 10px;
+    border-radius: 6px;
+}
+.agent-chat-records-new-form .text_pole { width: 100%; }
+.agent-chat-records-new-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+}
 
 /* 列表头：全选本页 + 选中计数 */
 .agent-chat-list-header {
@@ -1961,7 +2215,11 @@ select.text_pole { cursor: pointer; }
     .agent-save-indicator { font-size: 11px; padding: 2px 8px; }
     .agent-chat-records-panel-body { padding: 8px 10px 12px; }
     .agent-chat-record-time { display: none; }
-    .agent-chat-search .text_pole { flex: 1 1 100%; }
+    .agent-chat-records-toolbar { flex-direction: column; align-items: stretch; }
+    .agent-chat-records-char-select { max-width: none; }
+    .agent-chat-records-new-btn { width: 100%; }
+    .agent-chat-records-new-actions { justify-content: stretch; }
+    .agent-chat-records-new-actions .menu_button { flex: 1; }
 }
 
 /* ============================================================

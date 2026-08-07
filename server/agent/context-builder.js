@@ -420,9 +420,60 @@ export class ContextBuilder {
     }
 
     /**
+     * 用户开场白存储文件路径：data/plugins/agent-framework/greetings/<sanitized>.json。
+     * 与角色卡文件分离，保证"编辑/删除开场白"绝不修改原始角色卡（PNG/JSON 均安全）。
+     * @param {string} name - 角色卡名
+     * @returns {string}
+     */
+    _greetingStorePath(name) {
+        const safe = String(name || 'default').replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 80) || 'default';
+        return path.join(this.dataDir, 'greetings', `${safe}.json`);
+    }
+
+    /**
+     * 读取用户开场白存储（不存在返回空结构）。
+     * 结构：{ version, updatedAt, overrides: {内置索引: {text,hidden}}, customs: [{text,hidden}] }
+     * @param {string} name - 角色卡名
+     */
+    _loadGreetingStore(name) {
+        try {
+            const p = this._greetingStorePath(name);
+            if (!fs.existsSync(p)) return { version: 1, updatedAt: 0, overrides: {}, customs: [] };
+            const raw = JSON.parse(fs.readFileSync(p, 'utf-8'));
+            return {
+                version: 1,
+                updatedAt: raw.updatedAt || 0,
+                overrides: (raw.overrides && typeof raw.overrides === 'object') ? raw.overrides : {},
+                customs: Array.isArray(raw.customs) ? raw.customs : [],
+            };
+        } catch (e) {
+            return { version: 1, updatedAt: 0, overrides: {}, customs: [] };
+        }
+    }
+
+    /** 原子写入用户开场白存储（tmp + rename，防半写损坏） */
+    _saveGreetingStore(name, store) {
+        const dir = path.join(this.dataDir, 'greetings');
+        fs.mkdirSync(dir, { recursive: true });
+        const p = this._greetingStorePath(name);
+        const tmp = `${p}.tmp`;
+        fs.writeFileSync(tmp, JSON.stringify(store, null, 2), 'utf-8');
+        fs.renameSync(tmp, p);
+    }
+
+    /** 校验开场白文本（非空 / 长度上限），返回错误信息或 null */
+    _validateGreetingText(text) {
+        if (typeof text !== 'string') return '开场白内容必须为文本';
+        const t = text.trim();
+        if (!t) return '开场白内容不能为空';
+        if (t.length > 5000) return `开场白内容过长（最多 5000 字符，当前 ${t.length}）`;
+        return null;
+    }
+
+    /**
      * 获取角色卡开场白列表（P3）：
      * 返回 { character, firstMessage, alternateGreetings, greetings }，
-     * 其中 greetings = [firstMessage, ...alternateGreetings]（过滤空串），
+     * 其中 greetings = 内置项(可被用户覆盖/隐藏) + 用户自定义模板（追加在末尾）。
      * 供开场白注入与 GET /api/agent-theatre/greetings 端点使用。
      * @param {string} name - 角色卡名
      * @returns {Object|null} 无卡或无开场白返回 null
@@ -432,17 +483,123 @@ export class ContextBuilder {
         if (!card) return null;
         const first = card.first_message || card.firstMes || '';
         const alternates = Array.isArray(card.alternateGreetings) ? card.alternateGreetings.filter(Boolean) : [];
-        const greetings = [first, ...alternates].filter(Boolean);
-        if (greetings.length === 0) {
-            return { character: card.name || name, firstMessage: '', alternateGreetings: [], greetings, card };
-        }
+        const builtin = [first, ...alternates].filter(Boolean);
+        // 用户自定义开场白存储：overrides 覆盖内置项，customs 追加新模板
+        const store = this._loadGreetingStore(name);
+        const greetings = [];
+        builtin.forEach((g, i) => {
+            const o = store.overrides[i];
+            if (o && o.hidden) return; // 内置项被用户隐藏
+            greetings.push(o && typeof o.text === 'string' && o.text ? o.text : g);
+        });
+        (store.customs || []).forEach((c) => {
+            if (c && !c.hidden && typeof c.text === 'string' && c.text) greetings.push(c.text);
+        });
         return {
             character: card.name || name,
             firstMessage: first,
             alternateGreetings: alternates,
             greetings,
+            builtinCount: builtin.length,
             card,
         };
+    }
+
+    /**
+     * 定位合并列表第 idx 项对应的 customs 实际下标：
+     * 合并列表索引在 [builtinLen, total) 范围内 → 映射到 customs 中第 (idx-builtinLen) 个"可见"项。
+     * 返回 customs 数组下标，找不到返回 -1。
+     * @param {Array} customs - 用户自定义开场白数组
+     * @param {number} cIdx - 可见 customs 序号（0 起）
+     * @returns {number}
+     */
+    _locateCustomIndex(customs, cIdx) {
+        let visible = -1;
+        for (let i = 0; i < customs.length; i++) {
+            if (!customs[i] || customs[i].hidden) continue;
+            visible++;
+            if (visible === cIdx) return i;
+        }
+        return -1;
+    }
+
+    /**
+     * 编辑开场白（按合并后列表索引定位）：
+     * - index < 内置条数：写入 overrides（覆盖角色卡内置文本，不修改角色卡文件）
+     * - index >= 内置条数：更新自定义模板 customs（经 _locateCustomIndex 映射，兼容隐藏项）
+     * @param {string} name - 角色卡名
+     * @param {number} index - 合并后开场白列表索引
+     * @param {string} text - 新文本
+     * @returns {{ok:boolean, error?:string, greetings?:string[]}}
+     */
+    saveGreeting(name, index, text) {
+        const err = this._validateGreetingText(text);
+        if (err) return { ok: false, error: err };
+        const idx = Number(index);
+        if (!Number.isInteger(idx) || idx < 0) return { ok: false, error: '开场白序号无效' };
+        const current = this.getGreetingList(name);
+        if (!current) return { ok: false, error: '角色卡不存在或无法加载' };
+        const builtinLen = current.builtinCount;
+        const total = current.greetings.length;
+        if (idx >= total) return { ok: false, error: `开场白序号越界（当前共 ${total} 条）` };
+        const store = this._loadGreetingStore(name);
+        if (idx < builtinLen) {
+            store.overrides[idx] = { text: text.trim(), hidden: false };
+        } else {
+            const cIdx = idx - builtinLen;
+            const customIdx = this._locateCustomIndex(store.customs, cIdx);
+            if (customIdx < 0) return { ok: false, error: `开场白序号越界（当前共 ${total} 条）` };
+            store.customs[customIdx] = { text: text.trim(), hidden: false };
+        }
+        store.updatedAt = Date.now();
+        this._saveGreetingStore(name, store);
+        return { ok: true, greetings: this.getGreetingList(name)?.greetings || [] };
+    }
+
+    /**
+     * 新建开场白模板：追加到自定义列表，自动进入开场白切换机制（greetings 末尾）。
+     * @param {string} name - 角色卡名
+     * @param {string} text - 开场白文本
+     * @returns {{ok:boolean, error?:string, greetings?:string[]}}
+     */
+    addGreeting(name, text) {
+        const err = this._validateGreetingText(text);
+        if (err) return { ok: false, error: err };
+        const store = this._loadGreetingStore(name);
+        store.customs.push({ text: text.trim(), hidden: false });
+        store.updatedAt = Date.now();
+        this._saveGreetingStore(name, store);
+        return { ok: true, greetings: this.getGreetingList(name)?.greetings || [] };
+    }
+
+    /**
+     * 删除开场白（按合并后列表索引定位，隐藏标记保留索引稳定）：
+     * - index < 内置条数：overrides[idx] 标记 hidden（角色卡文件不动）
+     * - index >= 内置条数：customs 对应项标记 hidden（经 _locateCustomIndex 映射）
+     * @param {string} name - 角色卡名
+     * @param {number} index - 合并后开场白列表索引
+     * @returns {{ok:boolean, error?:string, greetings?:string[]}}
+     */
+    deleteGreeting(name, index) {
+        const idx = Number(index);
+        if (!Number.isInteger(idx) || idx < 0) return { ok: false, error: '开场白序号无效' };
+        const current = this.getGreetingList(name);
+        if (!current) return { ok: false, error: '角色卡不存在或无法加载' };
+        const builtinLen = current.builtinCount;
+        const total = current.greetings.length;
+        if (idx >= total) return { ok: false, error: `开场白序号越界（当前共 ${total} 条）` };
+        const store = this._loadGreetingStore(name);
+        if (idx < builtinLen) {
+            store.overrides[idx] = { text: '', hidden: true };
+        } else {
+            const cIdx = idx - builtinLen;
+            const customIdx = this._locateCustomIndex(store.customs, cIdx);
+            if (customIdx < 0) return { ok: false, error: `开场白序号越界（当前共 ${total} 条）` };
+            store.customs[customIdx].hidden = true;
+        }
+        store.updatedAt = Date.now();
+        this._saveGreetingStore(name, store);
+        return { ok: true, greetings: this.getGreetingList(name)?.greetings || [] };
     }
 
     /**

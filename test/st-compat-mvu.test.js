@@ -16,15 +16,23 @@ import assert from 'node:assert';
 import express from 'express';
 import http from 'http';
 import path from 'path';
+import fs from 'fs';
+import os from 'os';
 import { fileURLToPath } from 'url';
 
 import {
     normalizePath, getByPath, setByPath, removeByPath,
     parseJsonPatch, parseCommandLines, parseUnderscoreSet,
-    applyCommand, applyMvuToText, parseUpdateBlock,
+    applyCommand, applyMvuToText, parseUpdateBlock, applyCommands,
     formatVariables, expandMessageVariables, stripForDisplay,
 } from '../server/agent/mvu-engine.js';
 import { registerAgentApi } from '../server/agent-api.js';
+import {
+    runVariableProcessor,
+    runChronicleProcessor,
+    extractInitVariables,
+    extractUpdateRules,
+} from '../server/agent/st-processors.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.join(__dirname, '..');
@@ -208,7 +216,15 @@ function makeDeps(overrides = {}) {
             broadcastState: () => {},
             shutdown: () => {},
         },
-        configManager: { get: () => ({}) },
+        // R1: 默认关闭处理器（现有用例走"标签解析"兼容路径）；config.agentCompat 可开启处理器路径
+        configManager: {
+            get: (key) => {
+                const cfg = overrides.config || {};
+                if (key === 'runtime.agentCompat') return cfg.agentCompat || { enabled: false };
+                if (key === 'runtime') return cfg.runtime || {};
+                return undefined;
+            },
+        },
         logger: console,
         repoRoot: REPO_ROOT,
         staticDir: path.join(REPO_ROOT, 'public'),
@@ -293,6 +309,176 @@ describe('agent-api MVU 兼容端点', () => {
             assert.strictEqual(trunc.success, true);
             assert.strictEqual(trunc.keepMessages, 2);
             assert.ok(trunc.truncated >= 2);
+        });
+    });
+});
+
+// ==================== 8. st-processors 纯函数（R1 专业子代理） ====================
+
+describe('st-processors 纯函数（R1 专业子代理）', () => {
+    test('extractInitVariables 解析 JSON / YAML / 极简三形态', () => {
+        const jsonCard = { characterBook: { entries: [{ name: '[initvar] 初始变量', content: '{"角色":{"络络":{"好感度":20}}}' }] } };
+        assert.deepStrictEqual(extractInitVariables(jsonCard), { 角色: { 络络: { 好感度: 20 } } });
+        const yamlCard = { characterBook: { entries: [{ name: '[initvar]', content: '角色:\n  络络:\n    心情: 平静' }] } };
+        assert.deepStrictEqual(extractInitVariables(yamlCard), { 角色: { 络络: { 心情: '平静' } } });
+        const minimalCard = { characterBook: { entries: [{ name: 'initvar', content: '好感度: 30\n金币: 100' }] } };
+        assert.deepStrictEqual(extractInitVariables(minimalCard), { 好感度: 30, 金币: 100 });
+        assert.strictEqual(extractInitVariables({ characterBook: { entries: [] } }), null, '无 initvar 返回 null');
+        assert.strictEqual(extractInitVariables(null), null);
+    });
+
+    test('extractUpdateRules 提取变量更新规则条目', () => {
+        const card = { characterBook: { entries: [{ name: '变量更新规则', content: '好感度受重大事件影响' }] } };
+        assert.strictEqual(extractUpdateRules(card), '好感度受重大事件影响');
+        assert.strictEqual(extractUpdateRules({ characterBook: { entries: [] } }), '');
+    });
+
+    test('runVariableProcessor 输出 JSON Patch 并应用（fake client）', async () => {
+        const fakeClient = { generate: async () => '[{"op":"delta","path":"/好感度","value":8},{"op":"replace","path":"/心情","value":"开心"}]' };
+        const cm = { get: (k) => (k === 'runtime.agentCompat' ? { enabled: true, variableProcessor: { enabled: true } } : {}) };
+        const proc = await runVariableProcessor({
+            configManager: cm, mainText: '她笑了。', statData: { 好感度: 60, 心情: '平静' },
+            clientFactory: () => fakeClient,
+        });
+        assert.ok(proc, '应返回 { patch, raw }');
+        assert.strictEqual(proc.patch.length, 2);
+        const r = applyCommands({ 好感度: 60, 心情: '平静' }, proc.patch);
+        assert.strictEqual(r.snapshot.好感度, 68, 'delta +8 应生效');
+        assert.strictEqual(r.snapshot.心情, '开心');
+    });
+
+    test('runVariableProcessor 未启用 / 无模型返回 null（不抛错）', async () => {
+        const cmOff = { get: () => ({ enabled: false }) };
+        assert.strictEqual(await runVariableProcessor({ configManager: cmOff, mainText: 'x', statData: {} }), null);
+        const cmNoModel = { get: (k) => (k === 'runtime.agentCompat' ? { enabled: true, variableProcessor: {} } : {}) };
+        assert.strictEqual(await runVariableProcessor({ configManager: cmNoModel, mainText: 'x', statData: {} }), null);
+    });
+
+    test('runChronicleProcessor 生成总结（fake client）；未启用返回 null', async () => {
+        const fakeClient = { generate: async () => '络络在咖啡馆偶遇老友，得知关键线索。' };
+        const cm = { get: (k) => (k === 'runtime.agentCompat' ? { enabled: true, chronicle: { enabled: true } } : {}) };
+        const s = await runChronicleProcessor({ configManager: cm, mainText: '正文……', characterName: '络络', clientFactory: () => fakeClient });
+        assert.ok(s && s.includes('咖啡馆'));
+        const cmOff = { get: () => ({ enabled: false }) };
+        assert.strictEqual(await runChronicleProcessor({ configManager: cmOff, mainText: 'x' }), null);
+    });
+});
+
+// ==================== 9. R1 集成：角色卡 [initvar] 初始化 + 切换隔离 + 处理器路径 ====================
+
+/** 写入临时 JSON 角色卡（含内嵌世界书 entries），返回文件路径 */
+function writeTempCard(dir, name, bookEntries) {
+    const card = {
+        name,
+        description: 'test',
+        personality: '',
+        scenario: '',
+        first_mes: `你好，我是${name}。`,
+        mes_example: '',
+        creator_notes: '',
+        system_prompt: '',
+        post_history_instructions: '',
+        alternate_greetings: [],
+        character_book: {
+            name: 'test book',
+            entries: (bookEntries || []).map((e, i) => ({
+                keys: [e.name], content: e.content, extensions: {}, enabled: true,
+                insertion_order: i, case_sensitive: false, name: e.name, priority: 10,
+                id: i, comment: '', selective: false, constant: false, position: 'before_char',
+            })),
+        },
+        tags: [], creator: '', character_version: '1.0', extensions: {},
+    };
+    const p = path.join(dir, name + '.json');
+    fs.writeFileSync(p, JSON.stringify(card));
+    return p;
+}
+
+describe('R1 角色卡槽变量初始化与切换隔离', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-mvu-cards-'));
+    writeTempCard(tmpDir, '络络', [{ name: '[initvar] 初始变量', content: '{"角色":{"络络":{"好感度":20,"心情":"平静"}}}' }]);
+    writeTempCard(tmpDir, '苏苏', [{ name: '[initvar] 初始变量', content: '{"角色":{"苏苏":{"灵力":100}}}' }]);
+
+    test('切换角色卡后初始变量按新卡 [initvar] 重置（不残留旧卡）', async () => {
+        const run = async () => ({ runId: 'r1', aborted: false, text: 'ok', result: { toJSON: () => ({}), getMainText: () => '正文' } });
+        const deps = makeDeps({
+            run,
+            config: { agentCompat: { enabled: false }, runtime: { charactersDir: tmpDir } },
+        });
+        await withServer(deps, async (base) => {
+            // 角色 A 首轮：stat_data 空 → 自动从卡内 [initvar] 初始化
+            let r = await fetch(`${base}/api/agent-theatre/input?session=native:iso1`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ input: '开始', character: '络络' }),
+            }).then(x => x.json());
+            assert.strictEqual(r.variables.stat_data['角色']['络络']['好感度'], 20, 'A 卡初始变量生效');
+            assert.strictEqual(r.variables.initSource, '络络');
+
+            // 角色 B 首轮：新卡槽 stat_data 空 → 重新初始化，A 的变量不残留
+            r = await fetch(`${base}/api/agent-theatre/input?session=native:iso1`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ input: '开始', character: '苏苏' }),
+            }).then(x => x.json());
+            assert.strictEqual(r.variables.stat_data['角色']['苏苏']['灵力'], 100, 'B 卡初始变量生效');
+            assert.strictEqual(r.variables.stat_data['角色']['络络'], undefined, '旧卡初始变量不得残留');
+            assert.strictEqual(r.variables.initSource, '苏苏');
+
+            // 切回角色 A：槽位隔离，A 的 stat_data 可恢复
+            r = await fetch(`${base}/api/agent-theatre/input?session=native:iso1`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ input: '继续', character: '络络' }),
+            }).then(x => x.json());
+            assert.strictEqual(r.variables.stat_data['角色']['络络']['好感度'], 20, '切回 A 恢复 A 的变量');
+        });
+    });
+
+    test('/input 走变量处理子 Agent：via=processor + 编年史广播 + mvuHistory 标记', async () => {
+        const fakeClient = {
+            generate: async (msgs) => msgs.some(m => m.role === 'system' && m.content.includes('变量管理'))
+                ? '[{"op":"delta","path":"/角色/络络/好感度","value":5}]'
+                : '络络在城门口遇到神秘人，好感度上升。',
+        };
+        const run = async () => ({ runId: 'r1', aborted: false, text: '她笑了。', result: { toJSON: () => ({}), getMainText: () => '她笑了。' } });
+        const deps = makeDeps({
+            run,
+            processorClientFactory: () => fakeClient,
+            config: {
+                agentCompat: { enabled: true, variableProcessor: { enabled: true }, chronicle: { enabled: true } },
+                runtime: { charactersDir: tmpDir },
+            },
+        });
+        await withServer(deps, async (base) => {
+            const r = await fetch(`${base}/api/agent-theatre/input?session=native:proc1`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ input: '继续', character: '络络' }),
+            }).then(x => x.json());
+            assert.strictEqual(r.variables.stat_data['角色']['络络']['好感度'], 25, '处理器 delta +5 应生效（20+5）');
+            assert.strictEqual(r.variables.lastUpdate.via, 'processor', '更新来源应为变量处理子 Agent');
+            assert.ok(Array.isArray(r.chronicle) && r.chronicle.length >= 1, '编年史应随结果广播');
+            assert.ok(r.chronicle[0].content.includes('络络'), '编年史内容来自 chronicle 子代理');
+            // /state 返回变量变更历史（带 via 标记，前端可视化）
+            const st = await fetch(`${base}/api/agent-theatre/state?session=native:proc1`).then(x => x.json());
+            assert.ok(Array.isArray(st.mvuHistory) && st.mvuHistory.length >= 1);
+            assert.strictEqual(st.mvuHistory[0].via, 'processor');
+            assert.strictEqual(st.variables.lastUpdate.via, 'processor');
+        });
+    });
+
+    test('/variables-reset 重置角色卡槽变量与编年史', async () => {
+        const run = async () => ({ runId: 'r1', aborted: false, text: 'ok', result: { toJSON: () => ({}), getMainText: () => '正文' } });
+        const deps = makeDeps({ run, config: { agentCompat: { enabled: false } } });
+        await withServer(deps, async (base) => {
+            await fetch(`${base}/api/agent-theatre/variables-set?session=native:reset1`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ variables: { 好感度: 42 } }),
+            });
+            const r = await fetch(`${base}/api/agent-theatre/variables-reset?session=native:reset1`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+            }).then(x => x.json());
+            assert.strictEqual(r.success, true);
+            const st = await fetch(`${base}/api/agent-theatre/state?session=native:reset1`).then(x => x.json());
+            assert.deepStrictEqual(st.variables.stat_data, {}, '重置后 stat_data 为空');
+            assert.deepStrictEqual(st.chronicle, [], '重置后编年史为空');
         });
     });
 });

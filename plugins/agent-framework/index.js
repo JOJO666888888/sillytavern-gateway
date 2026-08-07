@@ -147,6 +147,11 @@ export default class AgentFrameworkPlugin extends GatewayPlugin {
             // P3: 查询角色卡开场白列表（first_message + alternate_greetings），
             // 供 /api/agent-theatre/greetings 调用（前端展示开场白切换箭头）。
             getGreetings: (characterName) => this.contextBuilder.getGreetingList(characterName),
+            // P3: 开场白编辑（编辑内置/自定义、新建模板、删除）——存储与角色卡文件分离，
+            // 供 /api/agent-theatre/greetings/* 调用（前端开场白管理模块）。
+            saveGreeting: (characterName, index, text) => this.contextBuilder.saveGreeting(characterName, index, text),
+            addGreeting: (characterName, text) => this.contextBuilder.addGreeting(characterName, text),
+            deleteGreeting: (characterName, index) => this.contextBuilder.deleteGreeting(characterName, index),
             getWorkspaceManager: () => this.workspaceManager,
             // P0-2: 暴露引擎数据目录（记忆/文风/技能文件的唯一权威位置），供其它插件（如 agent-rp）对齐
             getDataDir: () => DATA_DIR,

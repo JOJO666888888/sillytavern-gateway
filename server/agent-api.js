@@ -54,8 +54,18 @@ import {
     readChat,
     deleteChats,
     migrateLegacy,
+    createArchive,
+    updateArchiveMeta,
 } from './runtime/chat-store.js';
-import { applyMvuToText, stripForDisplay } from './agent/mvu-engine.js';
+import { applyMvuToText, stripForDisplay, applyCommands } from './agent/mvu-engine.js';
+import {
+    runVariableProcessor,
+    runChronicleProcessor,
+    extractInitVariables,
+    extractUpdateRules,
+} from './agent/st-processors.js';
+import { ScriptStore, toExportableScript } from './agent/script-store.js';
+import { ScriptEngine, SCRIPT_EVENTS, extractCardScripts } from './agent/script-engine.js';
 import { userProfileStore } from './runtime/user-profile-store.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -136,6 +146,34 @@ const aiModifyHistory = new Map();
 const theatreSessions = new Map();
 
 /**
+ * 生成消息稳定 ID（编辑/删除定位用）。
+ * 格式: <prefix>_<时间戳36进制>_<随机4字符>，同一进程内唯一即可。
+ * 历史消息可能来自存档（无 id），读取时补发；运行中消息由 /input 分配。
+ */
+export function makeMsgId(prefix = 'm') {
+    return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** 确保消息对象带稳定 id；无 id（旧存档/旧代码 push）时补发。 */
+function ensureMsgId(msg, role) {
+    if (!msg || typeof msg !== 'object') return msg;
+    if (!msg.id) msg.id = makeMsgId(role === 'user' ? 'u' : role === 'assistant' ? 'a' : 'm');
+    return msg;
+}
+
+/** 按 messageId 或 messageIndex 定位消息，返回 { index, msg }；找不到返回 null。 */
+function locateMessage(cs, messageId, messageIndex) {
+    if (typeof messageId === 'string' && messageId.length > 0) {
+        const i = cs.history.findIndex(m => m && m.id === messageId);
+        if (i >= 0) return { index: i, msg: cs.history[i] };
+        return null;
+    }
+    const idx = Number(messageIndex);
+    if (!Number.isInteger(idx) || idx < 0 || idx >= cs.history.length) return null;
+    return { index: idx, msg: cs.history[idx] };
+}
+
+/**
  * 会话内按角色卡隔离的运行时状态（P4-1 修复：角色卡切换上下文隔离）。
  *
  * 背景：此前 sess.history 是会话级共享的，切换角色卡只改 sess.character、
@@ -202,6 +240,8 @@ export function registerAgentApi(app, deps) {
         logger,
         repoRoot,
         staticDir,
+        // R1: 处理器客户端工厂（测试注入 mock；生产不传则用默认 buildProcessorClient）
+        processorClientFactory,
     } = deps;
 
     // 初始化聊天存档数据根目录与广播器（供 /input 切换保存、定时自动保存使用）
@@ -209,6 +249,68 @@ export function registerAgentApi(app, deps) {
     if (theatreBroadcaster) activeTheatreBroadcaster = theatreBroadcaster;
     // 用户自定义档案存储：测试可注入隔离实例，默认用共享单例（data/user-profile.json）
     const userProfile = deps.userProfileStore || userProfileStore;
+
+    // ==================== 脚本库（对标酒馆助手 Tavern-Helper） ====================
+    // 存储 data/agent-scripts.json（全局/角色脚本库）+ Node vm 沙箱执行 + 事件总线。
+    const scriptStore = deps.scriptStore || new ScriptStore(activeChatDataRoot);
+    const scriptEngine = deps.scriptEngine || new ScriptEngine({
+        store: scriptStore,
+        getHistory: (sk, character) => {
+            const s = theatreSessions.get(sk);
+            return s ? (charState(s, character || s.character || '').history || []) : [];
+        },
+        getStatData: (sk, character) => {
+            const s = theatreSessions.get(sk);
+            return s ? (charState(s, character || s.character || '').mvu?.stat_data || {}) : {};
+        },
+        setStatData: (sk, character, data) => {
+            const s = theatreSessions.get(sk);
+            if (s) charState(s, character || s.character || '').mvu.stat_data = data;
+        },
+        getCharName: (_sk, character) => character || '',
+        getUserName: (sk) => (theatreSessions.get(sk)?.userName) || 'User',
+        makeLlmClient: (customCfg) => {
+            const llm = configManager.get('runtime.llm') || {};
+            const cfg = customCfg || {};
+            const model = cfg.model || llm.model;
+            if (!model) return null;
+            return new LLMClient({
+                provider: llm.provider || 'openai',
+                baseUrl: cfg.baseUrl || llm.baseUrl || '',
+                // 安全：脚本自定义 API（custom_api）只能自带 apiKey，不得借用主 LLM 的 key，
+                // 防止脚本将 baseUrl 指向任意地址时服务端携带主 key 外发（SSRF + 凭据泄露）。
+                apiKey: cfg.apiKey || '',
+                model,
+                timeout: llm.timeout || 120000,
+                maxTokens: llm.maxTokens || 131072,
+            });
+        },
+        logger,
+        timeoutMs: Number(configManager.get('runtime.agentScriptTimeout')) || 15000,
+    });
+
+    /**
+     * 存档操作日志（多存档管理：问题追溯与数据恢复）。
+     * 追加写入 <dataRoot>/archive-ops.log（JSONL），同时输出到网关日志。
+     * @param {string} op - 'create' | 'delete' | 'meta' | 'load'
+     * @param {string[]} files - 涉及的存档相对路径
+     * @param {object} [extra] - 额外信息（结果等）
+     */
+    const _logArchiveOp = (op, files, extra = {}) => {
+        try {
+            const entry = {
+                ts: Date.now(),
+                op,
+                files: Array.isArray(files) ? files : [],
+                ...extra,
+            };
+            if (logger && typeof logger.info === 'function') {
+                logger.info(`[archive-op] ${op}: ${(entry.files || []).join(',') || '(none)'}`);
+            }
+            const logPath = path.join(activeChatDataRoot, 'archive-ops.log');
+            fs.appendFileSync(logPath, `${JSON.stringify(entry)}\n`);
+        } catch { /* 日志失败不阻断主流程 */ }
+    };
 
     // 初始化正则引擎存储（data/regex-scripts.json）
     initRegexStore(activeChatDataRoot);
@@ -390,7 +492,7 @@ export function registerAgentApi(app, deps) {
     app.post('/api/agent-theatre/input', async (req, res) => {
         const sessionKey = _theatreSessionKey(req);
         const body = req.body || {};
-        const { input, profile, callbackId, character, worldbook, style, rerun, greetingIndex } = body;
+        const { input, profile, callbackId, character, worldbook, style, rerun, greetingIndex, userMsgId } = body;
 
         if (!input && !callbackId && !rerun) {
             return res.status(400).json({ success: false, error: '需要 input 或 callbackId' });
@@ -464,6 +566,36 @@ export function registerAgentApi(app, deps) {
                 // 角色卡正则导入失败不阻塞主流程
                 logger.warn(`[regex] 角色卡 "${character}" 正则导入失败: ${e.message}`);
             }
+        }
+
+        // 脚本库（对标酒馆助手角色脚本库）：角色卡加载时自动同步导入
+        // extensions.tavern_helper.scripts / variables（同 id 覆盖更新，新增追加）
+        if (character && character !== sess._lastScriptChar) {
+            try {
+                const { loadCharacterCardByName } = await import('./runtime/card-loader.js');
+                const runtimeCfg = configManager.get('runtime') || {};
+                const charDir = path.resolve(repoRoot, runtimeCfg.charactersDir || 'assets/characters');
+                const card = loadCharacterCardByName(charDir, character);
+                if (card) {
+                    const { scripts, variables } = extractCardScripts(card);
+                    if (scripts.length) {
+                        // autoDisable：首次导入强制禁用（防止加载角色卡即自动执行不可信脚本），
+                        // 用户需在小手机脚本 tab 手动启用后才参与事件执行
+                        const r = scriptStore.importScripts('character', character, scripts, { autoDisable: true });
+                        logger.info(`[script] 角色卡 "${character}" 自动同步脚本库：${r.imported} 新增 / ${r.updated} 更新（默认禁用，需手动启用）`);
+                    }
+                    if (variables && Object.keys(variables).length) {
+                        scriptStore.importVariables(character, variables);
+                    }
+                }
+                sess._lastScriptChar = character;
+            } catch (e) {
+                // 脚本同步失败不阻塞主流程
+                logger.warn(`[script] 角色卡 "${character}" 脚本同步失败: ${e.message}`);
+            }
+            // 角色加载事件：通知启用脚本（异步执行，不阻塞）
+            scriptEngine.emitToSession({ sessionKey, character, eventType: SCRIPT_EVENTS.CHARACTER_LOADED, args: { character } })
+                .catch((e) => logger.warn(`[script] CHARACTER_LOADED 事件触发失败: ${e.message}`));
         }
 
         // 重跑：复用当前角色卡槽的上一轮输入，并移除该槽历史末尾的 user+assistant 消息对
@@ -577,13 +709,108 @@ export function registerAgentApi(app, deps) {
             cs.lastResult = runResult.result?.toJSON?.() || null;
             // 把本轮结果文本作为 assistant 消息加入当前角色卡槽历史，便于下一轮续写
             const mainText = runResult.result?.getMainText?.() || runResult.text || '';
-            // ST 兼容（P0）：MVU 变量差分应用 —— 解析消息中的 <UpdateVariable> 块
-            // （JSON Patch / set|old→new|() / _.set 三语法）并更新该角色卡的 stat_data 快照。
+
+            // ==================== R1 重构：专业子 Agent 处理器（功能任务与主对话解耦） ====================
+            // 主 Agent 专注正文；变量解析与编年史总结由独立 LLM 调用完成（可用第二模型）。
+            // 未启用 / 无模型 / 调用失败时降级"标签解析"兼容路径（旧卡仍可玩）。
             cs.mvu = cs.mvu || { stat_data: {} };
-            const mvuApplied = applyMvuToText(mainText, cs.mvu.stat_data);
+            if (!cs.mvu.stat_data || typeof cs.mvu.stat_data !== 'object') cs.mvu.stat_data = {};
+            const compatCfg = configManager.get('runtime.agentCompat') || {};
+            const compatOn = compatCfg.enabled !== false;
+            const activeChar = character || sess.character || '';
+
+            // 加载角色卡（用于初始变量表 + 变量更新规则提取；加载失败不阻塞）
+            let card = null;
+            if (activeChar) {
+                try {
+                    const { loadCharacterCardByName } = await import('./runtime/card-loader.js');
+                    const runtimeCfg = configManager.get('runtime') || {};
+                    const charDir = path.resolve(repoRoot, runtimeCfg.charactersDir || 'assets/characters');
+                    card = loadCharacterCardByName(charDir, activeChar);
+                } catch (_) { card = null; }
+            }
+
+            // 1) 角色卡初始变量：仅当该角色卡槽 stat_data 为空时，自动从卡内 [initvar] 初始 解析初始化。
+            //    切换角色卡 → 新卡槽 stat_data 为空 → 重新初始化，杜绝"沿用上一张卡的初始变量"。
+            if (Object.keys(cs.mvu.stat_data).length === 0 && card) {
+                const init = extractInitVariables(card);
+                if (init && Object.keys(init).length > 0) {
+                    cs.mvu.stat_data = init;
+                    cs.mvu.initSource = activeChar;
+                    cs.mvu.initAt = Date.now();
+                    logger.info(`[theatre] 角色「${activeChar}」初始变量已从卡内 [initvar] 自动初始化（${Object.keys(init).length} 顶层键）`);
+                }
+            }
+
+            // 2) 变量处理子 Agent（优先）；降级标签解析
+            let mvuApplied = { changed: false, applied: [], skipped: [] };
+            let mvuViaProcessor = false;
+            if (compatOn && compatCfg.variableProcessor?.enabled !== false) {
+                try {
+                    const rules = extractUpdateRules(card);
+                    const proc = await runVariableProcessor({
+                        configManager,
+                        mainText,
+                        statData: cs.mvu.stat_data,
+                        rules,
+                        characterName: activeChar,
+                        clientFactory: processorClientFactory,
+                    });
+                    if (proc && Array.isArray(proc.patch) && proc.patch.length > 0) {
+                        mvuApplied = applyCommands(cs.mvu.stat_data, proc.patch);
+                        mvuViaProcessor = true;
+                    }
+                } catch (e) {
+                    logger.warn(`[theatre] 变量处理子 Agent 失败，降级标签解析: ${e.message}`);
+                }
+            }
+            if (!mvuViaProcessor) {
+                // 兼容路径：解析主文本中的 <UpdateVariable>（JSON Patch / set|old→new|() / _.set）
+                mvuApplied = applyMvuToText(mainText, cs.mvu.stat_data);
+            }
             cs.mvu.stat_data = mvuApplied.snapshot;
             cs.mvu.changed = mvuApplied.changed;
-            cs.mvu.lastUpdate = mvuApplied.applied.length > 0 ? { at: Date.now(), count: mvuApplied.applied.length } : null;
+            cs.mvu.lastUpdate = mvuApplied.applied.length > 0
+                ? { at: Date.now(), count: mvuApplied.applied.length, via: mvuViaProcessor ? 'processor' : 'tags' }
+                : null;
+            if (mvuApplied.changed) {
+                // 变量变更历史（可视化：变量查看器/状态面板展示每轮应用了什么命令）
+                cs.mvu.history = cs.mvu.history || [];
+                cs.mvu.history.push({
+                    turn: cs.turn,
+                    ts: Date.now(),
+                    via: mvuViaProcessor ? 'processor' : 'tags',
+                    commands: mvuApplied.applied,
+                });
+                if (cs.mvu.history.length > 50) cs.mvu.history = cs.mvu.history.slice(-50);
+            }
+
+            // 3) 编年史/小总结子 Agent（优先）；降级解析主文本 <sum>
+            let summary = null;
+            if (compatOn && compatCfg.chronicle?.enabled !== false) {
+                try {
+                    const prev = (cs.chronicle && cs.chronicle.length)
+                        ? cs.chronicle[cs.chronicle.length - 1].content : '';
+                    summary = await runChronicleProcessor({
+                        configManager,
+                        mainText,
+                        previousSummary: prev,
+                        characterName: activeChar,
+                        clientFactory: processorClientFactory,
+                    });
+                } catch (e) {
+                    logger.warn(`[theatre] 编年史子 Agent 失败，降级 <sum> 解析: ${e.message}`);
+                }
+            }
+            if (!summary) {
+                const m = mainText.match(/<sum>([\s\S]*?)<\/sum>/i);
+                if (m) summary = m[1].trim();
+            }
+            if (summary) {
+                cs.chronicle = cs.chronicle || [];
+                cs.chronicle.push({ entryNum: cs.chronicle.length + 1, content: summary, ts: Date.now() });
+            }
+
             // 正则引擎：对 AI 输出应用 markdownOnly + 非短暂性脚本（placement: AI_OUTPUT）
             const regexedOutput = regexScripts.length > 0
                 ? getRegexedString(mainText, REGEX_PLACEMENT.AI_OUTPUT, { isMarkdown: true, scripts: regexScripts })
@@ -593,8 +820,16 @@ export function registerAgentApi(app, deps) {
             const displayText = stripForDisplay(regexedOutput);
             cs.history = cs.history || [];
             const newMessages = [];
-            if (actualInput) newMessages.push({ role: 'user', content: actualInput });
-            if (mainText) newMessages.push({ role: 'assistant', content: mainText });
+            // 消息稳定 ID：用户消息优先采用前端生成的 userMsgId（前后端对齐定位），
+            // assistant 消息由服务端分配并随 agent_result 广播，前端据此记录楼层页码 id。
+            const userMsgIdFinal = (typeof userMsgId === 'string' && userMsgId.length > 0) ? userMsgId : makeMsgId('u');
+            if (actualInput) newMessages.push({ role: 'user', content: actualInput, id: userMsgIdFinal });
+            let assistantId = null;
+            if (mainText) {
+                const am = { role: 'assistant', content: mainText, id: makeMsgId('a') };
+                newMessages.push(am);
+                assistantId = am.id;
+            }
             if (newMessages.length > 0) {
                 cs.history.push(...newMessages);
                 cs.dirty = true; // 有新的 user/assistant 消息 -> 标记待自动保存
@@ -609,21 +844,46 @@ export function registerAgentApi(app, deps) {
             const maxHistory = Math.max(40, histLimit * 2);
             if (cs.history.length > maxHistory) cs.history = cs.history.slice(-maxHistory);
 
-            // 广播完整结果 + 状态 + MVU 变量给所有订阅者（正则处理后的文本用于显示）
+            // 广播完整结果 + 状态 + MVU 变量 + 编年史给所有订阅者（正则处理后的文本用于显示）
             theatreBroadcaster.broadcastResult(sessionKey, {
                 runId: runResult.runId,
                 result: cs.lastResult,
                 text: displayText,
-                variables: { stat_data: cs.mvu.stat_data, changed: cs.mvu.changed },
+                assistantId, // 本轮 assistant 消息稳定 ID（前端楼层页码定位用；失败时为 null）
+                userMsgId: userMsgIdFinal,
+                variables: {
+                    stat_data: cs.mvu.stat_data,
+                    changed: cs.mvu.changed,
+                    initSource: cs.mvu.initSource || '',
+                    lastUpdate: cs.mvu.lastUpdate || null,
+                },
+                chronicle: cs.chronicle || [],
+                mvuHistory: (cs.mvu.history || []).slice(-10),
             });
             theatreBroadcaster.broadcastState(sessionKey, cs.lastResult?.state || {});
+
+            // 脚本库（对标酒馆助手）：每轮对话后触发事件钩子——GENERATION_ENDED / MESSAGE_RECEIVED。
+            // 异步执行不阻塞响应；脚本对 stat_data 的修改直接写回 cs.mvu.stat_data（下一轮广播生效）。
+            const activeCharForEvent = character || sess.character || '';
+            scriptEngine.emitToSession({ sessionKey, character: activeCharForEvent, eventType: SCRIPT_EVENTS.GENERATION_ENDED, args: { runId: runResult.runId } })
+                .then(() => scriptEngine.emitToSession({ sessionKey, character: activeCharForEvent, eventType: SCRIPT_EVENTS.MESSAGE_RECEIVED, args: { message_id: Math.max(-1, (cs.history || []).length - 1) } }))
+                .catch((e) => logger.warn(`[script] 每轮事件触发失败: ${e.message}`));
 
             res.json({
                 success: true,
                 runId: runResult.runId,
                 text: displayText,
                 result: cs.lastResult,
-                variables: { stat_data: cs.mvu.stat_data, changed: cs.mvu.changed },
+                assistantId,
+                userMsgId: userMsgIdFinal,
+                variables: {
+                    stat_data: cs.mvu.stat_data,
+                    changed: cs.mvu.changed,
+                    initSource: cs.mvu.initSource || '',
+                    lastUpdate: cs.mvu.lastUpdate || null,
+                },
+                chronicle: cs.chronicle || [],
+                mvuHistory: (cs.mvu.history || []).slice(-10),
             });
         } catch (e) {
             // P2: 异常兜底：清理 running 标记并广播 error 终态
@@ -803,7 +1063,58 @@ export function registerAgentApi(app, deps) {
             firstMessage: list.firstMessage || '',
             alternateGreetings: list.alternateGreetings || [],
             greetings: list.greetings || [],
+            builtinCount: list.builtinCount || 0,
         });
+    });
+
+    /**
+     * 开场白管理端点（P3）：编辑 / 新建 / 删除开场白。
+     *
+     * 存储与角色卡文件分离（data/plugins/agent-framework/greetings/<card>.json），
+     * 编辑/删除绝不修改原始角色卡（PNG/JSON 均安全）。新开场白保存后自动进入
+     * greetings 列表末尾，供开场白切换机制（首楼按钮）选择。
+     *
+     * 角色卡名解析与 GET /api/agent-theatre/greetings 一致：body.character > 会话已绑定。
+     *
+     * 响应：成功 { success:true, greetings: string[] }（操作后的完整开场白列表）；
+     *        校验/服务错误 { success:false, error }。
+     */
+    const handleGreetingEdit = (req, res, operation) => {
+        const body = req.body || {};
+        const sessionKey = _theatreSessionKey(req);
+        const sess = theatreSessions.get(sessionKey);
+        const character = (body.character || '').trim() || sess?.character || '';
+        if (!character) {
+            return res.status(400).json({ success: false, error: '未指定角色卡（character）' });
+        }
+        const agentService = getAgentService();
+        if (!agentService || typeof agentService[operation] !== 'function') {
+            return res.status(503).json({ success: false, error: 'agent-framework 插件未加载或不支持开场白操作' });
+        }
+        // add 只传 (character, text)；save/delete 传 (character, index, text)。
+        // 若统一传 3 参，body.index(undefined) 会占据 add 的 text 参数位导致文本丢失。
+        const result = operation === 'addGreeting'
+            ? agentService[operation](character, body.text)
+            : agentService[operation](character, body.index, body.text);
+        if (!result || result.ok !== true) {
+            return res.status(400).json({ success: false, error: (result && result.error) || '开场白操作失败' });
+        }
+        res.json({ success: true, character, greetings: result.greetings || [] });
+    };
+
+    /** POST /api/agent-theatre/greetings/save - 编辑已有开场白（body: {character, index, text}） */
+    app.post('/api/agent-theatre/greetings/save', (req, res) => {
+        handleGreetingEdit(req, res, 'saveGreeting');
+    });
+
+    /** POST /api/agent-theatre/greetings/add - 新建开场白模板（body: {character, text}） */
+    app.post('/api/agent-theatre/greetings/add', (req, res) => {
+        handleGreetingEdit(req, res, 'addGreeting');
+    });
+
+    /** POST /api/agent-theatre/greetings/delete - 删除开场白（body: {character, index}） */
+    app.post('/api/agent-theatre/greetings/delete', (req, res) => {
+        handleGreetingEdit(req, res, 'deleteGreeting');
     });
 
     /** POST /api/agent-theatre/validate-run - 保存 Profile 并验证可运行性 */
@@ -1212,8 +1523,22 @@ export function registerAgentApi(app, deps) {
             turn: cs.turn,
             lastRunId: cs.lastRunId,
             lastResult: cs.lastResult,
-            // ST 兼容（P0）：MVU 变量快照（前端变量查看器 / 状态栏恢复用）
-            variables: { stat_data: (cs.mvu && cs.mvu.stat_data) || {} },
+            // 历史快照（含稳定 id）：前端编辑/删除失败后按此重新对齐楼层模型，
+            // 避免楼层与服务端历史因截断/并发产生索引漂移后持续报"索引越界"。
+            history: (cs.history || []).slice(-100).map(m => ({
+                id: m.id || ensureMsgId(m, m.role).id,
+                role: m.role,
+                content: m.content,
+            })),
+            // ST 兼容（P0）：MVU 变量快照 + 变更历史 + 编年史（前端变量查看器 / 状态栏 / 编年史恢复用）
+            variables: {
+                stat_data: (cs.mvu && cs.mvu.stat_data) || {},
+                changed: !!(cs.mvu && cs.mvu.changed),
+                initSource: (cs.mvu && cs.mvu.initSource) || '',
+                lastUpdate: (cs.mvu && cs.mvu.lastUpdate) || null,
+            },
+            mvuHistory: ((cs.mvu && cs.mvu.history) || []).slice(-10),
+            chronicle: cs.chronicle || [],
         });
     });
 
@@ -1276,7 +1601,7 @@ export function registerAgentApi(app, deps) {
         const cs = charState(sess, character || sess.character || '');
         let merged = 0;
         if (cs.history.length === 0) {
-            cs.history = valid.slice(-100);
+            cs.history = valid.slice(-100).map(m => ensureMsgId(m, m.role));
             merged = cs.history.length;
             logger.info(`[theatre] history-sync: 角色「${character || '(无角色)'}」服务端为空，采纳客户端 ${merged} 条历史（${sessionKey}）`);
         }
@@ -1306,15 +1631,171 @@ export function registerAgentApi(app, deps) {
         cs.mvu = cs.mvu || {};
         cs.mvu.stat_data = structuredClone(vars);
         cs.mvu.changed = true;
-        cs.mvu.lastUpdate = { at: Date.now(), count: 1 };
+        cs.mvu.lastUpdate = { at: Date.now(), count: 1, via: 'manual' };
+        cs.mvu.initSource = character || '';
+        cs.mvu.history = cs.mvu.history || [];
+        cs.mvu.history.push({ turn: cs.turn || 0, ts: Date.now(), via: 'manual', commands: [{ op: 'replace', path: '/', value: vars }] });
+        if (cs.mvu.history.length > 50) cs.mvu.history = cs.mvu.history.slice(-50);
         theatreBroadcaster.broadcastResult(sessionKey, {
             runId: '',
             result: null,
             text: '',
-            variables: { stat_data: cs.mvu.stat_data, changed: true },
+            variables: { stat_data: cs.mvu.stat_data, changed: true, initSource: character || '' },
+            chronicle: cs.chronicle || [],
+            mvuHistory: (cs.mvu.history || []).slice(-10),
         });
         logger.info(`[theatre] variables-set: 角色「${character || '(无角色)'}」stat_data 已更新（${Object.keys(vars).length} 顶层键）`);
-        res.json({ success: true, variables: { stat_data: cs.mvu.stat_data } });
+        res.json({
+            success: true,
+            variables: { stat_data: cs.mvu.stat_data, changed: true, initSource: character || '' },
+            chronicle: cs.chronicle || [],
+            mvuHistory: (cs.mvu.history || []).slice(-10),
+        });
+    });
+
+    /**
+     * POST /api/agent-theatre/variables-reset - 重置该角色卡槽的变量快照与编年史（切换/清档用）。
+     * body: { session?, character? }
+     */
+    app.post('/api/agent-theatre/variables-reset', (req, res) => {
+        const sessionKey = _theatreSessionKey(req);
+        const body = req.body || {};
+        const character = body.character || '';
+        const sess = theatreSessions.get(sessionKey);
+        if (!sess) {
+            return res.json({ success: true, cleared: 0 });
+        }
+        const cs = charState(sess, character || sess.character || '');
+        cs.mvu = { stat_data: {}, changed: false, history: [], lastUpdate: null, initSource: '' };
+        cs.chronicle = [];
+        logger.info(`[theatre] variables-reset: 角色「${character || '(无角色)'}」变量与编年史已重置（${sessionKey}）`);
+        res.json({ success: true, cleared: 1 });
+    });
+
+    // ==================== 脚本库 API（对标酒馆助手 Tavern-Helper 脚本库） ====================
+
+    /** 解析脚本作用域：scope（global/character）+ character */
+    function scriptCtx(req) {
+        const body = req.body || {};
+        const scope = ((req.query.scope || body.scope || 'global') === 'character') ? 'character' : 'global';
+        const character = req.query.character || body.character || '';
+        return { scope, character };
+    }
+
+    /** 列表（脚本 + 该作用域变量） */
+    app.get('/api/agent-theatre/scripts', (req, res) => {
+        const { scope, character } = scriptCtx(req);
+        res.json({
+            success: true, scope, character,
+            scripts: scriptStore.listScripts(scope, character),
+            variables: scriptStore.getVariables(scope, character),
+        });
+    });
+
+    /** 取单个脚本全文（含内容，前端编辑器加载用） */
+    app.get('/api/agent-theatre/scripts/:id', (req, res) => {
+        const { scope, character } = scriptCtx(req);
+        const script = scriptStore.getScript(scope, character, req.params.id);
+        if (!script) return res.status(404).json({ success: false, error: '脚本不存在' });
+        res.json({ success: true, script: toExportableScript(script) });
+    });
+
+    /** 新建空白脚本 */
+    app.post('/api/agent-theatre/scripts', (req, res) => {
+        const { scope, character } = scriptCtx(req);
+        const body = req.body || {};
+        const script = scriptStore.createScript({
+            scope, character,
+            name: body.name || '', content: body.content || '', info: body.info || '',
+        });
+        res.json({ success: true, script });
+    });
+
+    /** 更新脚本（保存自动留版本快照） */
+    app.put('/api/agent-theatre/scripts/:id', (req, res) => {
+        const { scope, character } = scriptCtx(req);
+        const script = scriptStore.updateScript({ scope, character, id: req.params.id, patch: req.body || {} });
+        if (!script) return res.status(404).json({ success: false, error: '脚本不存在' });
+        res.json({ success: true, script });
+    });
+
+    /** 删除脚本 */
+    app.delete('/api/agent-theatre/scripts/:id', (req, res) => {
+        const { scope, character } = scriptCtx(req);
+        const ok = scriptStore.deleteScript({ scope, character, id: req.params.id });
+        res.json({ success: ok });
+    });
+
+    /** 运行脚本（手动执行 / 按钮触发）：body: { buttonName?, eventType?, args? } */
+    app.post('/api/agent-theatre/scripts/:id/run', async (req, res) => {
+        const sessionKey = _theatreSessionKey(req);
+        const { scope, character } = scriptCtx(req);
+        const body = req.body || {};
+        const script = scriptStore.getScript(scope, character, req.params.id);
+        if (!script) return res.status(404).json({ success: false, error: '脚本不存在' });
+        try {
+            const r = await scriptEngine.runScript({
+                sessionKey,
+                scope,
+                character: character || theatreSessions.get(sessionKey)?.character || '',
+                script,
+                buttonName: body.buttonName,
+                eventType: body.eventType,
+                args: body.args || {},
+            });
+            res.json({ success: r.ok, ...r });
+        } catch (e) {
+            res.status(500).json({ success: false, error: e.message, logs: [] });
+        }
+    });
+
+    /** 版本列表 */
+    app.get('/api/agent-theatre/scripts/:id/versions', (req, res) => {
+        const { scope, character } = scriptCtx(req);
+        res.json({ success: true, versions: scriptStore.getVersions(scope, character, req.params.id) });
+    });
+
+    /** 回滚到某版本：body: { ts } */
+    app.post('/api/agent-theatre/scripts/:id/restore', (req, res) => {
+        const { scope, character } = scriptCtx(req);
+        const body = req.body || {};
+        const script = scriptStore.restoreVersion(scope, character, req.params.id, body.ts);
+        if (!script) return res.status(404).json({ success: false, error: '版本不存在' });
+        res.json({ success: true, script });
+    });
+
+    /** 手动导入：body: { scope?, character?, scripts: ScriptTree[] } 或 { name, content } */
+    app.post('/api/agent-theatre/scripts/import', (req, res) => {
+        const { scope, character } = scriptCtx(req);
+        const body = req.body || {};
+        let list = [];
+        if (Array.isArray(body.scripts)) list = body.scripts;
+        else if (body.name !== undefined && body.content !== undefined) {
+            list = [{ name: body.name, content: body.content, info: body.info || '' }];
+        }
+        const r = scriptStore.importScripts(scope, character, list);
+        res.json({ success: true, ...r });
+    });
+
+    /** 从角色卡同步导入 tavern_helper 脚本与变量（角色加载时前端可手动触发） */
+    app.post('/api/agent-theatre/scripts/sync', async (req, res) => {
+        const sessionKey = _theatreSessionKey(req);
+        const name = req.body?.character || theatreSessions.get(sessionKey)?.character || '';
+        if (!name) return res.json({ success: false, error: '未指定角色卡' });
+        try {
+            const { loadCharacterCardByName } = await import('./runtime/card-loader.js');
+            const runtimeCfg = configManager.get('runtime') || {};
+            const charDir = path.resolve(repoRoot, runtimeCfg.charactersDir || 'assets/characters');
+            const card = loadCharacterCardByName(charDir, name);
+            if (!card) return res.json({ success: false, error: `角色卡「${name}」未找到` });
+            const { scripts } = extractCardScripts(card);
+            if (scripts.length) scriptStore.importScripts('character', name, scripts, { autoDisable: true });
+            const { variables } = extractCardScripts(card);
+            if (variables && Object.keys(variables).length) scriptStore.importVariables(name, variables);
+            res.json({ success: true, imported: scripts.length, variablesImported: !!Object.keys(variables).length });
+        } catch (e) {
+            res.json({ success: false, error: e.message });
+        }
     });
 
     /**
@@ -1397,6 +1878,10 @@ export function registerAgentApi(app, deps) {
             if (!file) return res.status(400).json({ success: false, error: '缺少 file 参数' });
             const chat = readChat(activeChatDataRoot, file);
             if (!chat) return res.status(404).json({ success: false, error: '聊天记录不存在或路径非法' });
+            // 补发消息稳定 ID（旧存档无 id），供前端楼层 userId/pageIds 对齐
+            if (Array.isArray(chat.messages)) {
+                chat.messages = chat.messages.map(m => ensureMsgId(m, m.role));
+            }
             res.json({ success: true, chat });
         } catch (e) {
             res.status(500).json({ success: false, error: e.message });
@@ -1435,6 +1920,8 @@ export function registerAgentApi(app, deps) {
                 messages,
                 userName: body.userName || sess?.userName || 'User',
                 prevFile: (cs?.chatFile) || body.prevFile || undefined,
+                name: typeof body.name === 'string' ? body.name : undefined,
+                description: typeof body.description === 'string' ? body.description : undefined,
             });
             if (result.ok && cs) {
                 cs.chatFile = result.file;
@@ -1467,7 +1954,7 @@ export function registerAgentApi(app, deps) {
             const cs = charState(sess, loadedChar);
             cs.history = chat.messages
                 .filter((m) => m.role !== 'system')
-                .map((m) => ({ role: m.role, content: m.content }));
+                .map((m) => ensureMsgId({ role: m.role, content: m.content }, m.role));
             cs.turn = Math.floor(cs.history.length / 2);
             if (chat.character) sess.character = chat.character; // 角色卡名同步
             cs.chatFile = file;
@@ -1495,6 +1982,50 @@ export function registerAgentApi(app, deps) {
             const files = Array.isArray(req.body && req.body.files) ? req.body.files : [];
             if (files.length === 0) return res.status(400).json({ success: false, error: '缺少 files 数组' });
             const result = deleteChats(activeChatDataRoot, files);
+            // 存档操作日志（支持问题追溯与数据恢复）
+            _logArchiveOp('delete', files, result);
+            res.json({ success: true, ...result });
+        } catch (e) {
+            res.status(500).json({ success: false, error: e.message });
+        }
+    });
+
+    /**
+     * POST /api/agent-theatre/chats/archive-create - 为指定角色卡新建空存档（多存档管理）。
+     * body: { character, name?, description? }
+     * 只创建 <dataRoot>/chats/<角色>/ 下的存档文件，与角色卡基础数据完全隔离。
+     */
+    app.post('/api/agent-theatre/chats/archive-create', (req, res) => {
+        try {
+            const body = req.body || {};
+            const character = String(body.character || '').trim();
+            const result = createArchive(activeChatDataRoot, {
+                character,
+                name: typeof body.name === 'string' ? body.name : '',
+                description: typeof body.description === 'string' ? body.description : '',
+            });
+            if (!result.ok) return res.status(500).json({ success: false, error: result.error || '创建存档失败' });
+            _logArchiveOp('create', [result.file], { ok: true });
+            res.json({ success: true, ...result });
+        } catch (e) {
+            res.status(500).json({ success: false, error: e.message });
+        }
+    });
+
+    /** POST /api/agent-theatre/chats/archive-meta - 更新存档元数据（名称/描述） */
+    app.post('/api/agent-theatre/chats/archive-meta', (req, res) => {
+        try {
+            const body = req.body || {};
+            const file = body.file;
+            if (!file || typeof file !== 'string') {
+                return res.status(400).json({ success: false, error: '缺少 file 参数' });
+            }
+            const result = updateArchiveMeta(activeChatDataRoot, file, {
+                name: typeof body.name === 'string' ? body.name : undefined,
+                description: typeof body.description === 'string' ? body.description : undefined,
+            });
+            if (!result.ok) return res.status(500).json({ success: false, error: result.error || '更新存档元数据失败' });
+            _logArchiveOp('meta', [file], { ok: true });
             res.json({ success: true, ...result });
         } catch (e) {
             res.status(500).json({ success: false, error: e.message });
@@ -1557,14 +2088,20 @@ export function registerAgentApi(app, deps) {
             if (!sess) return res.status(404).json({ success: false, error: '会话不存在' });
             const character = req.body.character || sess.character || '';
             const cs = charState(sess, character);
-            const idx = Number(req.body.messageIndex);
+            const { messageId, messageIndex } = req.body;
             const newContent = req.body.newContent;
-            if (!Number.isInteger(idx) || idx < 0 || idx >= cs.history.length)
-                return res.status(400).json({ success: false, error: '消息索引越界' });
+            const located = locateMessage(cs, messageId, messageIndex);
+            if (!located) {
+                // messageId 定位失败 = 目标已被截断/移除；索引越界附带当前长度便于前端诊断
+                const hint = (typeof messageId === 'string' && messageId.length > 0)
+                    ? '消息不存在或已被移除（历史截断/清空）'
+                    : `消息索引越界（history=${cs.history.length}）`;
+                return res.status(messageId ? 404 : 400).json({ success: false, error: hint });
+            }
             if (typeof newContent !== 'string' || newContent.length === 0)
                 return res.status(400).json({ success: false, error: '新内容不能为空' });
 
-            const msg = cs.history[idx];
+            const msg = located.msg;
             const originalContent = msg.content;
             // 记录编辑历史
             if (!msg.editHistory) msg.editHistory = [];
@@ -1579,7 +2116,7 @@ export function registerAgentApi(app, deps) {
 
             res.json({
                 success: true,
-                message: { role: msg.role, content: msg.content, editedAt: msg.editedAt },
+                message: { id: msg.id, role: msg.role, content: msg.content, editedAt: msg.editedAt },
                 editCount: msg.editHistory.length,
             });
         } catch (e) {
@@ -1589,8 +2126,9 @@ export function registerAgentApi(app, deps) {
 
     /**
      * POST /api/agent-theatre/messages/delete - 删除单条消息。
-     * body: { session?, character?, messageIndex }
+     * body: { session?, character?, messageIndex 或 messageId }
      * 从 cs.history 中移除指定消息，标记 dirty 触发自动保存。
+     * messageId 优先：抗历史截断/并发导致的索引漂移（越界报错的根因修复）。
      */
     app.post('/api/agent-theatre/messages/delete', (req, res) => {
         try {
@@ -1599,17 +2137,22 @@ export function registerAgentApi(app, deps) {
             if (!sess) return res.status(404).json({ success: false, error: '会话不存在' });
             const character = req.body.character || sess.character || '';
             const cs = charState(sess, character);
-            const idx = Number(req.body.messageIndex);
-            if (!Number.isInteger(idx) || idx < 0 || idx >= cs.history.length)
-                return res.status(400).json({ success: false, error: '消息索引越界' });
+            const { messageId, messageIndex } = req.body;
+            const located = locateMessage(cs, messageId, messageIndex);
+            if (!located) {
+                const hint = (typeof messageId === 'string' && messageId.length > 0)
+                    ? '消息不存在或已被移除（历史截断/清空）'
+                    : `消息索引越界（history=${cs.history.length}）`;
+                return res.status(messageId ? 404 : 400).json({ success: false, error: hint });
+            }
 
-            const deleted = cs.history.splice(idx, 1)[0];
+            const deleted = cs.history.splice(located.index, 1)[0];
             cs.dirty = true;
             theatreSessions.set(sessionKey, sess);
 
             res.json({
                 success: true,
-                deleted: { role: deleted.role },
+                deleted: { id: deleted.id, role: deleted.role },
                 remainingCount: cs.history.length,
             });
         } catch (e) {
@@ -1619,7 +2162,7 @@ export function registerAgentApi(app, deps) {
 
     /**
      * GET /api/agent-theatre/messages/edit-history - 查询消息编辑历史。
-     * query: ?session=&character=&messageIndex=
+     * query: ?session=&character=&messageIndex= 或 ?messageId=
      */
     app.get('/api/agent-theatre/messages/edit-history', (req, res) => {
         try {
@@ -1628,11 +2171,10 @@ export function registerAgentApi(app, deps) {
             if (!sess) return res.json({ success: true, editHistory: [] });
             const character = (req.query.character || sess.character || '');
             const cs = charState(sess, character);
-            const idx = Number(req.query.messageIndex);
-            if (!Number.isInteger(idx) || idx < 0 || idx >= cs.history.length)
-                return res.status(400).json({ success: false, error: '消息索引越界' });
+            const located = locateMessage(cs, req.query.messageId, req.query.messageIndex);
+            if (!located) return res.json({ success: true, editHistory: [], notFound: true });
 
-            const msg = cs.history[idx];
+            const msg = located.msg;
             res.json({
                 success: true,
                 editHistory: msg.editHistory || [],

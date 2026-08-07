@@ -381,3 +381,142 @@ describe('连续编辑/删除操作稳定性', () => {
         });
     });
 });
+
+describe('消息 ID 定位（删除越界修复回归）', () => {
+    test('历史截断后：按 messageId 删除仍可精确定位（索引方式越界但 ID 不越界）', async () => {
+        await withServer(makeDeps(), async (base) => {
+            // 建立 3 轮对话 = 6 条消息 [u0,a0,u1,a1,u2,a2]
+            for (let i = 0; i < 3; i++) {
+                await sendInput(base, `截断前第${i + 1}轮`, 'native:default', '角色L');
+            }
+            // 服务端截断到前 4 条（模拟长对话后服务端 slice(-maxHistory) 的行为）
+            const truncResp = await fetch(`${base}/api/agent-theatre/history-truncate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session: 'native:default', character: '角色L', keepMessages: 4 }),
+            });
+            assert.strictEqual(truncResp.status, 200);
+            const truncBody = await truncResp.json();
+            assert.strictEqual(truncBody.keepMessages, 4);
+
+            // 旧方式（索引）删除已截断范围外的消息 → 400 越界（错误信息附带当前历史长度，便于诊断）
+            const idxResp = await fetch(`${base}/api/agent-theatre/messages/delete`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session: 'native:default', character: '角色L', messageIndex: 5 }),
+            });
+            assert.strictEqual(idxResp.status, 400);
+            const idxBody = await idxResp.json();
+            assert.ok(idxBody.error.includes('越界'), '越界错误应包含提示');
+            assert.ok(idxBody.error.includes('history=4'), '越界错误应附带当前历史长度');
+
+            // 通过 /state 获取仍在历史中的消息 ID，按 messageId 删除 → 200
+            const stateResp = await fetch(`${base}/api/agent-theatre/state?session=native:default`);
+            const stateBody = await stateResp.json();
+            assert.ok(Array.isArray(stateBody.history) && stateBody.history.length === 4, 'state 应返回截断后的历史快照');
+            const targetId = stateBody.history[0].id;
+            assert.ok(targetId, '历史消息应带稳定 id');
+
+            const idResp = await fetch(`${base}/api/agent-theatre/messages/delete`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session: 'native:default', character: '角色L', messageId: targetId }),
+            });
+            assert.strictEqual(idResp.status, 200);
+            const idBody = await idResp.json();
+            assert.strictEqual(idBody.success, true);
+            assert.strictEqual(idBody.remainingCount, 3);
+        });
+    });
+
+    test('按 messageId 编辑：内容更新且编辑历史可追溯', async () => {
+        await withServer(makeDeps(), async (base) => {
+            // /input 响应应携带 assistantId
+            const inputResp = await fetch(`${base}/api/agent-theatre/input`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ input: '原始消息', session: 'native:default', character: '角色M', profile: 'default-rp' }),
+            });
+            const inputBody = await inputResp.json();
+            assert.strictEqual(inputResp.status, 200);
+            assert.ok(inputBody.assistantId, '/input 应返回 assistantId');
+
+            // 按 messageId 编辑 assistant 消息
+            const editResp = await fetch(`${base}/api/agent-theatre/messages/edit`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session: 'native:default', character: '角色M', messageId: inputBody.assistantId, newContent: '按ID编辑后的回复' }),
+            });
+            assert.strictEqual(editResp.status, 200);
+            const editBody = await editResp.json();
+            assert.strictEqual(editBody.message.id, inputBody.assistantId);
+            assert.strictEqual(editBody.message.content, '按ID编辑后的回复');
+
+            // 编辑历史可追溯（按 messageId 查询）
+            const histResp = await fetch(`${base}/api/agent-theatre/messages/edit-history?session=native:default&character=${encodeURIComponent('角色M')}&messageId=${encodeURIComponent(inputBody.assistantId)}`);
+            const histBody = await histResp.json();
+            assert.strictEqual(histBody.editHistory.length, 1);
+            assert.strictEqual(histBody.editHistory[0].originalContent, 'ok'); // mock run 返回 'ok'
+        });
+    });
+
+    test('messageId 不存在：删除返回 404（而非误删相邻消息或崩溃）', async () => {
+        await withServer(makeDeps(), async (base) => {
+            await sendInput(base, '测试', 'native:default', '角色N');
+            const resp = await fetch(`${base}/api/agent-theatre/messages/delete`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session: 'native:default', character: '角色N', messageId: 'u_nonexistent_1234' }),
+            });
+            assert.strictEqual(resp.status, 404);
+            const body = await resp.json();
+            assert.ok(body.error.includes('不存在'));
+        });
+    });
+
+    test('重复删除同一条消息（连点/并发场景）：第一次成功，第二次 404 而非越界', async () => {
+        await withServer(makeDeps(), async (base) => {
+            const inputResp = await fetch(`${base}/api/agent-theatre/input`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ input: '并发测试', session: 'native:default', character: '角色O', profile: 'default-rp', userMsgId: 'u_concurrent_test' }),
+            });
+            assert.strictEqual(inputResp.status, 200);
+
+            // 连续两次按同一 userMsgId 删除：第一次成功，第二次 404（消息已移除）
+            const del1 = await fetch(`${base}/api/agent-theatre/messages/delete`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session: 'native:default', character: '角色O', messageId: 'u_concurrent_test' }),
+            });
+            assert.strictEqual(del1.status, 200);
+
+            const del2 = await fetch(`${base}/api/agent-theatre/messages/delete`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session: 'native:default', character: '角色O', messageId: 'u_concurrent_test' }),
+            });
+            assert.strictEqual(del2.status, 404);
+            const del2Body = await del2.json();
+            assert.ok(del2Body.error.includes('不存在'));
+        });
+    });
+
+    test('前端 userMsgId 直达服务端：楼层 userId 与服务端历史 ID 对齐', async () => {
+        await withServer(makeDeps(), async (base) => {
+            const resp = await fetch(`${base}/api/agent-theatre/input`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ input: 'ID对齐', session: 'native:default', character: '角色P', profile: 'default-rp', userMsgId: 'u_align_42' }),
+            });
+            assert.strictEqual(resp.status, 200);
+            const body = await resp.json();
+            assert.strictEqual(body.userMsgId, 'u_align_42', '响应应回显 userMsgId');
+
+            const stateResp = await fetch(`${base}/api/agent-theatre/state?session=native:default`);
+            const stateBody = await stateResp.json();
+            const firstUser = stateBody.history.find(m => m.role === 'user');
+            assert.strictEqual(firstUser.id, 'u_align_42', '服务端 user 消息应采用前端生成的 userMsgId');
+        });
+    });
+});

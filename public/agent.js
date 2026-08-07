@@ -1188,7 +1188,6 @@
         connected: false,
         currentRunId: null,
         lastResult: null,
-        timelineEvents: [],
         profile: 'default-rp',
         session: 'native:default',
         character: '',
@@ -1529,7 +1528,7 @@
         var wrap = document.createElement('div');
         wrap.className = 'agent-chat-floor';
         wrap.setAttribute('data-floor-idx', String(floorIdx));
-        if (floor.userMsg) wrap.appendChild(createUserMsg(floor.userMsg, floorIdx));
+        if (floor.userMsg) wrap.appendChild(createUserMsg(floor.userMsg, floorIdx, floor.userId || null));
 
         // P8: 思考面板（用户消息之后、assistant 之前；有思维链/流程事件或运行中时插入）
         if ((floor.flow && floor.flow.length > 0) || floor.reasoning || floor.flowStatus === 'running') {
@@ -1542,7 +1541,10 @@
         if (showAssistant) {
             var isDraft = !!streamingFlag && floor.draftPage != null;
             var content = isDraft ? (floor.draftPage || '') : currentFloorText(floor);
-            var a = createAssistantMsg(content, streamingFlag, floorIdx);
+            // 当前页对应的服务端消息稳定 ID（草稿页未 commit 时无 id）
+            var pageIdx = Math.max(0, ((floor.currentPage || 1) - 1));
+            var pageId = (!isDraft && Array.isArray(floor.pageIds)) ? (floor.pageIds[pageIdx] || null) : null;
+            var a = createAssistantMsg(content, streamingFlag, floorIdx, pageId);
             var needThinking = !floor.failed && ((isDraft && !floor.draftPage) ||
                 (!isDraft && !floor.draftPage && floor.pages.length === 0 && floor.userMsg));
             // P8: 不再创建「▍ Agent 思考中...」光标（思考状态已上移至思考面板头部徽标），
@@ -1705,12 +1707,17 @@
             }
             floor.failed = false;
             floor.currentPage = floor.pages.length;
+            // 记录本轮 assistant 消息稳定 ID（对应最新页，编辑/删除定位用）
+            if (payload.assistantId) {
+                if (!floor.pageIds) floor.pageIds = [];
+                floor.pageIds[floor.pages.length - 1] = payload.assistantId;
+            }
             updateThoughtStatus(floorIdx, 'completed'); // P8: agent_result 兜底置 completed
             streaming.pendingFloorIdx = null;
             updateFloorDom(floorIdx, false);
         } else if (text) {
             if (theatre.floors.length === 0) {
-                theatre.floors.push({ userMsg: '', pages: [text], currentPage: 1 });
+                theatre.floors.push({ userMsg: '', pages: [text], pageIds: payload.assistantId ? [payload.assistantId] : [], currentPage: 1 });
             } else {
                 var lf = theatre.floors[theatre.floors.length - 1];
                 if (lf.finalized) {
@@ -1725,6 +1732,11 @@
                     lf.pages.push(text);
                     lf.currentPage = lf.pages.length;
                 }
+                // 记录本轮 assistant 消息稳定 ID（对应最新页）
+                if (payload.assistantId) {
+                    if (!lf.pageIds) lf.pageIds = [];
+                    lf.pageIds[lf.pages.length - 1] = payload.assistantId;
+                }
                 lf.draftPage = null;
             }
             updateThoughtStatus(theatre.floors.length - 1, 'completed'); // P8: agent_result 兜底置 completed
@@ -1732,7 +1744,14 @@
         }
         clearStreamingPreview();
         renderOptions(payload.result ? payload.result.options : []);
-        if (payload.result && payload.result.state) renderStatePanel(payload.result.state);
+        // R1: 状态面板整合 MVU——优先渲染服务端变量广播（stat_data + 变量变更历史），
+        //     无变量数据时回退传统 result.state；编年史为服务端同步（子代理实时生成）
+        if (payload.variables && payload.variables.stat_data && Object.keys(payload.variables.stat_data).length > 0) {
+            renderMvuStatePanel(payload.variables, payload.mvuHistory);
+        } else if (payload.result && payload.result.state) {
+            renderStatePanel(payload.result.state);
+        }
+        renderChroniclePanel(payload.chronicle);
         var turnInfo = $('agent_theatre_turn_info');
         if (turnInfo && payload.result && payload.result.meta) {
             turnInfo.textContent = '轮次 ' + (payload.result.meta.turn || '?') +
@@ -1743,7 +1762,6 @@
         if (text) scheduleAutoSave();
         // P3: 持久化楼层到 localStorage（修复刷新后历史丢失）
         saveChatHistory();
-        if (payload.runId) fetchTimeline(payload.runId);
         // ST 兼容（P0）：通知兼容层本轮结果已落地（前端卡/状态栏/MVU 变量增强）
         fireCompatHook('agentResult', payload);
     }
@@ -1777,8 +1795,6 @@
 
     function handleAgentEvent(event) {
         if (!event) return;
-        theatre.timelineEvents.push(event);
-        appendTimelineItem(event);
         if ($('agent_theatre_show_events') && $('agent_theatre_show_events').checked) {
             appendInlineEvent(event);
         }
@@ -1809,14 +1825,16 @@
         if (optCount) optCount.textContent = '0';
         var optNew = $('agent_options_panel_new');
         if (optNew) optNew.style.display = 'none';
-        var tlEl = $('agent_theatre_timeline');
-        if (tlEl) tlEl.innerHTML = '<div class="gateway-empty-hint">（事件流将在此显示）</div>';
+        // R1: 时间线已删除（与编年史系统冲突）；状态面板 / 编年史面板复位为占位提示
+        var spEl = $('agent_theatre_state_panel');
+        if (spEl) spEl.innerHTML = '<StatusPlaceHolderImpl/>';
+        var chEl = $('agent_theatre_chronicle');
+        if (chEl) chEl.innerHTML = '<div class="gateway-empty-hint">（编年史由服务端子代理实时生成）</div>';
         // P8: 工具调用面板清空内联事件 + 计数归零（面板折叠状态由 uiPrefs 独立控制，保持不变）
         var inlineEl = $('agent_theatre_events_inline');
         if (inlineEl) inlineEl.innerHTML = '';
         var evCount = $('agent_events_panel_count');
         if (evCount) evCount.textContent = '0';
-        theatre.timelineEvents = [];
         clearStreamingPreview();
     }
 
@@ -1906,7 +1924,94 @@
         el.innerHTML = html || '<div class="gateway-empty-hint">（状态为空）</div>';
     }
 
-    // ==================== Agent 剧场：时间线 ====================
+    // R1: 状态面板整合 MVU——渲染服务端「变量处理子代理」广播的 stat_data，
+    // 渲染位置由 agent.html 中的 <StatusPlaceHolderImpl/> 占位符确定（ST 兼容）。
+    // 变量变更历史（mvuHistory）同步可视化，用户可查看每轮由谁（子代理/标签）应用了什么命令。
+    function renderMvuStatePanel(variables, mvuHistory) {
+        var el = $('agent_theatre_state_panel');
+        if (!el) return;
+        var stat = (variables && variables.stat_data) || {};
+        var html = '';
+        if (!stat || Object.keys(stat).length === 0) {
+            html += '<div class="gateway-empty-hint">（无 MVU 变量数据，首次 run 后自动从角色卡初始化）</div>';
+        } else {
+            var rows = flattenStateVars(stat);
+            html += '<div class="gateway-mvu-grid">';
+            for (var i = 0; i < rows.length; i++) {
+                html += '<div class="gateway-mvu-row"><span class="gateway-mvu-key">' + esc(rows[i].key) + '</span>' +
+                    '<span class="gateway-mvu-val">' + esc(rows[i].value) + '</span></div>';
+            }
+            html += '</div>';
+            if (variables && variables.initSource) {
+                html += '<div class="gateway-mvu-meta">🎴 初始变量：' + esc(variables.initSource) + '</div>';
+            }
+            if (variables && variables.lastUpdate) {
+                var via = variables.lastUpdate.via === 'processor'
+                    ? '🤖 变量子代理'
+                    : '🏷 标签解析（兼容路径）';
+                html += '<div class="gateway-mvu-meta">' + via + ' · 更新 ' + esc(variables.lastUpdate.count) + ' 项</div>';
+            }
+        }
+        // 变量变更历史（最近 10 轮）
+        if (mvuHistory && mvuHistory.length) {
+            html += '<div class="gateway-mvu-hist"><div class="gateway-mvu-hist-title">📜 变量变更记录</div>';
+            for (var j = 0; j < mvuHistory.length; j++) {
+                var h = mvuHistory[j];
+                var src = h.via === 'processor' ? '🤖 子代理' : '🏷 标签';
+                var cmds = (h.commands || []).map(function (c) {
+                    return esc((c.op || 'set') + ' ' + (c.path || c.to || '?'));
+                }).join(' · ');
+                html += '<div class="gateway-mvu-hist-item">' + src + ' · 轮' + (h.turn != null ? esc(h.turn) : '?') +
+                    (cmds ? '：' + cmds : '') + '</div>';
+            }
+            html += '</div>';
+        }
+        el.innerHTML = html;
+    }
+
+    /** 扁平化嵌套变量为 key/value 行（MVU 状态面板/变量查看器共用） */
+    function flattenStateVars(obj, prefix, out) {
+        out = out || [];
+        if (obj === null || typeof obj !== 'object') {
+            out.push({ key: prefix || '(值)', value: String(obj) });
+            return out;
+        }
+        if (Array.isArray(obj)) {
+            obj.forEach(function (v, i) { flattenStateVars(v, (prefix || '') + '[' + i + ']', out); });
+            return out;
+        }
+        Object.keys(obj).forEach(function (k) {
+            var v = obj[k];
+            if (v !== null && typeof v === 'object') {
+                flattenStateVars(v, prefix ? prefix + '.' + k : k, out);
+            } else {
+                out.push({ key: prefix ? prefix + '.' + k : k, value: typeof v === 'string' ? v : JSON.stringify(v) });
+            }
+        });
+        return out;
+    }
+
+    /** 编年史面板：渲染服务端同步的 chronicle（子代理每轮实时生成，非本地 <sum> 解析） */
+    function renderChroniclePanel(chronicle) {
+        var el = $('agent_theatre_chronicle');
+        if (!el) return;
+        if (!chronicle || !chronicle.length) {
+            el.innerHTML = '<div class="gateway-empty-hint">（编年史由服务端子代理每轮实时生成）</div>';
+            return;
+        }
+        var html = '';
+        for (var i = 0; i < chronicle.length; i++) {
+            var c = chronicle[i];
+            html += '<div class="gateway-chronicle-item"><span class="gateway-chronicle-num">#' +
+                (c.entryNum != null ? esc(c.entryNum) : String(i + 1)) + '</span>' +
+                '<span class="gateway-chronicle-text">' + esc(c.content) + '</span></div>';
+        }
+        el.innerHTML = html;
+    }
+
+    // ==================== Agent 剧场：事件面板（内联） ====================
+    // R1: 时间线面板已删除（与编年史系统功能冲突）；SSE agent_event 仅流向
+    // 工具调用面板（appendInlineEvent）与楼层思考面板决策链（appendThoughtStep）。
 
     var EVENT_META = {
         tool_call: { icon: '🔧', label: '工具调用', cls: 'tool' },
@@ -1918,30 +2023,6 @@
         commit: { icon: '✅', label: '提交', cls: 'commit' },
         error: { icon: '❌', label: '错误', cls: 'error' },
     };
-
-    function appendTimelineItem(event) {
-        var el = $('agent_theatre_timeline');
-        if (!el) return;
-        var empty = el.querySelector('.gateway-empty-hint');
-        if (empty) empty.remove();
-        var meta = EVENT_META[event.type] || { icon: '•', label: event.type, cls: 'other' };
-        var item = document.createElement('div');
-        item.className = 'gateway-theatre-tl-item gateway-theatre-tl-' + meta.cls;
-        var detail = '';
-        if (event.payload) {
-            if (event.payload.tool) detail = event.payload.tool;
-            else if (event.payload.agent) detail = event.payload.agent;
-            else if (event.payload.label) detail = event.payload.label;
-            else if (event.payload.promoted) detail = 'promote ' + event.payload.promoted.length + ' 项';
-        }
-        var ts = event.timestamp ? new Date(event.timestamp).toLocaleTimeString() : '';
-        item.innerHTML = '<span class="gateway-theatre-tl-icon">' + meta.icon + '</span>' +
-            '<span class="gateway-theatre-tl-label">' + esc(meta.label) + '</span>' +
-            (detail ? '<span class="gateway-theatre-tl-detail">' + esc(detail) + '</span>' : '') +
-            '<span class="gateway-theatre-tl-ts">' + esc(ts) + '</span>';
-        el.appendChild(item);
-        el.scrollTop = el.scrollHeight;
-    }
 
     function appendInlineEvent(event) {
         var el = $('agent_theatre_events_inline');
@@ -2228,21 +2309,6 @@
         }
     }
 
-    function fetchTimeline(runId) {
-        if (!runId) return;
-        agentFetch('/api/agent-theatre/events/' + encodeURIComponent(runId) + '?limit=200')
-            .then(function (data) {
-                if (!data || !data.success || !data.events) return;
-                var el = $('agent_theatre_timeline');
-                if (el) el.innerHTML = '';
-                theatre.timelineEvents = [];
-                for (var i = 0; i < data.events.length; i++) {
-                    appendTimelineItem(data.events[i]);
-                }
-            })
-            .catch(function (e) { console.warn('[agent-frontend] 拉取时间线失败', e); });
-    }
-
     // ==================== Agent 剧场：发送 ====================
 
     function sendInput(text, callbackId, options) {
@@ -2269,8 +2335,12 @@
             //   新输入：创建新楼层（用户消息），流式/结果写入该楼层；
             //   重跑：不创建新楼层，在最后一楼层开启「草稿页」，完成后 commit 为新页
             if (text && !options.rerun) {
+                // 消息稳定 ID：前端生成用户消息 ID 随请求带给服务端（/input push 时采用），
+                // 使楼层 userId 与服务端 user 消息 id 对齐，编辑/删除可精确定位。
+                var newUserId = makeClientMsgId('u');
+                body.userMsgId = newUserId;
                 theatre.floors.push({
-                    userMsg: text, pages: [], currentPage: 0,
+                    userMsg: text, userId: newUserId, pages: [], pageIds: [], currentPage: 0,
                     flow: [], flowStatus: 'running', flowCollapsed: uiPrefs.thoughtCollapsed, // P8: 思考面板折叠跟随全局偏好
                     reasoning: '', // P8: 思维链缓存（SSE reasoning 累积，重建时恢复）
                 });
@@ -2279,6 +2349,11 @@
                 saveChatHistory(); // 持久化用户消息（刷新不丢）
             } else if (options.rerun && theatre.floors.length > 0) {
                 var f = theatre.floors[theatre.floors.length - 1];
+                // 重跑：服务端会 pop 旧 user+assistant 对并 push 新对（user 消息带新 id），
+                // 前端同步生成新 userMsgId 并更新楼层 userId，保证两端 ID 对齐。
+                var rerunUserId = makeClientMsgId('u');
+                body.userMsgId = rerunUserId;
+                f.userId = rerunUserId;
                 f.draftPage = '';
                 f.failed = false;
                 f.flow = [];              // P8: 重跑清空上一轮决策链
@@ -2327,7 +2402,7 @@
             }
             // handleAgentResult 会被 SSE 推送触发；无 SSE 时兜底渲染
             if (!theatre.connected) {
-                handleAgentResult({ runId: data.runId, result: data.result, text: data.text });
+                handleAgentResult({ runId: data.runId, result: data.result, text: data.text, assistantId: data.assistantId, userMsgId: data.userMsgId });
             }
         }).catch(function (e) {
             rollbackPendingSend();
@@ -2410,9 +2485,11 @@
      * streamingFlag=true 时气泡带 .streaming class 并在末尾追加流式光标 ▍
      * P3: floorIdx 传入时，气泡内追加楼层翻页控件（多页回复时显示 "1/3" + ‹ ›）
      */
-    function createAssistantMsg(text, streamingFlag, floorIdx) {
+    function createAssistantMsg(text, streamingFlag, floorIdx, msgId) {
         var msg = document.createElement('div');
         msg.className = 'agent-chat-msg assistant' + (streamingFlag ? ' streaming' : '');
+        if (floorIdx != null) msg.setAttribute('data-floor-idx', String(floorIdx));
+        if (msgId) msg.setAttribute('data-msg-id', msgId);
         var avatar = document.createElement('div');
         avatar.className = 'agent-chat-avatar';
         applyAvatar(avatar, theatre.character || ''); // P6: 角色卡为 PNG 时显示其头像，否则默认图标
@@ -2441,12 +2518,14 @@
             editBtn.innerHTML = '<i class="fa-solid fa-pen"></i>';
             editBtn.setAttribute('data-edit', 'assistant');
             if (floorIdx != null) editBtn.setAttribute('data-floor-idx', String(floorIdx));
+            if (msgId) editBtn.setAttribute('data-msg-id', msgId);
             var delBtn = document.createElement('button');
             delBtn.className = 'agent-chat-action-btn agent-chat-delete';
             delBtn.title = '删除';
             delBtn.innerHTML = '<i class="fa-solid fa-trash"></i>';
             delBtn.setAttribute('data-delete', 'assistant');
             if (floorIdx != null) delBtn.setAttribute('data-floor-idx', String(floorIdx));
+            if (msgId) delBtn.setAttribute('data-msg-id', msgId);
             actions.appendChild(editBtn);
             actions.appendChild(delBtn);
             bubble.appendChild(actions);
@@ -2499,6 +2578,43 @@
             if (text) h.push({ role: 'assistant', content: text });
         }
         return h;
+    }
+
+    /** 生成客户端消息稳定 ID（与服务端 makeMsgId 同格式，跨端对齐定位用） */
+    function makeClientMsgId(prefix) {
+        return (prefix || 'm') + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+    }
+
+    /** 删除请求重入保护（防快速连点导致索引/ID 漂移后重复删除） */
+    var msgDeleting = false;
+
+    /** 编辑/删除定位失败（索引越界/消息不存在）时，从服务端拉取权威历史重建楼层模型，
+     *  消除"楼层数 > 服务端历史数"（截断）或流式/清空导致的漂移，后续操作基于对齐后的模型。 */
+    function rebuildFloorsFromServer() {
+        var session = theatre.session || 'native:default';
+        agentFetch('/api/agent-theatre/state?session=' + encodeURIComponent(session))
+            .then(function (data) {
+                if (!data || !data.success || !data.active || !Array.isArray(data.history)) return;
+                var floors = [];
+                var cur = null;
+                for (var i = 0; i < data.history.length; i++) {
+                    var item = data.history[i];
+                    if (!item || !item.role || !item.content) continue;
+                    if (item.role === 'user') {
+                        cur = { userMsg: item.content, userId: item.id || null, pages: [], pageIds: [], currentPage: 0 };
+                        floors.push(cur);
+                    } else if (item.role === 'assistant') {
+                        if (!cur) { cur = { userMsg: '', userId: null, pages: [], pageIds: [], currentPage: 0 }; floors.push(cur); }
+                        cur.pages.push(item.content);
+                        cur.pageIds.push(item.id || null);
+                        cur.currentPage = cur.pages.length;
+                    }
+                }
+                theatre.floors = floors;
+                renderFloors();
+                showToast('warning', '界面已与服务端历史重新同步，请重试操作');
+            })
+            .catch(function (e) { console.warn('[agent-frontend] 历史对齐失败', e); });
     }
 
     /** 查找指定楼层+角色的消息在 history 中的索引 */
@@ -2588,7 +2704,7 @@
         if (retry) retry.style.display = '';
     }
 
-    /** 保存编辑 */
+    /** 保存编辑（优先按 messageId 定位；无 id 时回退索引推算） */
     function saveEdit(floorIdx, role) {
         var wrap = document.querySelector('.agent-chat-floor[data-floor-idx="' + floorIdx + '"]');
         if (!wrap) return;
@@ -2600,16 +2716,29 @@
         var newContent = textarea.value.trim();
         if (!newContent) { showToast('warning', '内容不能为空'); return; }
 
-        var msgIndex = findMessageIndex(floorIdx, role);
-        if (msgIndex < 0) { showToast('error', '无法定位消息'); return; }
+        // 优先使用消息稳定 ID（抗索引漂移）；旧楼层/旧存档无 id 时回退索引推算
+        var msgId = msgEl.getAttribute('data-msg-id') || '';
+        var msgIndex = -1;
+        if (!msgId) {
+            msgIndex = findMessageIndex(floorIdx, role);
+            if (msgIndex < 0) { showToast('error', '无法定位消息'); return; }
+        }
 
         var session = theatre.session || 'native:default';
         var character = theatre.character || '';
+        var body = { session: session, character: character, newContent: newContent };
+        if (msgId) body.messageId = msgId;
+        else body.messageIndex = msgIndex;
         agentFetch('/api/agent-theatre/messages/edit', {
             method: 'POST',
-            body: JSON.stringify({ session: session, character: character, messageIndex: msgIndex, newContent: newContent }),
+            body: JSON.stringify(body),
         }).then(function (data) {
-            if (!data.success) { showToast('error', '编辑失败: ' + (data.error || '')); return; }
+            if (!data.success) {
+                showToast('error', '编辑失败: ' + (data.error || ''));
+                var err = data.error || '';
+                if (err.indexOf('越界') >= 0 || err.indexOf('不存在') >= 0) rebuildFloorsFromServer();
+                return;
+            }
             // 更新本地楼层模型
             var floor = theatre.floors[floorIdx];
             if (!floor) return;
@@ -2637,33 +2766,56 @@
         });
     }
 
-    /** 删除消息 */
-    function deleteMessage(floorIdx, role) {
-        var msgIndex = findMessageIndex(floorIdx, role);
-        if (msgIndex < 0) { showToast('error', '无法定位消息'); return; }
+    /** 删除消息（优先按 messageId 定位；无 id 时回退索引推算） */
+    function deleteMessage(floorIdx, role, msgId) {
+        if (msgDeleting) { showToast('info', '删除处理中，请稍候'); return; }
+        var msgIndex = -1;
+        if (!msgId) {
+            msgIndex = findMessageIndex(floorIdx, role);
+            if (msgIndex < 0) { showToast('error', '无法定位消息'); return; }
+        }
 
         agentConfirm('确定删除这条' + (role === 'user' ? '用户' : 'AI') + '消息吗？删除后将从上下文中移除。', { danger: true }).then(function (ok) {
             if (!ok) return;
+            msgDeleting = true;
             var session = theatre.session || 'native:default';
             var character = theatre.character || '';
+            var body = { session: session, character: character };
+            if (msgId) body.messageId = msgId;
+            else body.messageIndex = msgIndex;
             agentFetch('/api/agent-theatre/messages/delete', {
                 method: 'POST',
-                body: JSON.stringify({ session: session, character: character, messageIndex: msgIndex }),
+                body: JSON.stringify(body),
             }).then(function (data) {
-                if (!data.success) { showToast('error', '删除失败: ' + (data.error || '')); return; }
+                msgDeleting = false;
+                if (!data.success) {
+                    showToast('error', '删除失败: ' + (data.error || ''));
+                    // 索引越界/消息不存在 = 楼层与服务端历史不同步（截断/流式/并发），重新对齐
+                    var err = data.error || '';
+                    if (err.indexOf('越界') >= 0 || err.indexOf('不存在') >= 0) rebuildFloorsFromServer();
+                    return;
+                }
                 // 更新本地楼层模型
                 var floor = theatre.floors[floorIdx];
                 if (!floor) return;
                 if (role === 'user') {
                     floor.userMsg = '';
+                    floor.userId = null;
                 } else {
                     if (floor.pages.length > 0) {
                         // currentPage 为 1-based，splice 需要 0-based 索引
                         var delIdx = Math.max(0, (floor.currentPage || 1) - 1);
                         floor.pages.splice(delIdx, 1);
+                        if (Array.isArray(floor.pageIds)) floor.pageIds.splice(delIdx, 1);
                         if (floor.currentPage > floor.pages.length) floor.currentPage = Math.max(1, floor.pages.length);
                     }
                     floor.failed = false;
+                }
+                // 楼层已无任何内容（无用户消息、无 AI 回复页、无草稿）→ 从数组中整体移除。
+                // 否则空楼层对象残留在 theatre.floors 中，刷新后会被 localStorage 恢复重现。
+                var floorEmpty = !floor.userMsg && (!floor.pages || floor.pages.length === 0) && !floor.draftPage;
+                if (floorEmpty) {
+                    theatre.floors.splice(floorIdx, 1);
                 }
                 // 删除动画后重新渲染
                 var wrap = document.querySelector('.agent-chat-floor[data-floor-idx="' + floorIdx + '"]');
@@ -2680,18 +2832,36 @@
                     renderFloors();
                 }
                 showToast('success', '已删除');
-                scheduleAutoSave();
+                // 删除后立即持久化当前楼层状态（可能已为空数组），防止刷新页面后旧楼层重现
+                saveChatHistory();
+                if (!theatre.floors || theatre.floors.length === 0) {
+                    // 所有楼层已删除：清空关联的服务器存档并回到存档选择页
+                    var deletedFile = theatre.chatFile;
+                    theatre.chatFile = null;
+                    saveChatHistory(); // 落盘空状态（floors=[] 且 chatFile=null）
+                    maybeShowArchivePicker();
+                    if (deletedFile) {
+                        agentFetch('/api/agent-theatre/chats/delete', {
+                            method: 'POST',
+                            body: JSON.stringify({ files: [deletedFile] }),
+                        }).catch(function () { /* 服务器存档删除失败不阻断前端 */ });
+                    }
+                } else {
+                    scheduleAutoSave();
+                }
             }).catch(function (e) {
+                msgDeleting = false;
                 showToast('error', '删除请求失败: ' + e.message);
             });
         });
     }
 
     /** 创建用户消息 DOM（楼层渲染复用） */
-    function createUserMsg(text, floorIdx) {
+    function createUserMsg(text, floorIdx, msgId) {
         var msg = document.createElement('div');
         msg.className = 'agent-chat-msg user';
         if (floorIdx != null) msg.setAttribute('data-floor-idx', String(floorIdx));
+        if (msgId) msg.setAttribute('data-msg-id', msgId);
         var avatar = document.createElement('div');
         avatar.className = 'agent-chat-avatar';
         avatar.innerHTML = '<i class="fa-solid fa-user"></i>';
@@ -2710,12 +2880,14 @@
         editBtn.innerHTML = '<i class="fa-solid fa-pen"></i>';
         editBtn.setAttribute('data-edit', 'user');
         if (floorIdx != null) editBtn.setAttribute('data-floor-idx', String(floorIdx));
+        if (msgId) editBtn.setAttribute('data-msg-id', msgId);
         var delBtn = document.createElement('button');
         delBtn.className = 'agent-chat-action-btn agent-chat-delete';
         delBtn.title = '删除';
         delBtn.innerHTML = '<i class="fa-solid fa-trash"></i>';
         delBtn.setAttribute('data-delete', 'user');
         if (floorIdx != null) delBtn.setAttribute('data-floor-idx', String(floorIdx));
+        if (msgId) delBtn.setAttribute('data-msg-id', msgId);
         actions.appendChild(editBtn);
         actions.appendChild(delBtn);
         bubble.appendChild(actions);
@@ -2793,6 +2965,13 @@
                 theatre.worldbook = wbSel.value;
             }
 
+            // 复用角色列表填充存档选择页的角色卡下拉（多存档按角色卡过滤）
+            if (characters.length > 0) {
+                archivePicker.characters = characters.slice();
+                var archiveCharSel = $('agent_archive_char_select');
+                if (archiveCharSel) renderArchiveCharOptions(archiveCharSel, archivePicker.character);
+            }
+
             updateCharacterBadge();
             // P6: 初始角色卡确定后，刷新已渲染历史楼层/开场白预览头像（PNG 卡显示图片，JSON 卡默认）
             updateChatAvatars();
@@ -2810,13 +2989,15 @@
             if (!f) continue;
             history.push({
                 userMsg: f.userMsg || '',
+                userId: f.userId || null,
                 pages: (f.pages || []).slice(),
+                pageIds: Array.isArray(f.pageIds) ? f.pageIds.slice() : [],
                 currentPage: f.currentPage || (f.pages && f.pages.length ? 1 : 0),
             });
         }
         try {
             localStorage.setItem(chatHistoryKey(), JSON.stringify({
-                v: 2,
+                v: 3,
                 floors: history,
                 chatFile: theatre.chatFile || null, // 记录已保存到的服务器文件，刷新后继续沿用同一文件
             }));
@@ -2833,14 +3014,15 @@
             var item = history[i];
             if (!item || !item.role || !item.content) continue;
             if (item.role === 'user') {
-                cur = { userMsg: item.content, pages: [], currentPage: 0 };
+                cur = { userMsg: item.content, userId: item.id || null, pages: [], pageIds: [], currentPage: 0 };
                 floors.push(cur);
             } else if (item.role === 'assistant') {
                 if (!cur) {
-                    cur = { userMsg: '', pages: [], currentPage: 0 };
+                    cur = { userMsg: '', userId: null, pages: [], pageIds: [], currentPage: 0 };
                     floors.push(cur);
                 }
                 cur.pages.push(item.content);
+                cur.pageIds.push(item.id || null);
                 cur.currentPage = cur.pages.length;
             }
         }
@@ -2861,13 +3043,15 @@
         var parsed;
         try { parsed = JSON.parse(raw) || {}; } catch (_) { parsed = {}; }
         var floors = [];
-        if (parsed && parsed.v === 2 && Array.isArray(parsed.floors)) {
+        if (parsed && parsed.v && Array.isArray(parsed.floors)) {
             floors = parsed.floors;
             for (var i = 0; i < floors.length; i++) {
                 var f = floors[i];
                 if (!f || typeof f !== 'object') continue;
                 f.userMsg = f.userMsg || '';
+                f.userId = f.userId || null;
                 f.pages = Array.isArray(f.pages) ? f.pages : [];
+                f.pageIds = Array.isArray(f.pageIds) ? f.pageIds : [];
                 f.currentPage = f.currentPage || (f.pages.length > 0 ? 1 : 0);
                 f.draftPage = null; // 不恢复进行中的草稿
             }
@@ -3030,7 +3214,7 @@
                 showSaveHint('✅ 验证通过，Profile 可正常运行');
                 // 把试运行结果渲染到正文区
                 if (data.text) {
-                    handleAgentResult({ runId: data.runId, result: data.result, text: data.text });
+                    handleAgentResult({ runId: data.runId, result: data.result, text: data.text, assistantId: data.assistantId, userMsgId: data.userMsgId });
                 }
             } else {
                 showToast('error', '验证失败: ' + (data.error || '未知错误'));
@@ -3605,6 +3789,206 @@
             });
     }
 
+    // ==================== P3.5: 开场白管理（编辑 / 新建 / 删除） ====================
+
+    /** 开场白编辑状态：列表 + 内置条数 + 正在编辑的索引 */
+    var greetingMgr = {
+        list: [],           // 当前完整开场白字符串数组（与 theatre.greetings 同步）
+        builtinCount: 0,    // 角色卡内置条数（索引 >= builtinCount 为自定义模板）
+        editingIndex: -1,   // 正在编辑的列表索引（-1 = 未进入编辑态）
+    };
+
+    var GREETING_MAX_LEN = 5000;
+
+    /** 前端开场白校验：非空 + 长度上限；返回错误信息或 null */
+    function validateGreetingText(text) {
+        if (typeof text !== 'string') return '开场白内容必须为文本';
+        var t = text.trim();
+        if (!t) return '开场白内容不能为空';
+        if (t.length > GREETING_MAX_LEN) {
+            return '开场白内容过长（最多 ' + GREETING_MAX_LEN + ' 字符，当前 ' + t.length + '）';
+        }
+        return null;
+    }
+
+    /** 截断长文本用于列表预览 */
+    function truncateText(s, n) {
+        s = String(s == null ? '' : s);
+        n = n || 120;
+        return s.length > n ? s.slice(0, n) + '…' : s;
+    }
+
+    /** 打开开场白管理弹窗（要求已选择角色卡） */
+    function openGreetingManager() {
+        if (!theatre.character) {
+            agentToast.warning('请先在会话工具栏选择角色卡，再管理开场白');
+            return;
+        }
+        var session = theatre.session || 'native:default';
+        agentFetch('/api/agent-theatre/greetings?session=' + encodeURIComponent(session) +
+            '&character=' + encodeURIComponent(theatre.character))
+            .then(function (data) {
+                if (!data || !data.success) throw new Error((data && data.error) || '查询开场白失败');
+                greetingMgr.list = (data.greetings || []).slice();
+                greetingMgr.builtinCount = data.builtinCount || 0;
+                greetingMgr.editingIndex = -1;
+                renderGreetingManager();
+            })
+            .catch(function (e) {
+                agentToast.error('加载开场白失败: ' + e.message);
+            });
+    }
+
+    /** 渲染管理弹窗：列表（内置/自定义标签 + 编辑/删除）+ 新建表单 */
+    function renderGreetingManager() {
+        var list = greetingMgr.list;
+        var html = '<div class="gateway-hint" style="margin-bottom:8px;">角色卡：<b>' + esc(theatre.character) + '</b> · 共 ' +
+            list.length + ' 条。编辑内容保存到独立存储，不会修改原始角色卡文件。</div>';
+        // ---- 开场白列表 ----
+        html += '<div class="agent-greeting-mgr-list">';
+        if (!list.length) {
+            html += '<div class="gateway-empty-hint">该角色卡暂无开场白，可在下方新建。</div>';
+        }
+        for (var i = 0; i < list.length; i++) {
+            var isBuiltin = i < greetingMgr.builtinCount;
+            var isEditing = (greetingMgr.editingIndex === i);
+            html += '<div class="agent-greeting-mgr-item">';
+            html += '<div class="agent-greeting-mgr-head">';
+            html += '<span class="agent-greeting-mgr-num">#' + (i + 1) + '</span>';
+            html += '<span class="agent-greeting-mgr-badge' + (isBuiltin ? '' : ' custom') + '">' +
+                (isBuiltin ? '内置' : '自定义') + '</span>';
+            html += '<div class="agent-greeting-mgr-actions">';
+            if (isEditing) {
+                html += '<button class="menu_button" data-act="cancel" data-idx="' + i + '" title="取消编辑"><i class="fa-solid fa-xmark"></i> 取消</button>';
+                html += '<button class="menu_button gateway-save-btn" data-act="save" data-idx="' + i + '" title="保存修改"><i class="fa-solid fa-floppy-disk"></i> 保存</button>';
+            } else {
+                html += '<button class="menu_button" data-act="edit" data-idx="' + i + '" title="编辑该开场白"><i class="fa-solid fa-pen"></i> 编辑</button>';
+                html += '<button class="menu_button" data-act="delete" data-idx="' + i + '" title="删除该开场白（内置项仅隐藏，角色卡文件不变）"><i class="fa-solid fa-trash"></i> 删除</button>';
+            }
+            html += '</div></div>';
+            if (isEditing) {
+                // 编辑态：textarea + 实时预览
+                html += '<textarea id="agent_greeting_mgr_edit_text" class="text_pole agent-greeting-mgr-edit" rows="5" maxlength="' + GREETING_MAX_LEN + '">' + esc(list[i]) + '</textarea>';
+                html += '<div class="agent-greeting-mgr-preview"><b>预览</b><div id="agent_greeting_mgr_edit_preview" class="agent-greeting-mgr-preview-body">' + esc(list[i]) + '</div></div>';
+                html += '<div class="agent-greeting-mgr-count" id="agent_greeting_mgr_edit_count"></div>';
+            } else {
+                html += '<div class="agent-greeting-mgr-text" title="' + esc(list[i]) + '">' + esc(truncateText(list[i])) + '</div>';
+            }
+            html += '</div>';
+        }
+        html += '</div>';
+
+        // ---- 新建模板 ----
+        html += '<div class="agent-greeting-mgr-new">';
+        html += '<h4><i class="fa-solid fa-plus"></i> 新建开场白模板</h4>';
+        html += '<textarea id="agent_greeting_mgr_new_text" class="text_pole agent-greeting-mgr-edit" rows="4" maxlength="' + GREETING_MAX_LEN + '" placeholder="输入新开场白文本…（支持 {{char}} / {{user}} 等宏与换行）"></textarea>';
+        html += '<div class="agent-greeting-mgr-preview"><b>预览</b><div id="agent_greeting_mgr_new_preview" class="agent-greeting-mgr-preview-body"></div></div>';
+        html += '<div class="agent-greeting-mgr-count" id="agent_greeting_mgr_new_count"></div>';
+        html += '<div class="agent-greeting-mgr-foot">';
+        html += '<span class="gateway-hint">保存后自动加入首楼开场白切换列表末尾，可直接切换选择。</span>';
+        html += '<button class="menu_button gateway-save-btn" id="agent_greeting_mgr_add_btn"><i class="fa-solid fa-floppy-disk"></i> 保存为新开场白</button>';
+        html += '</div></div>';
+
+        showModal('开场白管理', html);
+        bindGreetingManagerEvents();
+    }
+
+    /** 管理弹窗点击事件委托（命名函数，避免重复绑定导致连点触发多次） */
+    function handleGreetingMgrClick(e) {
+        var btn = e.target.closest('[data-act]');
+        if (!btn) return;
+        var idx = Number(btn.getAttribute('data-idx'));
+        var act = btn.getAttribute('data-act');
+        if (act === 'edit') {
+            greetingMgr.editingIndex = idx;
+            renderGreetingManager();
+        } else if (act === 'cancel') {
+            greetingMgr.editingIndex = -1;
+            renderGreetingManager();
+        } else if (act === 'save') {
+            var box = $('agent_greeting_mgr_edit_text');
+            doGreetingOp('save', idx, box ? box.value : '');
+        } else if (act === 'delete') {
+            agentConfirm('确定删除该开场白吗？删除后将从开场白切换列表移除（内置项仅隐藏，角色卡文件保持不变）。',
+                { title: '删除开场白', danger: true })
+                .then(function (ok) {
+                    if (ok) doGreetingOp('delete', idx, '');
+                });
+        }
+    }
+
+    /** 绑定管理弹窗内事件（showModal 每次重建 innerHTML；scope 上的委托先移除再添加防累积） */
+    function bindGreetingManagerEvents() {
+        var scope = $('agent_modal_body');
+        if (!scope) return;
+        scope.removeEventListener('click', handleGreetingMgrClick);
+        scope.addEventListener('click', handleGreetingMgrClick);
+        // 新建按钮
+        var addBtn = $('agent_greeting_mgr_add_btn');
+        if (addBtn) {
+            addBtn.addEventListener('click', function () {
+                var box = $('agent_greeting_mgr_new_text');
+                doGreetingOp('add', -1, box ? box.value : '');
+            });
+        }
+        // 实时预览 + 字数统计（编辑框 & 新建框）
+        bindGreetingLivePreview('agent_greeting_mgr_edit_text', 'agent_greeting_mgr_edit_preview', 'agent_greeting_mgr_edit_count');
+        bindGreetingLivePreview('agent_greeting_mgr_new_text', 'agent_greeting_mgr_new_preview', 'agent_greeting_mgr_new_count');
+    }
+
+    /** 为 textarea 绑定实时预览 + 字数统计 */
+    function bindGreetingLivePreview(inputId, previewId, countId) {
+        var input = $(inputId);
+        if (!input) return;
+        var preview = $(previewId);
+        var count = $(countId);
+        var update = function () {
+            var t = input.value;
+            if (preview) {
+                preview.textContent = t || '（暂无内容）';
+                preview.classList.toggle('empty', !t.trim());
+            }
+            if (count) count.textContent = (t.length || 0) + ' / ' + GREETING_MAX_LEN;
+        };
+        input.addEventListener('input', update);
+        update();
+    }
+
+    /**
+     * 执行开场白操作（save / add / delete）。
+     * 成功后：本地校验错误直接 toast；成功后用服务端返回的完整列表刷新
+     * 弹窗 + 首楼切换条（theatre.greetings），无需重新拉取。
+     */
+    function doGreetingOp(op, idx, text) {
+        // 前端校验（与服务端 _validateGreetingText 规则一致）
+        if (op === 'save' || op === 'add') {
+            var err = validateGreetingText(text);
+            if (err) { agentToast.error(err); return; }
+        }
+        var body = { character: theatre.character };
+        if (op !== 'add') body.index = idx;
+        if (op !== 'delete') body.text = text;
+        var endpoint = '/api/agent-theatre/greetings/' + op;
+        var session = theatre.session || 'native:default';
+        agentFetch(endpoint + '?session=' + encodeURIComponent(session), {
+            method: 'POST',
+            body: JSON.stringify(body),
+        }).then(function (data) {
+            if (!data || !data.success) throw new Error((data && data.error) || '操作失败');
+            var list = (data.greetings || []).filter(function (g) { return typeof g === 'string'; });
+            // 同步弹窗状态 + 首楼切换条
+            greetingMgr.list = list;
+            greetingMgr.editingIndex = -1;
+            theatre.greetings = list;
+            theatre.greetingIndex = 0;
+            renderGreetingControls();
+            agentToast.success(op === 'save' ? '开场白已保存' : op === 'add' ? '新开场白已创建' : '开场白已删除');
+            renderGreetingManager();
+        }).catch(function (e) {
+            agentToast.error('开场白操作失败: ' + e.message);
+        });
+    }
+
     // ==================== P4: 保存状态指示器 ====================
 
     /** 保存状态机：unsaved（未保存）| saving（保存中）| saved（已保存）| failed（保存失败） */
@@ -3750,7 +4134,9 @@
         }
         var messages = collectHistoryForSave();
         if (messages.length === 0) {
-            // 无可保存内容：视为已保存
+            // 无内容也要持久化：把（可能为空的）楼层状态写入 localStorage，
+            // 否则刷新页面会从 localStorage 恢复删除前的旧楼层，导致"已删除内容重现"。
+            saveChatHistory();
             markSaved();
             return;
         }
@@ -3881,7 +4267,8 @@
 
     /** 把载入的消息应用到剧场会话（楼层模型 + 本地缓存 + 保存状态） */
     function applyLoadedMessages(messages, character, file) {
-        theatre.floors = legacyToFloors(messages || []);
+        var msgs = messages || [];
+        theatre.floors = legacyToFloors(msgs);
         streaming.pendingFloorIdx = null;
         theatre.greetings = [];
         theatre.greetingIndex = 0;
@@ -3906,6 +4293,10 @@
         theatre.chatFile = file || null;
         saveChatHistory(); // 写回本地缓存，刷新页面后仍在
         markSaved();
+        // 新建空存档（0 条消息）时自动加载角色卡开场白，确保用户看到角色卡预设的初始内容
+        if (msgs.length === 0 && character) {
+            loadGreetings(character);
+        }
     }
 
     // ==================== 存档选择页（初始页面，类 SillyTavern 存档列表） ====================
@@ -3913,9 +4304,12 @@
     var archivePicker = {
         loading: false,      // 列表请求在途
         deleting: false,     // 删除请求在途（防重复）
+        creating: false,     // 新建存档请求在途（防重复）
         items: [],
         previews: {},        // file -> messages[]（read 端点懒加载缓存）
         previewOpen: null,
+        character: '',       // 当前过滤的角色卡（'' = 全部）
+        characters: [],      // 角色卡下拉选项缓存（复用 assets 列表）
     };
 
     /** JSON 角色卡占位图：静态资源走根路径（无 token 的 <img> 场景） */
@@ -3932,6 +4326,7 @@
         var el = $('agent_archive_picker');
         if (!el) return;
         el.style.display = 'flex';
+        fillArchiveCharSelect();   // 填充角色卡下拉（多存档按角色卡过滤）
         loadArchiveList(); // 每次打开重新拉取，保证按最新保存时间倒序
     }
 
@@ -3947,14 +4342,16 @@
         if (!hasFloors && !hasChatFile) openArchivePicker();
     }
 
-    /** 拉取存档列表（sort=updated 按保存时间倒序，pageSize 取大覆盖全部） */
+    /** 拉取存档列表（sort=updated 按保存时间倒序；可选按角色卡过滤） */
     function loadArchiveList() {
         if (archivePicker.loading) return;
         archivePicker.loading = true;
         archivePicker.previewOpen = null;
         var listEl = $('agent_archive_list');
+        var params = 'sort=updated&pageSize=200';
+        if (archivePicker.character) params += '&character=' + encodeURIComponent(archivePicker.character);
         if (listEl) listEl.innerHTML = '<div class="gateway-empty-hint"><i class="fa-solid fa-spinner fa-spin"></i> 加载存档中…</div>';
-        agentFetch('/api/agent-theatre/chats?sort=updated&pageSize=200')
+        agentFetch('/api/agent-theatre/chats?' + params)
             .then(function (data) {
                 archivePicker.loading = false;
                 if (!data || !data.success) {
@@ -3975,7 +4372,12 @@
         if (!listEl) return;
         var items = archivePicker.items || [];
         if (items.length === 0) {
-            listEl.innerHTML = '<div class="gateway-empty-hint">暂无存档。在下方输入消息开始对话，保存后即可在此选择继续。</div>';
+            if (archivePicker.character) {
+                listEl.innerHTML = '<div class="gateway-empty-hint">角色卡「' + esc(archivePicker.character) +
+                    '」暂无存档。点击「新建存档」创建，或在下方输入消息开始对话后保存。</div>';
+            } else {
+                listEl.innerHTML = '<div class="gateway-empty-hint">暂无存档。选择角色卡查看其存档，或在下方输入消息开始对话，保存后即可在此选择继续。</div>';
+            }
             return;
         }
         var html = '';
@@ -3985,10 +4387,12 @@
         listEl.innerHTML = html;
     }
 
-    /** 渲染单个存档项：头像 + 角色名 + 时间 + 消息数 + 概要 + 预览/删除/载入按钮 */
+    /** 渲染单个存档项：头像 + 存档名/角色名 + 时间 + 消息数 + 概要 + 预览/删除/载入按钮 */
     function buildArchiveItemHtml(item) {
         var file = esc(item.file || '');
         var charName = item.character || '未知';
+        var arcName = (item.name && String(item.name).trim()) ? String(item.name).trim() : '';
+        var titleText = arcName || charName;
         var timeText = formatChatTime(item.updatedAt);
         var preview = (item.preview || '').replace(/\s+/g, ' ').trim();
         if (preview.length > 80) preview = preview.substring(0, 80) + '…';
@@ -3996,15 +4400,22 @@
         if (archivePicker.previewOpen === item.file) {
             detailHtml = '<div class="agent-archive-detail">' + renderArchiveDetail(item.file) + '</div>';
         }
+        var descHtml = '';
+        if (item.description && String(item.description).trim()) {
+            var desc = String(item.description).trim();
+            if (desc.length > 60) desc = desc.substring(0, 60) + '…';
+            descHtml = '<div class="agent-archive-item-desc" title="' + esc(item.description) + '">' + esc(desc) + '</div>';
+        }
         return '' +
             '<div class="agent-archive-item" data-file="' + file + '">' +
             '<div class="agent-archive-item-avatar">' + archiveAvatarHtml(charName) + '</div>' +
             '<div class="agent-archive-item-main">' +
             '<div class="agent-archive-item-title">' +
-            '<span class="agent-archive-item-char" title="' + esc(charName) + '">' + esc(charName) + '</span>' +
+            '<span class="agent-archive-item-char" title="' + esc(charName) + '">' + esc(titleText) + '</span>' +
             '<span class="agent-archive-item-time">' + esc(timeText) + '</span>' +
             '</div>' +
             '<div class="agent-archive-item-meta">' + (item.messageCount || 0) + ' 条消息</div>' +
+            descHtml +
             '<div class="agent-archive-item-preview" title="' + file + '">' + esc(preview || '（无内容预览）') + '</div>' +
             '<div class="agent-archive-item-actions">' +
             '<button type="button" class="menu_button agent-archive-act-btn" data-act="preview" data-file="' + file + '"><i class="fa-solid fa-eye"></i> ' + (archivePicker.previewOpen === item.file ? '收起' : '预览') + '</button>' +
@@ -4094,28 +4505,177 @@
 
     /** 载入存档到剧场（复用 /chats/load → applyLoadedMessages），成功后关闭选择页 */
     function loadArchiveItem(file) {
-        agentFetch('/api/agent-theatre/chats/load', {
-            method: 'POST',
-            body: JSON.stringify({ file: file }),
-        }).then(function (data) {
-            if (!data || !data.success) {
-                showToast('error', '载入失败: ' + ((data && data.error) || '未知错误'));
-                return;
-            }
-            applyLoadedMessages(data.messages || [], data.character || '', file);
-            closeArchivePicker();
-            showToast('success', '已载入存档（' + ((data.messages && data.messages.length) || 0) + ' 条消息）');
-        }).catch(function (e) {
-            showToast('error', '载入失败: ' + e.message);
+        var hasUnsavedFloors = !!(theatre.floors && theatre.floors.length > 0);
+        function doLoad() {
+            agentFetch('/api/agent-theatre/chats/load', {
+                method: 'POST',
+                body: JSON.stringify({ file: file }),
+            }).then(function (data) {
+                if (!data || !data.success) {
+                    showToast('error', '载入失败: ' + ((data && data.error) || '未知错误'));
+                    return;
+                }
+                applyLoadedMessages(data.messages || [], data.character || '', file);
+                closeArchivePicker();
+                showToast('success', '已载入存档（' + ((data.messages && data.messages.length) || 0) + ' 条消息）');
+            }).catch(function (e) {
+                showToast('error', '载入失败: ' + e.message);
+            });
+        }
+        // 已有会话楼层时二次确认，避免误切换丢失当前对话
+        if (hasUnsavedFloors) {
+            agentConfirm('载入该存档将替换当前对话楼层（未保存的对话可能丢失），确定继续？', {
+                title: '切换存档',
+                confirmText: '确定载入',
+            }).then(function (confirmed) {
+                if (confirmed) doLoad();
+            }).catch(function (e) {
+                showToast('error', '操作中断: ' + (e && e.message ? e.message : String(e)));
+            });
+        } else {
+            doLoad();
+        }
+    }
+
+    // ==================== 角色卡选择 → 存档列表 ====================
+
+    /** 渲染角色卡下拉选项（复用 assets 字符列表；含「不指定」全量选项） */
+    function renderArchiveCharOptions(sel, cur) {
+        if (!sel) return;
+        sel.innerHTML = '<option value="">🧩 不指定</option>';
+        for (var i = 0; i < archivePicker.characters.length; i++) {
+            var name = archivePicker.characters[i];
+            var opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            if (name === cur) opt.selected = true;
+            sel.appendChild(opt);
+        }
+    }
+
+    /** 填充存档选择页角色卡下拉；assets 尚未加载时自行拉取一次 */
+    function fillArchiveCharSelect() {
+        var sel = $('agent_archive_char_select');
+        if (!sel) return;
+        if (archivePicker.characters.length > 0) {
+            renderArchiveCharOptions(sel, archivePicker.character);
+            return;
+        }
+        agentFetch('/api/agent-theatre/assets').then(function (data) {
+            archivePicker.characters = ((data && data.assets && data.assets.characters) || []).slice();
+            renderArchiveCharOptions(sel, archivePicker.character);
+        }).catch(function () {
+            renderArchiveCharOptions(sel, archivePicker.character);
         });
     }
 
-    /** 存档选择页事件绑定：关闭 / 开始新对话 / 列表按钮委托 */
+    // ==================== 新建存档 ====================
+
+    /** 展开新建存档表单（隐藏「新建存档」按钮） */
+    function showArchiveNewForm() {
+        var form = $('agent_archive_new_form');
+        var btn = $('agent_archive_new_btn');
+        if (form) form.style.display = 'block';
+        if (btn) btn.style.display = 'none';
+        var nameEl = $('agent_archive_new_name');
+        if (nameEl) nameEl.focus();
+    }
+
+    /** 收起新建存档表单（恢复「新建存档」按钮） */
+    function hideArchiveNewForm() {
+        var form = $('agent_archive_new_form');
+        var btn = $('agent_archive_new_btn');
+        if (form) form.style.display = 'none';
+        if (btn) btn.style.display = '';
+    }
+
+    /** 创建新存档：校验角色卡 → 二次确认 → POST archive-create → 刷新列表 */
+    function createNewArchive() {
+        if (archivePicker.creating) return;
+        var character = archivePicker.character;
+        if (!character) {
+            showToast('warning', '请先在上方选择要创建存档的角色卡');
+            return;
+        }
+        var nameEl = $('agent_archive_new_name');
+        var descEl = $('agent_archive_new_desc');
+        var name = (nameEl && nameEl.value || '').trim();
+        var description = (descEl && descEl.value || '').trim();
+        agentConfirm('为角色卡「' + character + '」创建新存档？' + (name ? '（名称：' + name + '）' : ''), {
+            title: '新建存档',
+            confirmText: '创建',
+        }).then(function (confirmed) {
+            if (!confirmed) return;
+            archivePicker.creating = true;
+            var confirmBtn = $('agent_archive_new_confirm');
+            if (confirmBtn) confirmBtn.disabled = true;
+            agentFetch('/api/agent-theatre/chats/archive-create', {
+                method: 'POST',
+                body: JSON.stringify({ character: character, name: name, description: description }),
+            }).then(function (data) {
+                if (!data || !data.success) {
+                    showToast('error', '新建存档失败: ' + ((data && data.error) || '未知错误'));
+                    return;
+                }
+                showToast('success', '已创建新存档，正在载入…');
+                hideArchiveNewForm();
+                // 创建后自动载入新存档 -> applyLoadedMessages 检测到空消息时自动加载角色卡开场白
+                agentFetch('/api/agent-theatre/chats/load', {
+                    method: 'POST',
+                    body: JSON.stringify({ file: data.file }),
+                }).then(function (loadData) {
+                    if (!loadData || !loadData.success) {
+                        showToast('error', '载入新存档失败: ' + ((loadData && loadData.error) || '未知错误'));
+                        loadArchiveList();
+                        return;
+                    }
+                    applyLoadedMessages(loadData.messages || [], loadData.character || character, data.file);
+                    closeArchivePicker();
+                    showToast('success', '已载入新存档，角色卡开场白已加载');
+                }).catch(function (e) {
+                    showToast('error', '载入新存档失败: ' + e.message);
+                    loadArchiveList();
+                });
+            }).catch(function (e) {
+                showToast('error', '新建存档失败: ' + e.message);
+            }).finally(function () {
+                archivePicker.creating = false;
+                if (confirmBtn) confirmBtn.disabled = false;
+            });
+        }).catch(function (e) {
+            showToast('error', '操作中断: ' + (e && e.message ? e.message : String(e)));
+        });
+    }
+
+    /** 存档选择页事件绑定：关闭 / 开始新对话 / 角色卡过滤 / 新建存档表单 / 列表按钮委托 */
     function bindArchivePickerEvents() {
         var closeBtn = $('agent_archive_picker_close');
         if (closeBtn) closeBtn.addEventListener('click', function () { closeArchivePicker(); });
         var newBtn = $('agent_archive_new_chat');
         if (newBtn) newBtn.addEventListener('click', function () { closeArchivePicker(); });
+        // 角色卡选择 → 按角色卡动态加载其存档列表
+        var charSel = $('agent_archive_char_select');
+        if (charSel) charSel.addEventListener('change', function () {
+            archivePicker.character = charSel.value || '';
+            archivePicker.previews = {};
+            hideArchiveNewForm();
+            loadArchiveList();
+        });
+        // 新建存档：展开表单 / 取消收起 / 确认创建
+        var newArchiveBtn = $('agent_archive_new_btn');
+        if (newArchiveBtn) newArchiveBtn.addEventListener('click', showArchiveNewForm);
+        var newCancel = $('agent_archive_new_cancel');
+        if (newCancel) newCancel.addEventListener('click', hideArchiveNewForm);
+        var newConfirm = $('agent_archive_new_confirm');
+        if (newConfirm) newConfirm.addEventListener('click', createNewArchive);
+        // 表单内 Enter 触发创建（名称/描述输入框）
+        var nameEl = $('agent_archive_new_name');
+        var descEl = $('agent_archive_new_desc');
+        var onNewKey = function (e) {
+            if (e.key === 'Enter') createNewArchive();
+        };
+        if (nameEl) nameEl.addEventListener('keydown', onNewKey);
+        if (descEl) descEl.addEventListener('keydown', onNewKey);
         var listEl = $('agent_archive_list');
         if (listEl) listEl.addEventListener('click', function (e) {
             var actBtn = e.target.closest('[data-act]');
@@ -4141,6 +4701,8 @@
         loaded: false,     // 是否已首次加载（懒加载）
         loading: false,
         deleting: false,   // 批量删除进行中（重入保护，防止并发/重复提交）
+        character: '',     // 当前过滤的角色卡（'' = 全部）
+        creating: false,   // 新建存档请求在途（防重复）
     };
 
     /** 展开/收起聊天记录管理浮层；首次展开时懒加载列表 */
@@ -4151,19 +4713,43 @@
         // forceOpen=true 强制展开（如点击 header 按钮）；否则取反切换
         var open = (forceOpen === true) ? true : !visible;
         panel.style.display = open ? 'flex' : 'none';
-        if (open && !chatRecords.loaded) {
-            chatRecords.loaded = true;
-            loadChatRecords();
+        if (open) {
+            fillChatRecordsCharSelect();
+            if (!chatRecords.loaded) {
+                chatRecords.loaded = true;
+                loadChatRecords();
+            }
         }
     }
 
-    /** <input type="date"> 值（YYYY-MM-DD）→ 本地时区毫秒；startOfDay=true 取当天 00:00（from），false 取 23:59:59.999（to） */
-    function dateInputToMs(val, startOfDay) {
-        if (!val) return null;
-        var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(val);
-        if (!m) return null;
-        var d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-        return startOfDay ? d.getTime() : d.getTime() + 24 * 60 * 60 * 1000 - 1;
+    /** 填充聊天记录面板角色卡下拉（复用 archivePicker.characters 缓存或 assets） */
+    function fillChatRecordsCharSelect() {
+        var sel = $('agent_chat_records_char_select');
+        if (!sel) return;
+        // 复用 archivePicker 已拉取的角色卡列表
+        if (archivePicker.characters.length > 0) {
+            renderChatRecordsCharOptions(sel, chatRecords.character);
+            return;
+        }
+        agentFetch('/api/agent-theatre/assets').then(function (data) {
+            var chars = ((data && data.assets && data.assets.characters) || []).slice();
+            archivePicker.characters = chars;
+            renderChatRecordsCharOptions(sel, chatRecords.character);
+        }).catch(function () {
+            renderChatRecordsCharOptions(sel, chatRecords.character);
+        });
+    }
+
+    function renderChatRecordsCharOptions(sel, cur) {
+        sel.innerHTML = '<option value="">🧩 全部</option>';
+        for (var i = 0; i < archivePicker.characters.length; i++) {
+            var name = archivePicker.characters[i];
+            var opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            if (name === cur) opt.selected = true;
+            sel.appendChild(opt);
+        }
     }
 
     /** ms → YYYY-MM-DD HH:mm */
@@ -4185,18 +4771,9 @@
         chatRecords.previews = {}; // 清理预览缓存，避免长期使用内存膨胀
         renderChatListLoading();
         var params = [];
-        var charInput = $('agent_chat_search_character');
-        var kwInput = $('agent_chat_search_keyword');
-        var character = (charInput && charInput.value || '').trim();
-        var keyword = (kwInput && kwInput.value || '').trim();
-        if (character) params.push('character=' + encodeURIComponent(character));
-        if (keyword) params.push('keyword=' + encodeURIComponent(keyword));
-        var fromMs = dateInputToMs($('agent_chat_search_from') && $('agent_chat_search_from').value, true);
-        var toMs = dateInputToMs($('agent_chat_search_to') && $('agent_chat_search_to').value, false);
-        if (fromMs != null) params.push('from=' + fromMs);
-        if (toMs != null) params.push('to=' + toMs);
         params.push('page=' + chatRecords.page);
         params.push('pageSize=' + chatRecords.pageSize);
+        if (chatRecords.character) params.push('character=' + encodeURIComponent(chatRecords.character));
         agentFetch('/api/agent-theatre/chats?' + params.join('&'))
             .then(function (data) {
                 chatRecords.loading = false;
@@ -4506,6 +5083,80 @@
         loadChatRecords();
     }
 
+    // ---- 聊天记录面板：新建存档 ----
+
+    function showChatRecordsNewForm() {
+        var form = $('agent_chat_records_new_form');
+        var btn = $('agent_chat_records_new_btn');
+        if (form) form.style.display = 'block';
+        if (btn) btn.style.display = 'none';
+        var nameEl = $('agent_chat_records_new_name');
+        if (nameEl) nameEl.focus();
+    }
+
+    function hideChatRecordsNewForm() {
+        var form = $('agent_chat_records_new_form');
+        var btn = $('agent_chat_records_new_btn');
+        if (form) form.style.display = 'none';
+        if (btn) btn.style.display = '';
+    }
+
+    /** 在聊天记录面板中新建存档：校验角色卡 -> 二次确认 -> POST archive-create -> 载入并关闭面板 */
+    function createChatRecordsArchive() {
+        if (chatRecords.creating) return;
+        var character = chatRecords.character;
+        if (!character) {
+            showToast('warning', '请先在上方选择要创建存档的角色卡');
+            return;
+        }
+        var nameEl = $('agent_chat_records_new_name');
+        var descEl = $('agent_chat_records_new_desc');
+        var name = (nameEl && nameEl.value || '').trim();
+        var description = (descEl && descEl.value || '').trim();
+        agentConfirm('为角色卡「' + character + '」创建新存档？' + (name ? '（名称：' + name + '）' : ''), {
+            title: '新建存档',
+            confirmText: '创建',
+        }).then(function (confirmed) {
+            if (!confirmed) return;
+            chatRecords.creating = true;
+            var confirmBtn = $('agent_chat_records_new_confirm');
+            if (confirmBtn) confirmBtn.disabled = true;
+            agentFetch('/api/agent-theatre/chats/archive-create', {
+                method: 'POST',
+                body: JSON.stringify({ character: character, name: name, description: description }),
+            }).then(function (data) {
+                if (!data || !data.success) {
+                    showToast('error', '新建存档失败: ' + ((data && data.error) || '未知错误'));
+                    return;
+                }
+                showToast('success', '已创建新存档，正在载入…');
+                hideChatRecordsNewForm();
+                // 创建后自动载入 -> applyLoadedMessages 空消息时自动加载开场白
+                agentFetch('/api/agent-theatre/chats/load', {
+                    method: 'POST',
+                    body: JSON.stringify({ file: data.file }),
+                }).then(function (loadData) {
+                    if (!loadData || !loadData.success) {
+                        showToast('error', '载入新存档失败: ' + ((loadData && loadData.error) || '未知错误'));
+                        return;
+                    }
+                    applyLoadedMessages(loadData.messages || [], loadData.character || character, data.file);
+                    toggleChatRecords(false);
+                    showToast('success', '已载入新存档，角色卡开场白已加载');
+                }).catch(function (e) {
+                    showToast('error', '载入新存档失败: ' + e.message);
+                });
+            }).catch(function (e) {
+                showToast('error', '新建存档失败: ' + e.message);
+            }).finally(function () {
+                chatRecords.creating = false;
+                if (confirmBtn) confirmBtn.disabled = false;
+            });
+        }).catch(function (e) {
+            showToast('error', '操作中断: ' + (e && e.message ? e.message : String(e)));
+        });
+    }
+
     /** 绑定聊天记录面板交互（搜索/重置/分页/删除/迁移/列表委托） */
     function bindChatRecordsEvents() {
         // header 入口按钮：点击展开浮层（再点收起）
@@ -4527,33 +5178,6 @@
             if (e.key === 'Escape' && panel && panel.style.display !== 'none') {
                 toggleChatRecords(false);
             }
-        });
-
-        var searchBtn = $('agent_chat_search_btn');
-        if (searchBtn) searchBtn.addEventListener('click', function () {
-            chatRecords.page = 1;
-            loadChatRecords();
-        });
-
-        // 角色卡名 / 关键词输入框回车触发搜索
-        var searchInputs = ['agent_chat_search_character', 'agent_chat_search_keyword'];
-        for (var i = 0; i < searchInputs.length; i++) {
-            var inp = $(searchInputs[i]);
-            if (inp) inp.addEventListener('keydown', function (e) {
-                if (e.key === 'Enter') {
-                    e.preventDefault();
-                    chatRecords.page = 1;
-                    loadChatRecords();
-                }
-            });
-        }
-
-        var resetBtn = $('agent_chat_search_reset');
-        if (resetBtn) resetBtn.addEventListener('click', function () {
-            ['agent_chat_search_character', 'agent_chat_search_from', 'agent_chat_search_to', 'agent_chat_search_keyword']
-                .forEach(function (id) { var el = $(id); if (el) el.value = ''; });
-            chatRecords.page = 1;
-            loadChatRecords();
         });
 
         var prevBtn = $('agent_chat_page_prev');
@@ -4600,6 +5224,31 @@
             if (itemEl) itemEl.classList.toggle('selected', cb.checked);
             updateSelectedUI();
         });
+
+        // 角色卡选择 -> 按角色卡过滤存档列表
+        var charSel = $('agent_chat_records_char_select');
+        if (charSel) charSel.addEventListener('change', function () {
+            chatRecords.character = charSel.value || '';
+            chatRecords.page = 1;
+            hideChatRecordsNewForm();
+            loadChatRecords();
+        });
+
+        // 新建存档：展开表单 / 取消收起 / 确认创建
+        var newArchiveBtn = $('agent_chat_records_new_btn');
+        if (newArchiveBtn) newArchiveBtn.addEventListener('click', showChatRecordsNewForm);
+        var newCancel = $('agent_chat_records_new_cancel');
+        if (newCancel) newCancel.addEventListener('click', hideChatRecordsNewForm);
+        var newConfirm = $('agent_chat_records_new_confirm');
+        if (newConfirm) newConfirm.addEventListener('click', createChatRecordsArchive);
+        // 表单内 Enter 触发创建
+        var newNameEl = $('agent_chat_records_new_name');
+        var newDescEl = $('agent_chat_records_new_desc');
+        var onRecordsNewKey = function (e) {
+            if (e.key === 'Enter') createChatRecordsArchive();
+        };
+        if (newNameEl) newNameEl.addEventListener('keydown', onRecordsNewKey);
+        if (newDescEl) newDescEl.addEventListener('keydown', onRecordsNewKey);
     }
 
     /** 绑定保存状态指示器交互（立即保存 + beforeunload 兜底保存） */
@@ -4703,7 +5352,11 @@
             // 删除按钮
             var delBtn = e.target.closest('[data-delete]');
             if (delBtn) {
-                deleteMessage(Number(delBtn.getAttribute('data-floor-idx')), delBtn.getAttribute('data-delete'));
+                deleteMessage(
+                    Number(delBtn.getAttribute('data-floor-idx')),
+                    delBtn.getAttribute('data-delete'),
+                    delBtn.getAttribute('data-msg-id') || undefined
+                );
                 return;
             }
             // 保存编辑
@@ -4852,6 +5505,9 @@
             if (!text) { showToast('warning', '暂无开场白文本'); return; }
             sendInput(text, null);
         });
+        // P3.5: 开场白管理入口（顶栏按钮）
+        var gMgrBtn = $('agent_greeting_mgr_btn');
+        if (gMgrBtn) gMgrBtn.addEventListener('click', openGreetingManager);
     }
 
     // ==================== 顶栏下拉面板 ====================
@@ -4923,6 +5579,10 @@
                         runId: data.lastRunId,
                         result: data.lastResult,
                         text: data.lastResult.artifacts && data.lastResult.artifacts[0] && data.lastResult.artifacts[0].text,
+                        // R1: /state 已扩展返回 MVU 变量 / 编年史 / 变更历史，刷新后状态面板可完整恢复
+                        variables: data.variables,
+                        chronicle: data.chronicle,
+                        mvuHistory: data.mvuHistory,
                     });
                 }
             })

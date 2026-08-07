@@ -272,22 +272,26 @@ export function parseUpdateBlock(text) {
  * @returns {{ snapshot: object, changed: boolean, applied: Array, skipped: Array }}
  */
 export function applyMvuToText(text, snapshot = {}) {
-    const base = clone(snapshot) || {};
     const { jsonPatch, commandLines, underscoreSet } = parseUpdateBlock(text);
+    const commands = [...jsonPatch, ...commandLines, ...underscoreSet];
+    return applyCommands(snapshot, commands);
+}
+
+/**
+ * 直接应用命令数组到快照（R1 重构：变量处理子 Agent 输出的 JSON Patch 数组走此入口）。
+ * @param {object} snapshot - 当前 stat_data 快照
+ * @param {Array} commands - 命令数组（JSON Patch 对象 / set 命令 / _.set 命令）
+ * @returns {{ snapshot: object, changed: boolean, applied: Array, skipped: Array }}
+ */
+export function applyCommands(snapshot, commands) {
+    const base = clone(snapshot) || {};
     const applied = [];
     const skipped = [];
-
-    const run = (cmds) => {
-        for (const c of cmds) {
-            const r = applyCommand(base, c);
-            if (r.ok) applied.push(c);
-            else skipped.push({ cmd: c, error: r.error });
-        }
-    };
-    run(jsonPatch);
-    run(commandLines);
-    run(underscoreSet);
-
+    for (const c of commands || []) {
+        const r = applyCommand(base, c);
+        if (r.ok) applied.push(c);
+        else skipped.push({ cmd: c, error: r.error });
+    }
     return { snapshot: base, changed: applied.length > 0, applied, skipped };
 }
 
@@ -360,6 +364,6 @@ export function stripForDisplay(text) {
 export default {
     normalizePath, getByPath, setByPath, removeByPath,
     parseJsonPatch, parseCommandLines, parseUnderscoreSet,
-    applyCommand, applyMvuToText, parseUpdateBlock,
+    applyCommand, applyCommands, applyMvuToText, parseUpdateBlock,
     formatVariables, expandMessageVariables, stripForDisplay,
 };

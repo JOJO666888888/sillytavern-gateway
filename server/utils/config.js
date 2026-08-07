@@ -156,6 +156,30 @@ const DEFAULT_CONFIG = {
             preset: '',
             worldbooks: [],
         },
+        // Agent 剧场 ST 兼容：专业子 Agent 处理器（R1 重构：功能任务与主对话解耦）。
+        // 主 Agent 专注正文与选项；变量解析与编年史总结由独立处理器 LLM 调用完成，
+        // 不再依赖角色卡世界书规定 AI 输出 <sum>/<UpdateVariable> 标签（触发不稳定）。
+        agentCompat: {
+            enabled: true,                // 总开关（关闭则回退"标签解析"兼容路径）
+            variableProcessor: {
+                enabled: true,            // 变量处理子 Agent：每轮从正文推导 stat_data 差分
+                model: '',                // 留空用主 LLM；可指定第二模型（多 API 分工）
+                baseUrl: '',
+                apiKey: '',
+                maxTokens: 2048,
+            },
+            chronicle: {
+                enabled: true,            // 编年史/小总结子 Agent：每轮独立生成 1-2 句总结
+                model: '',
+                baseUrl: '',
+                apiKey: '',
+                maxTokens: 1024,
+            },
+        },
+        // 脚本库（对标酒馆助手 Tavern-Helper）：脚本沙箱单次执行超时（ms）。
+        // 脚本在服务端 Node vm 隔离沙箱中运行，提供酒馆助手兼容 API 桥；
+        // 角色卡 extensions.tavern_helper.scripts 会在角色加载时自动同步导入。
+        agentScriptTimeout: 15000,
     },
 };
 

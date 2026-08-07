@@ -167,9 +167,11 @@ function _scanChatFile(filePath, dirName) {
 
     const character = (meta && meta.character_name) || dirName || '_default';
     // 校验和：同一会话不同时间的重复存档内容一致，checksum 相同（用于列表去重）
-    const checksum = (meta && meta.chat_metadata && typeof meta.chat_metadata.checksum === 'string')
-        ? meta.chat_metadata.checksum
-        : null;
+    const chatMeta = (meta && meta.chat_metadata && typeof meta.chat_metadata === 'object') ? meta.chat_metadata : {};
+    const checksum = typeof chatMeta.checksum === 'string' ? chatMeta.checksum : null;
+    // 多存档系统：自定义存档元数据（名称 / 描述），挂在 chat_metadata，不破坏 ST 兼容
+    const name = (typeof chatMeta.name === 'string' && chatMeta.name.trim()) ? chatMeta.name.trim() : '';
+    const description = (typeof chatMeta.description === 'string') ? chatMeta.description.trim() : '';
 
     // preview：最后一条非系统消息，从后往前找（最多解析 30 行，防恶意长尾系统消息拖慢）
     let preview = '';
@@ -187,6 +189,8 @@ function _scanChatFile(filePath, dirName) {
     return {
         file: path.posix.join(dirName, path.basename(filePath)),
         character,
+        name,
+        description,
         createdAt: _parseCreateDate(meta && meta.create_date) || st.mtimeMs,
         updatedAt: st.mtimeMs,
         messageCount: lines.length - start,
@@ -323,6 +327,8 @@ export function readChat(dataRoot, fileRel) {
     return {
         file: fileRel,
         character: archive.meta.character_name || '',
+        name: (archive.meta.chat_metadata && typeof archive.meta.chat_metadata.name === 'string') ? archive.meta.chat_metadata.name : '',
+        description: (archive.meta.chat_metadata && typeof archive.meta.chat_metadata.description === 'string') ? archive.meta.chat_metadata.description : '',
         createdAt: _parseCreateDate(archive.meta.create_date) || st.mtimeMs,
         updatedAt: st.mtimeMs,
         messages,
@@ -464,6 +470,20 @@ export function saveChat(dataRoot, options = {}) {
         });
     }
     archive.meta.chat_metadata = { checksum: computeChecksum(messages) };
+    // 多存档系统：保留/写入自定义存档元数据（name/description）
+    if (typeof options.name === 'string' && options.name.trim()) {
+        archive.meta.chat_metadata.name = options.name.trim();
+    } else if (fs.existsSync(targetPath) && prevCreateDate != null) {
+        // 未提供名称时沿用旧文件已存在的名称（覆盖式保存不丢自定义名称）
+        try {
+            const old = new ChatArchive(targetPath).meta.chat_metadata || {};
+            if (typeof old.name === 'string' && old.name.trim()) archive.meta.chat_metadata.name = old.name.trim();
+            if (typeof old.description === 'string' && old.description.trim()) archive.meta.chat_metadata.description = old.description.trim();
+        } catch { /* 忽略旧元数据读取失败 */ }
+    }
+    if (typeof options.description === 'string' && options.description.trim()) {
+        archive.meta.chat_metadata.description = options.description.trim();
+    }
 
     // 原子写 + 失败重试（最多 MAX_ATTEMPTS 次尝试）
     let failures = 0;
@@ -527,6 +547,68 @@ export function deleteChats(dataRoot, files = []) {
         } catch { skipped++; }
     }
     return { deleted, skipped };
+}
+
+/**
+ * 为指定角色卡创建一个新的空存档（多存档管理系统核心能力）。
+ * 存档只落在 <dataRoot>/chats/<角色>/ 下，与角色卡基础数据（assets/characters）完全隔离；
+ * 删除该存档不影响角色卡本身。
+ * @param {string} dataRoot
+ * @param {object} options
+ * @param {string} [options.character] - 角色卡名（空用 _default）
+ * @param {string} [options.name] - 存档名称（可空）
+ * @param {string} [options.description] - 存档描述（可空）
+ * @returns {{ok:boolean, file:string, error?:string}}
+ */
+export function createArchive(dataRoot, options = {}) {
+    const { character = '', name = '', description = '' } = options;
+    let filePath = resolveChatFile(dataRoot, character, new Date());
+    // 同秒新建冲突退避（罕见，防御性处理）
+    let i = 1;
+    const base = filePath.slice(0, -'.jsonl'.length);
+    while (fs.existsSync(filePath)) {
+        filePath = `${base}-${i}.jsonl`;
+        i++;
+    }
+    const archive = new ChatArchive(filePath, {
+        userName: 'User',
+        characterName: sanitizeName(character),
+        createDate: _formatCreateDate(),
+    });
+    archive.meta.chat_metadata = {};
+    if (typeof name === 'string' && name.trim()) archive.meta.chat_metadata.name = name.trim();
+    if (typeof description === 'string' && description.trim()) archive.meta.chat_metadata.description = description.trim();
+    try {
+        _writeArchiveFile(filePath, archive.meta, []);
+    } catch (e) {
+        return { ok: false, file: '', error: `创建存档失败: ${e.message}` };
+    }
+    return { ok: true, file: _toRelFile(dataRoot, filePath) };
+}
+
+/**
+ * 更新存档的自定义元数据（名称 / 描述）。只改首行 chat_metadata，不动消息内容。
+ * 存档不存在 / 路径非法返回 { ok:false }。
+ * @param {string} dataRoot
+ * @param {string} fileRel - 相对路径，如 "清月/清月_20260805103000.jsonl"
+ * @param {object} meta - { name?, description? }
+ * @returns {{ok:boolean, file?:string, error?:string}}
+ */
+export function updateArchiveMeta(dataRoot, fileRel, meta = {}) {
+    const filePath = _resolvePath(dataRoot, fileRel);
+    if (!filePath || !fs.existsSync(filePath)) {
+        return { ok: false, error: '存档不存在或路径非法' };
+    }
+    const archive = new ChatArchive(filePath);
+    archive.meta.chat_metadata = archive.meta.chat_metadata || {};
+    if (typeof meta.name === 'string') archive.meta.chat_metadata.name = meta.name.trim();
+    if (typeof meta.description === 'string') archive.meta.chat_metadata.description = meta.description.trim();
+    try {
+        _writeArchiveFile(filePath, archive.meta, archive.messages);
+    } catch (e) {
+        return { ok: false, error: `更新存档元数据失败: ${e.message}` };
+    }
+    return { ok: true, file: fileRel };
 }
 
 /** 比较两个文件内容是否一致（迁移幂等判断用） */

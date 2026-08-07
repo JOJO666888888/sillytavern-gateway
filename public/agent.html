@@ -306,21 +306,23 @@
                 </div>
             </div>
 
-            <!-- 状态/时间线下拉 -->
+            <!-- 状态面板（MVU 整合）/ 编年史下拉 -->
             <div class="agent-dropdown" id="agent_status_dropdown">
-                <button class="agent-icon-btn" id="agent_status_toggle" title="状态与时间线"><i class="fa-solid fa-chart-simple"></i></button>
+                <button class="agent-icon-btn" id="agent_status_toggle" title="状态面板（MVU 变量）"><i class="fa-solid fa-chart-simple"></i></button>
                 <div class="agent-dropdown-panel" id="agent_status_panel">
                     <button class="agent-dropdown-close" data-close-dropdown title="关闭面板"><i class="fa-solid fa-xmark"></i></button>
                     <div class="agent-dropdown-section">
-                        <div class="gateway-section-subtitle">📍 状态面板</div>
+                        <div class="gateway-section-subtitle">📍 状态面板（MVU）</div>
                         <div id="agent_theatre_state_panel" class="gateway-theatre-state-panel">
-                            <div class="gateway-empty-hint">（状态将在首次 run 后显示）</div>
+                            <!-- MVU 状态占位符（ST 兼容）：状态栏在复杂前端界面中的渲染位置由此组件确定，
+                                 渲染层（主 agent.js / 兼容层）在收到服务端 stat_data 广播后填充本位置 -->
+                            <StatusPlaceHolderImpl/>
                         </div>
                     </div>
                     <div class="agent-dropdown-section">
-                        <div class="gateway-section-subtitle">📊 时间线</div>
-                        <div id="agent_theatre_timeline" class="gateway-theatre-timeline">
-                            <div class="gateway-empty-hint">（事件流将在此显示）</div>
+                        <div class="gateway-section-subtitle">📖 编年史（服务端同步）</div>
+                        <div id="agent_theatre_chronicle" class="gateway-theatre-chronicle">
+                            <div class="gateway-empty-hint">（编年史由服务端子代理每轮实时生成）</div>
                         </div>
                     </div>
                 </div>
@@ -328,6 +330,8 @@
 
             <!-- P4: 聊天记录管理入口（与设置/状态/提示词按钮同级，点击打开聊天记录管理浮层） -->
             <button id="agent_chat_records_btn" class="agent-icon-btn" title="聊天记录管理"><i class="fa-solid fa-folder-open"></i></button>
+            <!-- P3.5: 开场白管理入口（编辑/新建/删除开场白，存储与角色卡文件分离） -->
+            <button id="agent_greeting_mgr_btn" class="agent-icon-btn" title="开场白管理"><i class="fa-solid fa-comment-dots"></i></button>
             <!-- P2: 提示词查看器入口 -->
             <button id="agent_prompt_viewer_btn" class="agent-icon-btn" title="提示词查看器"><i class="fa-solid fa-scroll"></i></button>
             <button id="agent_guide_btn" class="agent-icon-btn" title="使用说明"><i class="fa-solid fa-circle-question"></i></button>
@@ -497,7 +501,25 @@
                 <button id="agent_archive_picker_close" class="agent-dropdown-close" type="button" title="关闭（开始新对话）">×</button>
             </span>
         </div>
-        <div class="agent-archive-picker-hint">选择一个存档继续对话，或开始新对话。存档按保存时间倒序排列，最新在最上方。</div>
+        <!-- 角色卡选择：切换角色卡动态加载其存档列表；角色卡本身始终可用（与存档解耦） -->
+        <div class="agent-archive-picker-toolbar">
+            <label class="agent-archive-picker-char-label" for="agent_archive_char_select">角色卡</label>
+            <select id="agent_archive_char_select" class="text_pole agent-archive-picker-char-select" title="选择角色卡查看其存档">
+                <option value="">🧩 不指定</option>
+            </select>
+            <button id="agent_archive_new_btn" class="menu_button agent-archive-new-btn" type="button" title="为当前角色卡创建新存档">
+                <i class="fa-solid fa-plus"></i> 新建存档
+            </button>
+        </div>
+        <!-- 新建存档表单（点击新建后展开） -->
+        <div id="agent_archive_new_form" class="agent-archive-new-form" style="display:none;">
+            <input type="text" id="agent_archive_new_name" class="text_pole" placeholder="存档名称（可选）" maxlength="60">
+            <input type="text" id="agent_archive_new_desc" class="text_pole" placeholder="描述（可选）" maxlength="200">
+            <div class="agent-archive-new-actions">
+                <button id="agent_archive_new_confirm" class="menu_button" type="button"><i class="fa-solid fa-check"></i> 创建</button>
+                <button id="agent_archive_new_cancel" class="menu_button" type="button">取消</button>
+            </div>
+        </div>
         <div id="agent_archive_list" class="agent-archive-list">
             <div class="gateway-empty-hint"><i class="fa-solid fa-spinner fa-spin"></i> 加载存档中…</div>
         </div>
@@ -517,20 +539,25 @@
             </span>
         </div>
         <div class="agent-chat-records-panel-body">
-            <!-- 多维搜索：角色卡名 / 时间范围 / 关键词 -->
-            <div class="agent-chat-search">
-                <div class="agent-chat-search-row">
-                    <input type="text" id="agent_chat_search_character" class="text_pole" placeholder="角色卡名" title="按角色卡名搜索">
-                    <input type="date" id="agent_chat_search_from" class="text_pole" title="更新日期起始（当天 00:00）">
-                    <input type="date" id="agent_chat_search_to" class="text_pole" title="更新日期结束（当天 23:59）">
-                    <input type="text" id="agent_chat_search_keyword" class="text_pole" placeholder="关键词" title="按消息内容关键词搜索">
-                </div>
-                <div class="agent-chat-search-actions">
-                    <button id="agent_chat_search_btn" class="menu_button" type="button"><i class="fa-solid fa-magnifying-glass"></i> 搜索</button>
-                    <button id="agent_chat_search_reset" class="menu_button" type="button"><i class="fa-solid fa-rotate-left"></i> 重置</button>
+            <!-- 角色卡选择 + 新建存档工具栏 -->
+            <div class="agent-chat-records-toolbar">
+                <label class="agent-chat-records-char-label" for="agent_chat_records_char_select">角色卡</label>
+                <select id="agent_chat_records_char_select" class="text_pole agent-chat-records-char-select" title="选择角色卡过滤存档列表">
+                    <option value="">🧩 全部</option>
+                </select>
+                <button id="agent_chat_records_new_btn" class="menu_button agent-chat-records-new-btn" type="button" title="为当前角色卡创建新存档">
+                    <i class="fa-solid fa-plus"></i> 新建存档
+                </button>
+            </div>
+            <!-- 新建存档表单（点击新建后展开） -->
+            <div id="agent_chat_records_new_form" class="agent-chat-records-new-form" style="display:none;">
+                <input type="text" id="agent_chat_records_new_name" class="text_pole" placeholder="存档名称（可选）" maxlength="60">
+                <input type="text" id="agent_chat_records_new_desc" class="text_pole" placeholder="描述（可选）" maxlength="200">
+                <div class="agent-chat-records-new-actions">
+                    <button id="agent_chat_records_new_confirm" class="menu_button" type="button"><i class="fa-solid fa-check"></i> 创建</button>
+                    <button id="agent_chat_records_new_cancel" class="menu_button" type="button">取消</button>
                 </div>
             </div>
-
             <!-- 列表头：全选本页 + 选中计数 -->
             <div class="agent-chat-list-header">
                 <label class="checkbox-label agent-chat-select-all-label" title="选中本页全部记录">
@@ -563,6 +590,7 @@
     </div>
 </div>
 
+<script type="module" src="agent-renderer.js"></script>
 <script src="agent.js"></script>
 <script src="agent-compat.js"></script>
 </body>
